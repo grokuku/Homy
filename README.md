@@ -1,4 +1,4 @@
-# HomePage
+# Homy
 
 Custom self-hosted browser homepage dashboard (Fenrus replacement). Single-user,
 zero build step (Vanilla JS + CSS Grid), gridstack.js editable grid, JWT auth,

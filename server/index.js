@@ -91,7 +91,7 @@ const server = serve(
     port: serverConfig.port,
   },
   (info) => {
-    console.log(`HomePage listening on http://localhost:${info.port}`);
+    console.log(`Homy listening on http://localhost:${info.port}`);
     console.log(`Data dir: ${serverConfig.dataDir}`);
   }
 );
