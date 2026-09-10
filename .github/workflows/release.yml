@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat version.txt | tr -d '[:space:]')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase repository name
+        run: |
+          echo "IMG=$(echo ${{ env.REGISTRY }}/${{ env.IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Set build args
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
+            VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ${{ env.IMG }}:${{ steps.version.outputs.version }}
+            ${{ env.IMG }}:latest
+
+      - name: Increment version
+        run: |
+          CURRENT=$(cat version.txt | tr -d '[:space:]')
+          MAJOR=$(echo $CURRENT | cut -d. -f1)
+          MINOR=$(echo $CURRENT | cut -d. -f2)
+          PATCH=$(echo $CURRENT | cut -d. -f3)
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+          echo "$NEW_VERSION" > version.txt
+          echo "New version: $NEW_VERSION"
+
+      - name: Commit new version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version.txt
+          git commit -m "chore: bump version to $(cat version.txt)"
+          git push

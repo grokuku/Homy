@@ -1,0 +1,31 @@
+services:
+  homy:
+    # Published by the release workflow (ghcr.io/<owner>/<repo>, lowercased).
+    image: ghcr.io/grokuku/homy:latest
+    build: .
+    container_name: homy
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Runtime data (bcrypt hash, JWT secret, backgrounds).
+      # Must be writable by uid 1000 — see README before the first start:
+      #   mkdir -p data && chown -R 1000:1000 data
+      - ./data:/data
+    environment:
+      - PORT=3000
+      - DATA_DIR=/data
+      # JWT_SECRET is intentionally NOT set: it is auto-generated on first run
+      # and persisted in /data/config.json. Set it only to inject it yourself.
+      # - JWT_SECRET=
+      # - JWT_EXPIRES_IN=7d
+      # - BCRYPT_ROUNDS=12
+
+    # Uncomment to reach other services (Docky, Pi-Web, ...) by container name.
+    # networks:
+    #   - holaf
+
+# networks:
+#   holaf:
+#     external: true
+#     name: docky-network

@@ -4,6 +4,8 @@ node_modules/
 # Runtime data — contains the bcrypt hash AND the JWT signing secret.
 # Never commit this directory.
 server/data/
+# Bind-mounted data directory used by docker-compose.yml
+/data/
 
 # Environment files
 .env

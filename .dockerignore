@@ -1,0 +1,17 @@
+.git
+.github
+
+# Never ship local dependencies or runtime data into the build context.
+node_modules
+server/data
+data
+
+# Local env files (secrets) — must be injected at runtime instead.
+.env
+.env.*
+
+# Docs and dev tooling are not needed inside the image.
+*.md
+*.log
+Dockerfile
+docker-compose.yml
