@@ -56,7 +56,18 @@ function destroyGrid() {
     }
     grid = null;
   }
-  $('grid-container').replaceChildren();
+  // gridstack.destroy() removes its container element from the DOM, so the
+  // original #grid-container is gone once a grid has been destroyed (this
+  // happens on every view/edit switch). Re-create a fresh container if needed.
+  let container = $('grid-container');
+  if (container) {
+    container.replaceChildren();
+  } else {
+    container = document.createElement('div');
+    container.id = 'grid-container';
+    container.className = 'grid-stack';
+    $('grid-wrap').appendChild(container);
+  }
 }
 
 function setMode(mode) {

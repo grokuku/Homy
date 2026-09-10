@@ -3,7 +3,7 @@
 ARG GIT_COMMIT=unknown
 ARG VERSION=0.0.0
 
-FROM node:22-alpine
+FROM node:24-alpine
 
 # Redeclare ARGs after FROM so they are available in this build stage
 ARG GIT_COMMIT

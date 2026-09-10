@@ -11,7 +11,7 @@ atomic JSON file storage.
 
 - **Backend:** Node.js (>= 20) + Hono + `@hono/node-server`
 - **Auth:** JWT (`jsonwebtoken`), passwords hashed with `bcryptjs` (cost 12)
-- **Frontend:** Vanilla JS + CSS Grid, `gridstack.js` v11 (vendored locally)
+- **Frontend:** Vanilla JS + CSS Grid, `gridstack.js` v13 (vendored locally)
 - **Storage:** atomic JSON files in `server/data/` (temp write + rename, `.bak` backup)
 - **Deploy:** Docker (documented below, not part of this lot)
 
@@ -176,7 +176,7 @@ public/
     ui/toast.js            # toast notifications
     widgets/registry.js    # widget type registry
     widgets/{shortcut,clock,frame,iframe,links,search,notes,weather}.js
-  vendor/gridstack/        # vendored gridstack v11
+  vendor/gridstack/        # vendored gridstack v13 (gridstack.min.js + gridstack.min.css)
 ```
 
 ## Security notes

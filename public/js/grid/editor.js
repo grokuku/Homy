@@ -65,7 +65,11 @@ export function initEditor(container, items, { onSave }) {
   function addWidget(type) {
     const size = getDefaultSize(type);
     const id = uuid();
-    const node = grid.addWidget({
+    // gridstack v13 types addWidget() as `GridItemHTMLElement | undefined`:
+    // it returns the item element, not a GridStackNode with `.id`/`.el`.
+    // Don't depend on the return value — resolve the item element from the
+    // engine via the id we control, and guard against a missing node.
+    grid.addWidget({
       id,
       x: 0,
       y: 0,
@@ -74,10 +78,11 @@ export function initEditor(container, items, { onSave }) {
       content: '<div></div>',
     });
     meta.set(id, { type, config: {} });
-    const contentEl = node.querySelector('.grid-stack-item-content');
-    if (contentEl) {
+    const itemEl = grid.engine.nodes.find((n) => n.id === id)?.el;
+    const contentEl = itemEl?.querySelector('.grid-stack-item-content');
+    if (itemEl && contentEl) {
       renderWidget(contentEl, { id, type, config: {} });
-      attachControls(node, id);
+      attachControls(itemEl, id);
     }
     save();
     return id;
