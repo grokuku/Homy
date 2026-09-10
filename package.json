@@ -1,0 +1,21 @@
+{
+  "name": "homepage",
+  "version": "0.1.0",
+  "description": "Custom self-hosted browser homepage dashboard (Fenrus replacement). Single-user, zero build step.",
+  "type": "module",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "bcryptjs": "^2.4.3",
+    "gridstack": "^11.3.0",
+    "hono": "^4.6.14",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

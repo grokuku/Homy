@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Runtime data — contains the bcrypt hash AND the JWT signing secret.
+# Never commit this directory.
+server/data/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs & OS cruft
+*.log
+npm-debug.log*
+.DS_Store

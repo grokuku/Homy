@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HomePage</title>
+  <link rel="stylesheet" href="/vendor/gridstack/gridstack.min.css" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ===== Login / Setup view ===== -->
+    <section id="login-view" class="view hidden">
+      <div class="auth-card">
+        <h1 class="brand">HomePage</h1>
+
+        <form id="login-form" class="auth-form">
+          <h2>Sign in</h2>
+          <label>
+            <span>Username</span>
+            <input type="text" name="user" autocomplete="username" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input type="password" name="password" autocomplete="current-password" required />
+          </label>
+          <p id="login-error" class="form-error" role="alert"></p>
+          <button type="submit" class="btn btn-primary">Sign in</button>
+        </form>
+
+        <form id="setup-form" class="auth-form hidden">
+          <h2>First-run setup</h2>
+          <p class="muted">Create the admin account for this instance.</p>
+          <label>
+            <span>Username</span>
+            <input type="text" name="user" autocomplete="username" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input type="password" name="password" autocomplete="new-password" minlength="6" required />
+          </label>
+          <label>
+            <span>Confirm password</span>
+            <input type="password" name="confirm" autocomplete="new-password" minlength="6" required />
+          </label>
+          <p id="setup-error" class="form-error" role="alert"></p>
+          <button type="submit" class="btn btn-primary">Create account</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ===== Dashboard view ===== -->
+    <section id="dashboard-view" class="view hidden">
+      <header class="topbar">
+        <h1 class="brand">HomePage</h1>
+        <div class="topbar-actions">
+          <span id="user-label" class="muted"></span>
+          <button id="toggle-mode" class="btn">Edit</button>
+          <button id="logout-btn" class="btn btn-ghost">Logout</button>
+        </div>
+      </header>
+
+      <div id="editor-palette" class="palette hidden">
+        <h3>Add widget</h3>
+        <div id="palette-list" class="palette-list"></div>
+      </div>
+
+      <main id="grid-wrap" class="grid-wrap">
+        <div id="grid-container" class="grid-stack"></div>
+      </main>
+    </section>
+
+  </div>
+
+  <script src="/vendor/gridstack/gridstack.min.js"></script>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
