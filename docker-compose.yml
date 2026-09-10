@@ -9,8 +9,10 @@ services:
       - "3000:3000"
     volumes:
       # Runtime data (bcrypt hash, JWT secret, backgrounds).
-      # Must be writable by uid 1000 — see README before the first start:
-      #   mkdir -p data && chown -R 1000:1000 data
+      # No host-side chown needed: the entrypoint starts as root, fixes the
+      # ownership to uid/gid 1000, then drops privileges before starting Node
+      # (see docker-entrypoint.sh). A named volume (`- homy-data:/data`) works
+      # too, if you prefer.
       - ./data:/data
     environment:
       - PORT=3000

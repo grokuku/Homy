@@ -81,22 +81,21 @@ ghcr.io/grokuku/homy:<version>
 ### Quick start (Docker Compose)
 
 ```bash
-mkdir -p data && sudo chown -R 1000:1000 data
 docker compose up -d
 ```
 
-> ⚠️ The container runs **unprivileged as uid/gid 1000**. The mounted data directory
-> must be writable by that uid, otherwise startup fails with
-> `EACCES: permission denied, open '/data/config.json.tmp'`.
-> If you would rather not manage host permissions, swap the bind mount for a named
-> volume in `docker-compose.yml` (`- homy-data:/data` + a `volumes: homy-data:` key).
+> ℹ️ **Permissions**: the container runs **unprivileged as uid/gid 1000**, and Node never
+> runs as root. Its entrypoint briefly starts as root to `chown -R 1000:1000` the
+> mounted data directory, then drops privileges via `su-exec` before starting the app —
+> so bind mounts owned by root work out of the box, with no manual `chown` on the host.
+> If you prefer the container not to touch host permissions at all, swap the bind mount
+> for a named volume in `docker-compose.yml` (`- homy-data:/data` + a `volumes: homy-data:` key).
 
 Then open http://localhost:3000 — the first page is the setup screen (create the admin account).
 
 ### Quick start (plain Docker)
 
 ```bash
-mkdir -p data && sudo chown -R 1000:1000 data
 docker run -d --name homy \
   --restart unless-stopped \
   -p 3000:3000 \
@@ -108,7 +107,7 @@ docker run -d --name homy \
 
 | Mount / variable | Default | Notes |
 | --- | --- | --- |
-| `/data` (volume) | — | `DATA_DIR`. Holds `config.json` (bcrypt hash + JWT signature secret), `layout.json` and uploaded backgrounds. **Must be mounted**, otherwise everything is lost on image upgrade. |
+| `/data` (volume) | — | `DATA_DIR`. Holds `config.json` (bcrypt hash + JWT signature secret), `layout.json` and uploaded backgrounds. **Must be mounted**, otherwise everything is lost on image upgrade. Ownership to uid/gid 1000 is fixed by the entrypoint at startup (see above). |
 | `PORT` | `3000` | HTTP port inside the container |
 | `DATA_DIR` | `/data` | Set by the image |
 | `JWT_SECRET` | auto-generated | Persisted to `/data/config.json` on first run — set it only to inject your own |
@@ -151,7 +150,8 @@ both builds as the `VERSION` build arg (`GIT_COMMIT` receives the short commit h
 ## Project structure
 
 ```
-Dockerfile                 # Node image, unprivileged (uid 1000), HEALTHCHECK
+Dockerfile                 # Node image: starts as root, entrypoint chowns /data then drops to uid 1000, HEALTHCHECK
+docker-entrypoint.sh       # fixes data volume ownership, then su-exec → CMD as uid/gid 1000
 .dockerignore              # keeps data/, node_modules/ and .env out of the context
 docker-compose.yml         # deployment: bind mount ./data, port 3000
 version.txt                # single source of truth for the version (CI)
