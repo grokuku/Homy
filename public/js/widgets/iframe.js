@@ -14,7 +14,7 @@ export const iframe = {
       { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Widget title' },
       { key: 'url', label: 'URL', type: 'url', default: '', required: true, placeholder: 'https://…' },
       { key: 'sandbox', label: 'Sandbox (restrict content)', type: 'toggle', default: true },
-      { key: 'height', label: 'Height (px)', type: 'number', default: 400, min: 100, max: 2000, step: 10 },
+      { key: 'height', label: 'Height', type: 'range', default: 400, min: 100, max: 2000, step: 10, unit: 'px' },
     ],
   },
 

@@ -25,7 +25,10 @@ export function renderViewer(container, items) {
       y: item.y,
       w: item.w,
       h: item.h,
-      content: '<div></div>',
+      // Gridstack's default renderCB assigns `content` via textContent, so any
+      // markup here would surface as literal text. Widgets render themselves
+      // into .grid-stack-item-content, so keep this empty.
+      content: '',
     }))
   );
 

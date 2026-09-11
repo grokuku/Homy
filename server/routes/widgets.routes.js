@@ -6,10 +6,12 @@ import { Hono } from 'hono';
  * frontend can render, add to the grid, and configure via its declarative
  * `settingsSchema`.
  *
- * settingsSchema field types: text | number | select | url | icon | color |
+ * settingsSchema field types: text | number | range | select | url | icon | color |
  * toggle | textarea | list. Each field: { key, label, type, default, options?,
- * placeholder?, required?, min?, max?, step?, help? }. A `list` field carries
- * a nested `fields` array describing each row.
+ * placeholder?, required?, min?, max?, step?, unit?, help? }. A `list` field
+ * carries a nested `fields` array describing each row. `range` = numeric field
+ * rendered as a slider (live value + unit) by the generic config modal; the
+ * stored config value stays a number, exactly like `number`.
  */
 
 /**
@@ -20,7 +22,7 @@ import { Hono } from 'hono';
  */
 const APPEARANCE_FIELDS = [
   { key: 'bgColor', label: 'Background color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
-  { key: 'bgOpacity', label: 'Background opacity (%)', type: 'number', default: 100, min: 0, max: 100, step: 1, help: 'Requires a background color' },
+  { key: 'bgOpacity', label: 'Background opacity', type: 'range', default: 100, min: 0, max: 100, step: 1, unit: '%', help: 'Requires a background color' },
   { key: 'borderColor', label: 'Border color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
   { key: 'textColor', label: 'Text color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
 ];
@@ -130,7 +132,7 @@ const WIDGET_MANIFEST = [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Widget title' },
         { key: 'url', label: 'URL', type: 'url', default: '', required: true, placeholder: 'https://…' },
         { key: 'sandbox', label: 'Sandbox (restrict content)', type: 'toggle', default: true },
-        { key: 'height', label: 'Height (px)', type: 'number', default: 400, min: 100, max: 2000, step: 10 },
+        { key: 'height', label: 'Height', type: 'range', default: 400, min: 100, max: 2000, step: 10, unit: 'px' },
       ],
     },
   },

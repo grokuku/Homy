@@ -420,6 +420,65 @@ body[data-bg-active] .grid-stack-item-content {
 .config-form .shortcut-row input { flex: 1; }
 .config-form .shortcut-row .remove-shortcut { flex: 0 0 auto; }
 
+/* ---------- Sliders (mock homy-bg-modal-mock.html) ----------
+   Piste fine (4px), poignée accent, label à gauche + valeur live alignée à
+   droite (tabular-nums), aide sous le champ. Thème via tokens (--accent,
+   --border) : suit le switch sombre/clair. Les inputs existants gardent leur
+   style boîte : seul input[type=range] est détouré ci-dessous. */
+.config-form input[type='range'] {
+  width: 100%;
+  height: 20px;
+  padding: 0;
+  margin: 2px 0;
+  border: 0;
+  background: none;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.config-form input[type='range']:focus { outline: none; }
+.config-form input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+}
+.config-form input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px; /* centre la poignée sur la piste de 4px */
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.config-form input[type='range']:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.config-form input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+}
+.config-form input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+/* Valeur live, alignée à droite dans la ligne de label (« 1.0 », « 0 px »…).
+   Imbriquée dans le span du label : neutralise la marge basse héritée de
+   `.config-form label span` et force la couleur pleine (vs texte muted). */
+.config-form .field-val {
+  float: right;
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- Background modal (lot 3) ---------- */
 .bg-section-title { margin: 4px 0 10px; font-size: 14px; color: var(--text-muted); }
 .bg-thumbs {
@@ -471,7 +530,6 @@ body[data-bg-active] .grid-stack-item-content {
   background: var(--bg);
 }
 .bg-preview canvas { display: block; width: 100%; height: 100%; }
-.bg-help { display: block; margin: -6px 0 12px; font-size: 12px; color: var(--text-muted); }
 .bg-swatches { display: flex; gap: 6px; margin-top: 8px; }
 .bg-swatches i {
   width: 22px;

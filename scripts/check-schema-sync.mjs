@@ -24,7 +24,7 @@ const { registry, getSettingsSchema } = await import('../public/js/widgets/regis
 function normField(f) {
   if (!f || typeof f !== 'object') return f;
   const out = {};
-  for (const k of ['key', 'label', 'type', 'default', 'options', 'placeholder', 'required', 'min', 'max', 'step', 'help', 'rows', 'itemLabel']) {
+  for (const k of ['key', 'label', 'type', 'default', 'options', 'placeholder', 'required', 'min', 'max', 'step', 'unit', 'help', 'rows', 'itemLabel']) {
     if (f[k] !== undefined) out[k] = f[k];
   }
   if (Array.isArray(f.fields)) out.fields = f.fields.map(normField);

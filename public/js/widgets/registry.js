@@ -32,7 +32,7 @@ export const registry = {
  */
 export const APPEARANCE_FIELDS = [
   { key: 'bgColor', label: 'Background color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
-  { key: 'bgOpacity', label: 'Background opacity (%)', type: 'number', default: 100, min: 0, max: 100, step: 1, help: 'Requires a background color' },
+  { key: 'bgOpacity', label: 'Background opacity', type: 'range', default: 100, min: 0, max: 100, step: 1, unit: '%', help: 'Requires a background color' },
   { key: 'borderColor', label: 'Border color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
   { key: 'textColor', label: 'Text color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
 ];
@@ -102,6 +102,12 @@ const cleanups = new WeakMap(); // container -> cleanup fn returned by a widget 
 
 export function renderWidget(container, item) {
   disposeWidget(container);
+  // Clear the container before re-rendering: gridstack seeds
+  // .grid-stack-item-content via its default renderCB (textContent = content),
+  // and re-renders (config save, view/edit switch) must not stack stale DOM on
+  // top of the previous render. We own this container, so nothing user-owned is
+  // lost by clearing it.
+  container.replaceChildren();
   applyAppearance(container, item?.config || {});
   const w = getWidget(item?.type);
   if (!w) {

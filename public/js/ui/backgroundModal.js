@@ -66,8 +66,8 @@ export function openBackgroundModal({ settings, onSaved }) {
   fileInput.id = 'bg-file-input';
   fileInput.className = 'bg-file-input';
   const uploadBtn = el('button', 'btn', 'Upload', { type: 'button' });
-  const blurInput = numberField('Blur (px)', 0, 20, 1, img.blur ?? 0);
-  const dimInput = numberField('Dim overlay (%)', 0, 80, 5, img.dim ?? 0);
+  const blurInput = rangeField('Blur', 0, 20, 1, img.blur ?? 0, { unit: 'px' });
+  const dimInput = rangeField('Dim overlay', 0, 80, 5, img.dim ?? 0, { unit: '%' });
   const fixedInput = el('input', null, null, { type: 'checkbox' });
   fixedInput.checked = !!img.fixed;
 
@@ -157,10 +157,14 @@ export function openBackgroundModal({ settings, onSaved }) {
   }
   presetSel.value = 'equilibre';
 
-  const speedInput = numberField('Speed', 0, 3, 0.1, proc.speed ?? 1);
-  const densityInput = numberField('Density (intensity 1-100)', 1, 100, 1, proc.density ?? 10);
-  const opacityInput = numberField('Opacity', 0, 1, 0.05, proc.opacity ?? 1);
-  const procBlurInput = numberField('Blur (px — softens the whole background)', 0, 40, 1, proc.blur ?? 0);
+  const speedInput = rangeField('Speed', 0, 3, 0.1, proc.speed ?? 1);
+  const densityHelp = el('span', 'field-help');
+  const densityInput = rangeField('Density', 1, 100, 1, proc.density ?? 10, { helpEl: densityHelp });
+  const opacityInput = rangeField('Opacity', 0, 1, 0.05, proc.opacity ?? 1);
+  const procBlurInput = rangeField('Blur', 0, 40, 1, proc.blur ?? 0, {
+    unit: 'px',
+    help: 'Softens the whole background (global gaussian blur) without touching the rest of the page.',
+  });
   const linksInput = el('input', null, null, { type: 'checkbox' });
   linksInput.checked = proc.links !== false;
   const linksWrap = toggleWrap('Particle links', linksInput);
@@ -193,7 +197,6 @@ export function openBackgroundModal({ settings, onSaved }) {
   const previewCanvas = el('canvas');
   const previewWrap = el('div', 'bg-preview');
   previewWrap.appendChild(previewCanvas);
-  const densityHelp = el('span', 'bg-help');
 
   /** Valeur numérique d'un champ (repli si vide / NaN). */
   function num(input, fallback) {
@@ -240,6 +243,9 @@ export function openBackgroundModal({ settings, onSaved }) {
     const n = HolafAmbient.elementCount(genSel.value, num(densityInput.input, 10));
     const unit = genSel.value === 'particles' ? 'particles' : genSel.value === 'aurora' ? 'glows' : 'ribbons';
     densityHelp.textContent = `≈ ${n} ${unit}`;
+    // Badges de valeur : un preset (ou le change de générateur) écrit les
+    // valeurs directement dans les inputs sans événement input → re-sync.
+    for (const f of [speedInput, densityInput, opacityInput, procBlurInput]) f.sync();
     linksWrap.classList.toggle('hidden', genSel.value !== 'particles');
     swatches.replaceChildren(
       ...parsedColors().map((hex) => {
@@ -277,7 +283,6 @@ export function openBackgroundModal({ settings, onSaved }) {
     fieldWrap('Mood preset', presetSel),
     speedInput.wrap,
     densityInput.wrap,
-    densityHelp,
     opacityInput.wrap,
     procBlurInput.wrap,
     linksWrap,
@@ -417,8 +422,54 @@ function toggleWrap(label, input) {
   return labelEl;
 }
 
-function numberField(label, min, max, step, value) {
-  const input = el('input', null, null, { type: 'number', min: String(min), max: String(max), step: String(step) });
+/**
+ * Slider field (mock homy-bg-modal-mock.html): fine track + accent handle,
+ * label on the left, LIVE value right-aligned inside the label row (e.g.
+ * « 1.0 », « 0 px », « 40 % »), optional help / dynamic help below the track.
+ * Value formatting derives the decimal count from `step` (0.1 → « 1.0 »,
+ * 0.05 → « 1.00 », integers stay integers) — exactly the mock's formatting.
+ */
+function decimalsOf(step) {
+  const s = String(step ?? 1);
+  const i = s.indexOf('.');
+  return i === -1 ? 0 : s.length - i - 1;
+}
+
+function formatRange(input, opts) {
+  const n = Number(input.value);
+  const txt = Number.isFinite(n) ? n.toFixed(decimalsOf(opts.step)) : String(input.value);
+  return opts.unit ? `${txt} ${opts.unit}` : txt;
+}
+
+function rangeField(label, min, max, step, value, opts = {}) {
+  // Merge step into the formatter options (decimals of the badge derive from it).
+  const fmtOpts = { step, unit: opts.unit, help: opts.help, helpEl: opts.helpEl };
+  const input = el('input', null, null, { type: 'range', min: String(min), max: String(max), step: String(step) });
   input.value = String(value);
-  return { input, wrap: fieldWrap(label, input) };
+  const valEl = el('span', 'field-val', formatRange(input, fmtOpts));
+  const labelEl = el('label');
+  const labelSpan = el('span', null, label);
+  labelSpan.appendChild(valEl);
+  labelEl.append(labelSpan, input);
+  let helpEl = null;
+  if (typeof fmtOpts.help === 'string') {
+    helpEl = el('span', 'field-help', fmtOpts.help);
+    labelEl.appendChild(helpEl);
+  } else if (fmtOpts.helpEl) {
+    // Dynamic help (e.g. density's « ≈ N ribbons »): caller keeps the element
+    // and refreshes its text; it lives INSIDE the label, under the track.
+    helpEl = fmtOpts.helpEl;
+    labelEl.appendChild(helpEl);
+  }
+  input.addEventListener('input', () => {
+    valEl.textContent = formatRange(input, fmtOpts);
+  });
+  return {
+    input,
+    wrap: labelEl,
+    /** Re-rend the value badge (used when a preset sets input.value directly). */
+    sync() {
+      valEl.textContent = formatRange(input, fmtOpts);
+    },
+  };
 }

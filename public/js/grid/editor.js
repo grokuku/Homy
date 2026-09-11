@@ -32,7 +32,10 @@ export function initEditor(container, items, { onSave }) {
       y: item.y,
       w: item.w,
       h: item.h,
-      content: '<div></div>',
+      // Gridstack's default renderCB assigns `content` via textContent, so any
+      // markup here would surface as literal text. Widgets render themselves
+      // into .grid-stack-item-content, so keep this empty.
+      content: '',
     }))
   );
 
@@ -75,7 +78,8 @@ export function initEditor(container, items, { onSave }) {
       y: 0,
       w: size.w,
       h: size.h,
-      content: '<div></div>',
+      // See grid.load() above: content is assigned via textContent by gridstack.
+      content: '',
     });
     meta.set(id, { type, config: {} });
     const itemEl = grid.engine.nodes.find((n) => n.id === id)?.el;

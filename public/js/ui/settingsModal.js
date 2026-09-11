@@ -7,9 +7,12 @@ import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
  * Generic settings modal. Builds a form automatically from a widget's
  * declarative `settingsSchema` — no per-widget UI code.
  *
- * Supported field types: text | number | select | url | icon | color | toggle |
- * textarea | list. A `list` field carries a nested `fields` array describing
- * each row (e.g. used by shortcut/links).
+ * Supported field types: text | number | range | select | url | icon | color |
+ * toggle | textarea | list. A `list` field carries a nested `fields` array
+ * describing each row (e.g. used by shortcut/links). `range` renders a numeric
+ * field (min/max/step, optional `unit`) as a slider with a live right-aligned
+ * value badge — the mock look of the Background modal. `number` stays a plain
+ * number input (retro-compatible).
  *
  * On save it PATCHes `/api/layout/items/:id/config`, then calls `onSaved` with
  * the new config so the caller can re-render the widget.
@@ -98,7 +101,10 @@ function buildField(f, value, controls) {
   const wrap = el('div', 'field');
   const label = el('label');
   label.appendChild(el('span', null, f.label));
-  if (f.help) label.appendChild(el('small', 'field-help', f.help));
+  // Help is rendered BELOW the slider for `range` fields (mock look), above
+  // the input for every other type.
+  const helpEl = f.help ? el('small', 'field-help', f.help) : null;
+  if (helpEl && f.type !== 'range') label.appendChild(helpEl);
 
   let input;
   switch (f.type) {
@@ -108,6 +114,21 @@ function buildField(f, value, controls) {
       if (f.max !== undefined) input.max = f.max;
       if (f.step !== undefined) input.step = f.step;
       input.value = value ?? f.default ?? '';
+      break;
+    }
+    case 'range': {
+      input = el('input', null, null, { type: 'range' });
+      if (f.min !== undefined) input.min = f.min;
+      if (f.max !== undefined) input.max = f.max;
+      if (f.step !== undefined) input.step = f.step;
+      input.value = String(value ?? f.default ?? f.min ?? 0);
+      // Live value, right-aligned inside the label row (e.g. « 100 % »,
+      // « 400 px »), updated on every input event while dragging.
+      const valEl = el('span', 'field-val', rangeText(input, f));
+      input.addEventListener('input', () => {
+        valEl.textContent = rangeText(input, f);
+      });
+      label.querySelector('span').appendChild(valEl);
       break;
     }
     case 'select': {
@@ -167,9 +188,24 @@ function buildField(f, value, controls) {
 
   if (f.required) input.setAttribute('required', '');
   label.appendChild(input);
+  if (helpEl && f.type === 'range') label.appendChild(helpEl);
   wrap.appendChild(label);
   controls[f.key] = { field: f, input };
   return wrap;
+}
+
+/**
+ * Live text for a range field's value badge: decimal count derived from
+ * `step` (0.1 → « 1.0 », 0.05 → « 1.00 », integers stay integers) + optional
+ * `unit` suffix (« 0 px », « 40 % ») — the Background-modal mock formatting.
+ */
+function rangeText(input, f) {
+  const s = String(f.step ?? 1);
+  const i = s.indexOf('.');
+  const decimals = i === -1 ? 0 : s.length - i - 1;
+  const n = Number(input.value);
+  const txt = Number.isFinite(n) ? n.toFixed(decimals) : String(input.value);
+  return f.unit ? `${txt} ${f.unit}` : txt;
 }
 
 function buildListField(f, value, controls) {
@@ -249,7 +285,8 @@ function collect(fields, controls) {
     const input = c.input;
     let val;
     switch (f.type) {
-      case 'number': {
+      case 'number':
+      case 'range': {
         if (input.value === '') {
           if (f.required) return { ok: false, error: `${f.label} is required` };
           val = undefined;
