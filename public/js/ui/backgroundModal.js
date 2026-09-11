@@ -88,7 +88,7 @@ export function openBackgroundModal({ settings, onSaved }) {
       const item = el('div', 'bg-thumb' + (f.name === selectedName ? ' selected' : ''));
       item.dataset.name = f.name;
       const imgEl = el('img', null, null, { src: f.url, alt: f.name, loading: 'lazy' });
-      const del = el('button', 'bg-thumb-del', '✕', { type: 'button', title: 'Delete background' });
+      const del = el('button', 'bg-thumb-del', '✕', { type: 'button', title: 'Delete background', 'aria-label': 'Delete background' });
       item.append(imgEl, del);
       item.addEventListener('click', (e) => {
         if (e.target === del) return;

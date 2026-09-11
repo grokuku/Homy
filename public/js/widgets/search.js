@@ -1,4 +1,4 @@
-import { el } from '../util.js';
+import { el, isValidHttpUrl } from '../util.js';
 
 const ENGINES = {
   google: 'https://www.google.com/search?q={q}',
@@ -32,7 +32,7 @@ export const search = {
       {
         key: 'customUrl',
         label: 'Custom search URL (with {q})',
-        type: 'text',
+        type: 'url',
         default: '',
         placeholder: 'https://example.com/search?q={q}',
       },
@@ -58,7 +58,10 @@ export const search = {
       const q = input.value.trim();
       if (!q) return;
       let url;
-      if (engine === 'custom') {
+      // Only honor the custom engine when customUrl is a valid http(s) URL
+      // (blocks javascript: URIs — XSS). Otherwise fall back to the default.
+      const useCustom = engine === 'custom' && isValidHttpUrl(customUrl);
+      if (useCustom) {
         url = customUrl.replace('{q}', encodeURIComponent(q));
       } else {
         url = (ENGINES[engine] || ENGINES.google).replace('{q}', encodeURIComponent(q));

@@ -183,7 +183,7 @@ const WIDGET_MANIFEST = [
         {
           key: 'customUrl',
           label: 'Custom search URL (with {q})',
-          type: 'text',
+          type: 'url',
           default: '',
           placeholder: 'https://example.com/search?q={q}',
         },
@@ -234,7 +234,7 @@ const WIDGET_MANIFEST = [
 ];
 
 // Merge the shared appearance section into every widget's settingsSchema.
-const WIDGET_MANIFEST_FINAL = WIDGET_MANIFEST.map((w) => ({
+export const WIDGET_MANIFEST_FINAL = WIDGET_MANIFEST.map((w) => ({
   ...w,
   settingsSchema: {
     ...w.settingsSchema,

@@ -53,15 +53,33 @@ weatherRoutes.get('/', async (c) => {
     };
 
     cache.set(cacheKey, { data, expires: Date.now() + CACHE_TTL_MS });
+    purgeCache();
     return c.json(data);
   } catch (err) {
-    console.error('[weather]', err.message);
+    console.error('[weather]', err?.message || err);
     return c.json({ error: 'Weather service unavailable' }, 502);
   }
 });
 
+/** Drop expired entries so the Map cannot grow unbounded once it grows past 50. */
+function purgeCache() {
+  if (cache.size <= 50) return;
+  const now = Date.now();
+  for (const [key, entry] of cache) {
+    if (entry.expires <= now) cache.delete(key);
+  }
+}
+
 async function fetchJson(url) {
-  const res = await fetch(url);
+  let res;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  } catch (err) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error('open-meteo request timed out');
+    }
+    throw new Error('open-meteo unreachable');
+  }
   if (!res.ok) throw new Error(`upstream ${res.status}`);
   return res.json();
 }

@@ -46,6 +46,16 @@ jobs:
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Check widget settingsSchemas (server ↔ front)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install + run schema sync check
+        run: |
+          npm ci
+          npm run check:schema
+
       - name: Build and push (test)
         uses: docker/build-push-action@v7
         with:

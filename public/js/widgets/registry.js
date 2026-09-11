@@ -94,16 +94,40 @@ export function applyAppearance(container, config) {
 
 /**
  * Render a widget into a container. Clears the container first (safe: we
- * control the container, no user data is cleared via innerHTML). Returns an
- * optional cleanup function.
+ * control the container, no user data is cleared via innerHTML). Runs the
+ * previous cleanup (if any) before re-rendering so timers/RAF loops from an
+ * earlier render never leak. Returns an optional cleanup function.
  */
+const cleanups = new WeakMap(); // container -> cleanup fn returned by a widget render
+
 export function renderWidget(container, item) {
-  container.replaceChildren();
+  disposeWidget(container);
   applyAppearance(container, item?.config || {});
   const w = getWidget(item?.type);
   if (!w) {
     container.appendChild(el('p', 'muted', `Unknown widget: ${item?.type || '?'}`));
     return null;
   }
-  return w.render(container, item?.config || {}, item);
+  const cleanup = w.render(container, item?.config || {}, item);
+  if (typeof cleanup === 'function') cleanups.set(container, cleanup);
+  else cleanups.delete(container);
+  return cleanup;
+}
+
+/**
+ * Run (and drop) the cleanup fn associated with a container, if any. Call this
+ * on every destroy path (grid destroy, widget removal, container teardown) so
+ * widget timers (clock/weather interval, preview RAF loops, …) never leak.
+ */
+export function disposeWidget(container) {
+  if (!container) return;
+  const cleanup = cleanups.get(container);
+  if (typeof cleanup === 'function') {
+    try {
+      cleanup();
+    } catch (err) {
+      console.error('[widget] cleanup failed:', err);
+    }
+  }
+  cleanups.delete(container);
 }

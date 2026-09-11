@@ -37,6 +37,9 @@ admin user/password (first-run setup).
 | `JWT_SECRET` | auto-generated | JWT signing secret (persisted to `data/config.json`) |
 | `JWT_EXPIRES_IN` | `7d` | JWT expiration (e.g. `1h`, `7d`) |
 | `BCRYPT_ROUNDS` | `12` | bcrypt cost factor |
+| `TRUST_PROXY` | `false` | Set to `true` ONLY when running behind a reverse proxy you control (e.g. nginx/traefik/Caddy). When enabled, the rate-limit resolver reads the client IP from the `x-forwarded-for` header instead of the TCP peer address. Leave `false`/unset otherwise so the limit cannot be bypassed by spoofing that header. |
+
+> **JWT_SECRET rotation.** The signing secret is persisted to `data/config.json` on first run, and the persisted value wins over `JWT_SECRET` afterwards. To rotate it: **either** set `JWT_SECRET` (env) *before* the very first start, **or** edit/delete the `jwtSecret` field inside `data/config.json` (rotating invalidates all previously issued tokens).
 
 ## API overview
 
@@ -44,7 +47,7 @@ Public:
 - `GET /api/health` — liveness
 - `GET /api/auth/status` — first-run? (`{ firstRun: true }`)
 - `POST /api/auth/setup` — create admin user (only when not configured)
-- `POST /api/auth/login` — returns JWT (rate-limited: 5 tries / 15 min / IP)
+- `POST /api/auth/login` — returns JWT (rate-limited: 5 tries / 15 min / IP; honors `x-forwarded-for` only when `TRUST_PROXY=true`)
 
 Protected (JWT required):
 - `POST /api/auth/logout`
@@ -183,6 +186,7 @@ version.txt                # single source of truth for the version (CI)
 .github/workflows/         # test-build.yml + release.yml (manual, ghcr.io)
 scripts/
   check-schema-sync.mjs    # fails if the duplicated widget settingsSchema drifts (server ↔ front)
+                           #   run via: npm run check:schema
 server/
   index.js                 # Hono bootstrap, static, routes, error handler
   config.js                # env + config.json loader

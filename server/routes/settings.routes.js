@@ -1,16 +1,16 @@
 import { Hono } from 'hono';
-import { THEMES, ValidationError } from '../services/settings.service.js';
+import { ValidationError } from '../services/settings.service.js';
 
 /**
  * Dashboard settings (theme + background). Persisted via SettingsService
  * (atomic JSON store). Mutations are JWT-protected and pass through the
  * global Origin check (see index.js).
+ *
+ * NOTE: available themes are served by GET /api/themes (see index.js). This
+ * router intentionally does NOT expose /themes (it was a duplicate).
  */
 export function settingsRoutes(settingsService) {
   const routes = new Hono();
-
-  // Available themes (static list, consumed by the frontend toolbar).
-  routes.get('/themes', (c) => c.json({ themes: THEMES }));
 
   routes.get('/', (c) => c.json(settingsService.get()));
 

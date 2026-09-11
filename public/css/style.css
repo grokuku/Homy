@@ -372,28 +372,7 @@ body[data-bg-active] .grid-stack-item-content {
 .weather-wind { color: var(--text-muted); font-size: 0.85em; }
 .weather-loading { color: var(--text-muted); font-size: 0.9em; }
 
-/* ---------- Modal ---------- */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-}
-.modal {
-  width: 100%;
-  max-width: 440px;
-  max-height: 80vh;
-  overflow: auto;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 20px;
-  box-shadow: var(--shadow);
-}
-.modal h3 { margin: 0 0 16px; }
+/* ---------- Modal (dead) removed ---------- */
 .config-form label { display: block; margin-bottom: 12px; }
 .config-form label span { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-muted); }
 .config-form input, .config-form textarea {
@@ -440,7 +419,6 @@ body[data-bg-active] .grid-stack-item-content {
 .config-form .shortcut-row { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; }
 .config-form .shortcut-row input { flex: 1; }
 .config-form .shortcut-row .remove-shortcut { flex: 0 0 auto; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 
 /* ---------- Background modal (lot 3) ---------- */
 .bg-section-title { margin: 4px 0 10px; font-size: 14px; color: var(--text-muted); }
@@ -502,29 +480,3 @@ body[data-bg-active] .grid-stack-item-content {
   border-radius: 6px;
 }
 .bg-error { color: var(--danger); font-size: 13px; min-height: 18px; margin: 8px 0 0; }
-
-/* ---------- Toasts ---------- */
-.toast-container {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  z-index: 100;
-}
-.toast {
-  padding: 10px 16px;
-  border-radius: 8px;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  font-size: 14px;
-  box-shadow: var(--shadow);
-  opacity: 0;
-  transform: translateY(8px);
-  transition: opacity 0.25s, transform 0.25s;
-}
-.toast.show { opacity: 1; transform: translateY(0); }
-.toast-success { border-color: #2e9e5b; }
-.toast-error { border-color: var(--danger); }

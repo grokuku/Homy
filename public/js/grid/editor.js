@@ -1,4 +1,4 @@
-import { renderWidget, getWidget, getDefaultSize, getSettingsSchema } from '../widgets/registry.js';
+import { renderWidget, disposeWidget, getWidget, getDefaultSize, getSettingsSchema } from '../widgets/registry.js';
 import { openSettingsModal } from '../ui/settingsModal.js';
 import { api } from '../api.js';
 import { uuid, debounce, el } from '../util.js';
@@ -114,7 +114,11 @@ export function initEditor(container, items, { onSave }) {
   // ---- delete ----
   function removeWidget(id) {
     const node = grid.engine.nodes.find((n) => n.id === id);
-    if (node) grid.removeWidget(node.el, true);
+    if (node) {
+      const contentEl = node.el?.querySelector('.grid-stack-item-content');
+      if (contentEl) disposeWidget(contentEl);
+      grid.removeWidget(node.el, true);
+    }
     meta.delete(id);
     api.del(`/api/layout/items/${id}`).catch(() => {});
     save();
@@ -124,8 +128,8 @@ export function initEditor(container, items, { onSave }) {
     const contentEl = itemEl.querySelector('.grid-stack-item-content');
     if (!contentEl) return;
     const controls = el('div', 'widget-controls');
-    const editBtn = el('button', null, '⚙', { type: 'button', title: 'Edit' });
-    const delBtn = el('button', 'del', '✕', { type: 'button', title: 'Delete' });
+    const editBtn = el('button', null, '⚙', { type: 'button', title: 'Edit', 'aria-label': 'Edit' });
+    const delBtn = el('button', 'del', '✕', { type: 'button', title: 'Delete', 'aria-label': 'Delete' });
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       openConfig(id);
@@ -142,6 +146,11 @@ export function initEditor(container, items, { onSave }) {
   return {
     addWidget,
     destroy() {
+      // Dispose every widget's cleanup (timers) before gridstack tears the DOM down.
+      for (const node of grid.engine.nodes) {
+        const contentEl = node.el?.querySelector('.grid-stack-item-content');
+        if (contentEl) disposeWidget(contentEl);
+      }
       grid.destroy();
     },
   };

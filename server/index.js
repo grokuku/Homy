@@ -95,8 +95,14 @@ app.use('*', serveStatic({ root: PUBLIC_DIR, path: 'index.html' }));
 // ---- Error handler ---------------------------------------------------------
 
 app.onError((err, c) => {
-  console.error('[error]', err);
-  return c.json({ error: err.message || 'Internal server error' }, 500);
+  console.error('[error]', err?.stack || err);
+  // Propagate HTTP errors the app raised intentionally (e.g. 400/404/413),
+  // otherwise fall back to a generic 500 without leaking err.message.
+  const status = Number(err?.status);
+  if (Number.isInteger(status) && status >= 400 && status < 500) {
+    return c.json({ error: err.message || 'Bad request' }, status);
+  }
+  return c.json({ error: 'Internal server error' }, 500);
 });
 
 app.notFound((c) => c.json({ error: 'Not found' }, 404));

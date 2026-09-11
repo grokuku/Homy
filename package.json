@@ -10,7 +10,8 @@
   },
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js"
+    "dev": "node --watch server/index.js",
+    "check:schema": "node scripts/check-schema-sync.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",

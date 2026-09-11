@@ -20,7 +20,7 @@ export const api = {
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    return this._handle(res);
+    return this._handle(res, path);
   },
 
   /**
@@ -31,11 +31,21 @@ export const api = {
     const headers = {};
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
     const res = await fetch(path, { method: 'POST', headers, body: formData });
-    return this._handle(res);
+    return this._handle(res, path);
   },
 
-  async _handle(res) {
-    if (res.status === 401) {
+  // Never fire 'auth:expired' for the auth endpoints themselves — a failed
+  // login (401) must not kick the user back to the login view from login.
+  _authPath(path) {
+    return (
+      path === '/api/auth/login' ||
+      path === '/api/auth/setup' ||
+      path === '/api/auth/status'
+    );
+  },
+
+  async _handle(res, path = '') {
+    if (res.status === 401 && !this._authPath(path)) {
       window.dispatchEvent(new CustomEvent('auth:expired'));
     }
 

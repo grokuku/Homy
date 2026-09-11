@@ -69,12 +69,25 @@ function formatTime(date, format, tz) {
     format === '12h'
       ? { hour: 'numeric', minute: '2-digit', second: '2-digit' }
       : { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-  if (tz) opts.timeZone = tz;
-  return date.toLocaleTimeString(undefined, opts);
+  return formatWithTimezone(date, opts, tz, (o) => date.toLocaleTimeString(undefined, o));
 }
 
 function formatDate(date, tz) {
   const opts = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-  if (tz) opts.timeZone = tz;
-  return date.toLocaleDateString(undefined, opts);
+  return formatWithTimezone(date, opts, tz, (o) => date.toLocaleDateString(undefined, o));
+}
+
+/**
+ * Format with a timezone, falling back to the local timezone if the IANA name
+ * is invalid (RangeError). Guards the per-second clock tick so a bad timezone
+ * config can never crash the widget rendering every second.
+ */
+function formatWithTimezone(date, opts, tz, formatter) {
+  if (!tz) return formatter(opts);
+  try {
+    return formatter({ ...opts, timeZone: tz });
+  } catch {
+    // Invalid IANA timezone — fall back to local-time formatting.
+    return formatter(opts);
+  }
 }
