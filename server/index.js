@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { serverConfig } from './config.js';
 import { authGuard } from './middleware/auth.middleware.js';
@@ -9,6 +10,9 @@ import { authRoutes } from './routes/auth.routes.js';
 import { layoutRoutes } from './routes/layout.routes.js';
 import { widgetRoutes } from './routes/widgets.routes.js';
 import { weatherRoutes } from './routes/weather.routes.js';
+import { backgroundRoutes, serveBackgroundFile } from './routes/backgrounds.routes.js';
+import { settingsRoutes } from './routes/settings.routes.js';
+import { SettingsService, BG_NAME_RE, THEMES } from './services/settings.service.js';
 import { Store } from './services/store.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -64,10 +68,24 @@ app.use('/api/*', async (c, next) => {
 
 const store = new Store(serverConfig.dataDir);
 
+// Background images live in DATA_DIR/backgrounds/<uuid>.<ext>.
+const backgroundsDir = path.join(serverConfig.dataDir, 'backgrounds');
+const backgroundExists = (name) => BG_NAME_RE.test(name) && existsSync(path.join(backgroundsDir, name));
+const settingsService = new SettingsService(store, backgroundExists);
+
 app.route('/api/auth', authRoutes);
 app.route('/api/layout', layoutRoutes(store));
 app.route('/api/widgets', widgetRoutes);
 app.route('/api/weather', weatherRoutes);
+app.route('/api/settings', settingsRoutes(settingsService));
+app.route('/api/backgrounds', backgroundRoutes(settingsService, serverConfig.dataDir));
+app.get('/api/themes', (c) => c.json({ themes: THEMES }));
+
+// ---- Public background file serving ----------------------------------------
+// Background images are PUBLIC by design: <img>/CSS layers cannot attach the
+// JWT. Files are stored under unpredictable UUID names (see README Security
+// notes) and served with a strict name validation + whitelisted Content-Type.
+app.get('/backgrounds/:name', serveBackgroundFile(serverConfig.dataDir));
 
 // ---- Static frontend -------------------------------------------------------
 

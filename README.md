@@ -4,14 +4,16 @@ Custom self-hosted browser homepage dashboard (Fenrus replacement). Single-user,
 zero build step (Vanilla JS + CSS Grid), gridstack.js editable grid, JWT auth,
 atomic JSON file storage.
 
-> **Status:** LOT 2 — advanced builtin widgets + generic settings modal (settingsSchema) +
-> enriched `/api/widgets` manifest. Server stats are **phase 2** (deferred, not implemented).
+> **Status:** LOT 3 — themes (dark/light via CSS tokens), translucent widget surfaces with
+> backdrop-blur, image & animated procedural backgrounds. Lots 1–2: editable grid, JWT auth,
+> builtin widgets, generic settings modal (settingsSchema). Server stats are **phase 2**
+> (deferred, not implemented).
 
 ## Stack
 
 - **Backend:** Node.js (>= 20) + Hono + `@hono/node-server`
 - **Auth:** JWT (`jsonwebtoken`), passwords hashed with `bcryptjs` (cost 12)
-- **Frontend:** Vanilla JS + CSS Grid, `gridstack.js` v13 (vendored locally)
+- **Frontend:** Vanilla JS + CSS Grid, `gridstack.js` v13 (vendored locally), plus holaf-lib bricks (modal/toast/color/tokens/ambient/icons vendored in `public/vendor/holaf/`)
 - **Storage:** atomic JSON files in `server/data/` (temp write + rename, `.bak` backup)
 - **Deploy:** Docker (documented below, not part of this lot)
 
@@ -52,6 +54,15 @@ Protected (JWT required):
 - `POST /api/layout/items`, `PATCH /api/layout/items/:id/config`, `DELETE /api/layout/items/:id`
 - `GET /api/widgets` — widget type manifest (id, name, icon, category, defaultSize, settingsSchema)
 - `GET /api/weather?city=…&units=metric|imperial` — weather proxy (open-meteo, no API key, cached 10 min)
+- `GET /api/themes` — available themes (`['dark', 'light']`)
+- `GET /api/settings` / `PUT /api/settings` — dashboard settings (theme, background); PUT validates strictly (400 on invalid values)
+- `POST /api/backgrounds` — multipart upload of a background image (png/jpg/jpeg/webp/avif, magic-bytes checked, max 10 MB, max 20 files)
+- `GET /api/backgrounds` — list uploaded backgrounds
+- `DELETE /api/backgrounds/:name` — delete one (409 if currently referenced by the settings)
+
+Public (by design):
+- `GET /backgrounds/:name` — the uploaded background images themselves. Served WITHOUT the JWT
+  because `<img>`/CSS layers cannot attach an Authorization header. See Security notes.
 
 ## Widgets
 
@@ -76,6 +87,8 @@ widgets without a custom appearance keep the default look.
 
 - `config.json` — auth config (user, bcrypt hash, JWT secret, expiry)
 - `layout.json` — grid layout (id/x/y/w/h/type/config)
+- `settings.json` — dashboard settings (`{ theme, background }`, lot 3)
+- `backgrounds/` — uploaded background images as `<uuid>.<ext>` (served publicly under `/backgrounds/`)
 - `*.bak` — previous version of each file (kept on write)
 
 Writes are atomic: write to `*.tmp`, then `rename()` over the target, then
@@ -168,32 +181,80 @@ docker-entrypoint.sh       # fixes data volume ownership, then su-exec → CMD a
 docker-compose.yml         # deployment: bind mount ./data, port 3000
 version.txt                # single source of truth for the version (CI)
 .github/workflows/         # test-build.yml + release.yml (manual, ghcr.io)
+scripts/
+  check-schema-sync.mjs    # fails if the duplicated widget settingsSchema drifts (server ↔ front)
 server/
   index.js                 # Hono bootstrap, static, routes, error handler
   config.js                # env + config.json loader
-  routes/                  # auth, layout, widgets
+  routes/                  # auth, layout, widgets, settings, backgrounds
   middleware/              # JWT guard, rate-limit
-  services/                # store (atomic JSON), auth
-  data/                    # runtime JSON storage (gitignored)
+  services/                # store (atomic JSON), auth, settings
+  data/                    # runtime JSON storage + backgrounds/ (gitignored)
 public/
-  index.html               # SPA: login view + dashboard view
-  css/                     # styles
+  index.html               # SPA: login view + dashboard view (+ anti-flash theme script)
+  css/style.css            # tokens (:root dark, [data-theme="light"]), surfaces, background layers
   js/
-    api.js                 # fetch client
-    state.js               # app state
-    main.js                # bootstrap, login/dashboard switch
+    api.js                 # fetch client (+ multipart upload)
+    state.js               # app state (incl. dashboard settings)
+    main.js                # bootstrap, login/dashboard switch, editor toolbar (Background/Theme)
     grid/editor.js         # editable grid + palette
     grid/viewer.js         # locked grid
-    ui/settingsModal.js    # generic schema-driven config modal
-    ui/toast.js            # toast notifications
-    widgets/registry.js    # widget type registry
+    backgrounds/manager.js # background layers: image (+dim/blur) & procedural canvas (holaf-ambient)
+    ui/theme.js            # tokens aliasing (HolafTokens), dark/light switch, Holaf modal/toast themes
+    ui/backgroundModal.js  # "Background" modal (type/image/procedural, upload, blur/dim)
+    ui/settingsModal.js    # generic schema-driven config modal (HolafModal shell)
+    ui/toast.js            # toast notifications (HolafToast backend)
+    widgets/registry.js    # widget type registry (+ per-widget appearance)
     widgets/{shortcut,clock,frame,iframe,links,search,notes,weather}.js
   vendor/gridstack/        # vendored gridstack v13 (gridstack.min.js + gridstack.min.css)
+  vendor/holaf/            # vendored holaf-lib bricks (modal .0.4.0, toast 0.5.0, color 0.1.0,
+                           #   tokens/ambient/icons 0.1.0) + holaf-manifest.json pinning versions
 ```
+
+## Themes & backgrounds (lot 3)
+
+**Tokens & themes.** `public/css/style.css` defines the token contract: `:root` holds the dark
+palette as *fallbacks* aliased to the vendored holaf-tokens brick's reserved `--holaf-*` prefix
+(`--bg: var(--holaf-surface, #0f1115)`, …), and `[data-theme="light"]` overrides them with the
+light fallbacks. At runtime `ui/theme.js` applies two named palettes through
+`HolafTokens.setTokens({ name: 'homy' | 'homy-light', values })` (hover derivatives computed with
+`HolafColor.mix`), replays `HolafModal.setTheme` / `HolafToast.setTheme` so open modals and toasts
+follow, and mirrors the choice in `localStorage['homy-theme']`. That mirror is applied by a tiny
+inline script in `<head>` **before the CSS** (anti-flash, including on the login view); once
+authenticated, the server settings (`GET /api/settings`) are the source of truth and refresh the
+mirror. The "Theme" button lives in the edit-mode toolbar; persistence goes through
+`PUT /api/settings`.
+
+**Translucent surfaces.** When a background (image or procedural) is active, `<body>` gets
+`data-bg-active`: the widget surface fallback opacity becomes `var(--surface-alpha)` (80%) and
+`backdrop-filter: blur(14px) saturate(1.2)` is enabled on `.grid-stack-item-content`. The
+per-widget appearance (⚙ modal: `bgColor`/`bgOpacity`) always wins over the global translucency —
+a widget configured with e.g. an orange background at 60% keeps exactly `rgba(255,136,0,0.6)`.
+
+**Image backgrounds.** Uploaded via the "Background" modal (or `POST /api/backgrounds`), stored as
+`DATA_DIR/backgrounds/<uuid>.<ext>`, served publicly under `/backgrounds/*` (see Security notes).
+Options: blur 0–20 px, dark dim overlay 0–80 %, fixed to viewport or scrolling. Deleting a
+background currently referenced by the settings is refused (409) — an explicit choice, no cascade.
+
+**Procedural backgrounds.** Three canvas 2D generators provided by the vendored holaf-ambient
+brick: `waves`, `particles`, `aurora` (with speed / density / opacity / links / colors options).
+The brick owns the performance contract: devicePixelRatio-aware sizing (ResizeObserver), rAF loop
+paused on `visibilitychange`, a single static frame under `prefers-reduced-motion`, and a clean
+`destroy()` on background change. Type "none" removes every layer and the canvas.
 
 ## Security notes
 
 - User data is injected via `textContent`/`setAttribute` (never unescaped `innerHTML`).
 - URLs are validated to `http:`/`https:` before use.
-- Mutations (layout PUT/PATCH) validate the Origin header.
+- Mutations (layout PUT/PATCH, settings PUT) validate the Origin header.
 - Passwords are bcrypt-hashed; JWT signed with a secret (auto-generated by default).
+- **Background images are PUBLIC**: they are served under `/backgrounds/*` with no JWT, because
+  `<img>` tags and CSS `background-image` cannot attach an `Authorization` header. The exposure
+  is mitigated by (a) filenames being non-guessable random UUIDs minted server-side
+  (`<uuid>.<ext>`, never user-supplied), (b) a strict extension whitelist (png/jpg/jpeg/webp/avif)
+  with a magic-bytes check at upload, (c) a 10 MB per-file limit and a 20-file quota, and
+  (d) `DELETE /api/backgrounds/:name` being JWT-protected with a strict UUID-name validation
+  (path-traversal safe) and a 409 when the file is currently referenced by the settings. If your
+  instance is reachable from the public internet, assume the images are enumerable/fetchable by
+  anyone who learns a URL.
+- `data/` (auth config, layouts, settings) is never served statically — only `public/` is.

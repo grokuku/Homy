@@ -4,6 +4,23 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Homy</title>
+  <script>
+    // Anti-flash theme bootstrap — MUST run before the CSS loads. Applies the
+    // mirrored theme (localStorage 'homy-theme') as a data-theme attribute so
+    // the [data-theme] CSS fallbacks paint the right palette immediately,
+    // including on the login view before any auth. The server settings remain
+    // the source of truth and refresh this mirror once authenticated.
+    (function () {
+      var t = 'dark';
+      try {
+        var stored = localStorage.getItem('homy-theme');
+        if (stored === 'light' || stored === 'dark') t = stored;
+      } catch (e) {
+        /* storage unavailable — keep default */
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
   <link rel="stylesheet" href="/vendor/gridstack/gridstack.min.css" />
   <link rel="stylesheet" href="/css/style.css" />
 </head>
@@ -63,6 +80,10 @@
 
       <div id="editor-palette" class="palette hidden">
         <h3>Add widget</h3>
+        <div class="palette-actions">
+          <button id="bg-btn" class="btn" type="button">Background</button>
+          <button id="theme-btn" class="btn" type="button">Theme: Dark</button>
+        </div>
         <div id="palette-list" class="palette-list"></div>
       </div>
 

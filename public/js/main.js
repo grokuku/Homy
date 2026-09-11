@@ -2,6 +2,10 @@ import { api } from './api.js';
 import { state } from './state.js';
 import { renderViewer } from './grid/viewer.js';
 import { initEditor, renderPalette } from './grid/editor.js';
+import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js';
+import { applyBackground } from './backgrounds/manager.js';
+import { openBackgroundModal } from './ui/backgroundModal.js';
+import { toast } from './ui/toast.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -31,16 +35,24 @@ async function showDashboard() {
   $('user-label').textContent = state.user || '';
 
   try {
-    const [layoutRes, widgetsRes] = await Promise.all([
+    const [layoutRes, widgetsRes, settingsRes] = await Promise.all([
       api.get('/api/layout'),
       api.get('/api/widgets'),
+      api.get('/api/settings'),
     ]);
     state.layout = layoutRes.items || [];
     state.widgets = widgetsRes.widgets || [];
+    state.settings = settingsRes || state.settings;
   } catch {
     state.layout = [];
     state.widgets = [];
   }
+
+  // Server settings are the source of truth once authenticated: refresh the
+  // anti-flash localStorage mirror and the live background.
+  syncFromServer(state.settings.theme);
+  applyBackground(state.settings.background);
+  updateThemeButton();
 
   setMode('view');
 }
@@ -146,6 +158,38 @@ $('logout-btn').addEventListener('click', async () => {
 
 $('toggle-mode').addEventListener('click', () => {
   setMode(state.mode === 'edit' ? 'view' : 'edit');
+});
+
+// ---- Editor toolbar: Background + Theme (lot 3) -----------------------------
+
+function updateThemeButton() {
+  const btn = $('theme-btn');
+  if (!btn) return;
+  const t = getTheme();
+  btn.textContent = `Theme: ${t === 'dark' ? 'Dark' : 'Light'}`;
+  btn.classList.toggle('active', t === 'light');
+}
+
+$('theme-btn').addEventListener('click', async () => {
+  const previous = getTheme();
+  const next = otherTheme();
+  try {
+    await switchTheme(next, state.settings.background, previous);
+    state.settings = { ...state.settings, theme: next };
+    updateThemeButton();
+  } catch (err) {
+    toast(err.message || 'Failed to save theme', 'error');
+  }
+});
+
+$('bg-btn').addEventListener('click', () => {
+  openBackgroundModal({
+    settings: state.settings,
+    onSaved: (next) => {
+      state.settings = next;
+      applyBackground(next.background);
+    },
+  });
 });
 
 // If the token expires mid-session, return to login.

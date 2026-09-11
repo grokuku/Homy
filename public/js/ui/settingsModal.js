@@ -1,6 +1,7 @@
 import { el, isValidHttpUrl } from '../util.js';
 import { api } from '../api.js';
 import { toast } from './toast.js';
+import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
 
 /**
  * Generic settings modal. Builds a form automatically from a widget's
@@ -8,51 +9,64 @@ import { toast } from './toast.js';
  *
  * Supported field types: text | number | select | url | icon | color | toggle |
  * textarea | list. A `list` field carries a nested `fields` array describing
- * each row (used e.g. by shortcut/links).
+ * each row (e.g. used by shortcut/links).
  *
  * On save it PATCHes `/api/layout/items/:id/config`, then calls `onSaved` with
  * the new config so the caller can re-render the widget.
+ *
+ * Shell : HolafModal (brique holaf-lib) sert de coque (pile, focus trap,
+ * scroll-lock, ARIA, Échap, clic overlay). Homy garde le settingsSchema, la
+ * logique fields/collect()/errorEl, et le PATCH. Le bouton Save reste HORS du
+ * <form> (dans le footer de la coque) et est associé au formulaire via
+ * l'attribut HTML `form=` — un vrai clic soumet nativement le formulaire (la
+ * leçon apprise : ne jamais remplacer par un dispatch('submit')).
+ *
+ * Theme: the 'homy' / 'homy-light' modal themes are registered and applied
+ * globally (HolafModal.setTheme) by ui/theme.js — this modal deliberately does
+ * NOT pass a `theme` option to open() so the global theme (which follows the
+ * dashboard dark/light switch) always governs.
  */
 let modalSeq = 0; // unique <form> ids when several modals are alive
 
 export function openSettingsModal({ itemId, title, schema, config, onSaved }) {
   const fields = Array.isArray(schema?.fields) ? schema.fields : [];
 
-  const overlay = el('div', 'modal-overlay');
-  const modal = el('div', 'modal');
-  const heading = el('h3', null, title || 'Edit widget');
   const form = el('form', 'config-form');
-  // The Save button lives outside the <form> (in .modal-actions, below it).
-  // A type="submit" button only submits its *form owner* — rendered outside
-  // the form it has none and a real click would silently do nothing. Give the
-  // form a unique id and associate the button via the `form` attribute.
-  // novalidate keeps all validation in collect() (errorEl messages), matching
-  // the behavior of the submit handler (native bubbles never interfere).
+  // The Save button lives OUTSIDE the <form> (in the modal footer) but is
+  // associated via the HTML `form` attribute → a type="submit" button only
+  // submits its *form owner*, so it needs form="settings-form-N". novalidate
+  // keeps all validation in collect() (errorEl messages).
   const formId = `settings-form-${++modalSeq}`;
   form.id = formId;
   form.setAttribute('novalidate', '');
   const errorEl = el('p', 'form-error', '', { role: 'alert' });
-  const actions = el('div', 'modal-actions');
-  const cancelBtn = el('button', 'btn btn-ghost', 'Cancel', { type: 'button' });
-  const saveBtn = el('button', 'btn btn-primary', 'Save', { type: 'submit', form: formId });
 
   const controls = {};
   for (const f of fields) {
     form.appendChild(buildField(f, config?.[f.key], controls));
   }
 
-  actions.append(cancelBtn, saveBtn);
-  modal.append(heading, form, errorEl, actions);
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  // Focus initial raisonnable : le 1er champ réel du formulaire (la coque
+  // HolafModal honore [data-holaf-autofocus] à l'ouverture).
+  const firstField = form.querySelector('input, select, textarea');
+  if (firstField) firstField.setAttribute('data-holaf-autofocus', '1');
 
-  function close() {
-    overlay.remove();
-  }
+  const content = el('div');
+  content.appendChild(form);
+  content.appendChild(errorEl);
 
-  cancelBtn.addEventListener('click', close);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close();
+  // Actions du footer (coque) : Annuler (ferme), Enregistrer (submit natif du
+  // formulaire, géré par le listener submit ci-dessous). Pas d'option `theme`
+  // : le thème global HolafModal (posé par ui/theme.js, suit le switch
+  // sombre/clair du dashboard) s'applique.
+  const ctrl = HolafModal.open({
+    title: title || 'Edit widget',
+    size: 'md',
+    content,
+    actions: [
+      { label: 'Cancel', type: 'cancel' },
+      { label: 'Save', type: 'primary', form: formId },
+    ],
   });
 
   form.addEventListener('submit', async (e) => {
@@ -63,15 +77,17 @@ export function openSettingsModal({ itemId, title, schema, config, onSaved }) {
       errorEl.textContent = result.error;
       return;
     }
-    saveBtn.disabled = true;
+    // Bouton Save rendu par la coque (type=submit dans le footer).
+    const saveBtn = ctrl.el.querySelector('.holaf-modal-footer button[type="submit"]');
+    if (saveBtn) saveBtn.disabled = true;
     try {
       await api.patch(`/api/layout/items/${itemId}/config`, { config: result.value });
       onSaved?.(result.value);
       toast('Settings saved', 'success');
-      close();
+      ctrl.close();
     } catch (err) {
       errorEl.textContent = err.message || 'Failed to save settings';
-      saveBtn.disabled = false;
+      if (saveBtn) saveBtn.disabled = false;
     }
   });
 }

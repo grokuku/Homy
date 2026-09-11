@@ -1,9 +1,11 @@
 import { el, isValidHttpUrl } from '../util.js';
+import { HolafIcons } from '../../vendor/holaf/holaf-icons.js';
 
 /**
  * Shortcut widget: a block of icon shortcuts in an internal grid.
  * config: { title, iconSize, shortcuts: [{ label, url, icon }] }
- * icon is one of: emoji text, an image URL, or empty (→ initials).
+ * icon is one of: emoji text, an image URL, "holaf:<name>" (vendored holaf-icons
+ * feather-style set, rendered via DOMParser — no innerHTML), or empty (→ initials).
  */
 export const shortcut = {
   name: 'Shortcut',
@@ -32,7 +34,7 @@ export const shortcut = {
         fields: [
           { key: 'label', label: 'Label', type: 'text', default: '' },
           { key: 'url', label: 'URL', type: 'url', default: '' },
-          { key: 'icon', label: 'Icon (emoji / image URL)', type: 'icon', default: '' },
+          { key: 'icon', label: 'Icon (emoji / image URL / holaf:name)', type: 'icon', default: '' },
         ],
       },
     ],
@@ -68,6 +70,22 @@ function buildIcon(s) {
   if (isValidHttpUrl(icon)) {
     const img = el('img', null, null, { src: icon, alt: '', loading: 'lazy' });
     box.appendChild(img);
+  } else if (icon.startsWith('holaf:')) {
+    // Vendored holaf-icons brick: "holaf:<name>" renders the matching SVG
+    // (stroke = currentColor). Unknown name → clear throw → plain-text fallback.
+    const name = icon.slice(6).trim();
+    try {
+      const svg = HolafIcons.get(name); // throws on unknown name
+      const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      const svgEl = doc.documentElement;
+      if (svgEl?.nodeName === 'svg' && !doc.querySelector('parsererror')) {
+        box.appendChild(document.importNode(svgEl, true));
+        return box;
+      }
+      box.textContent = icon;
+    } catch {
+      box.textContent = icon;
+    }
   } else if (icon) {
     // emoji (or any short text)
     box.textContent = icon;

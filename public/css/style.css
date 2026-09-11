@@ -1,15 +1,52 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Design tokens (lot 3) — ALIASING CONTRACT with the vendored holaf-tokens
+   brick. The brick (only Holaf brick allowed to write on :root) poses the
+   runtime palette under its reserved --holaf-* prefix (see public/js/ui/
+   theme.js: named palettes 'homy' / 'homy-light' via HolafTokens.setTokens).
+   The values below are the CSS FALLBACKS (pre-JS / no-JS paint, login view):
+   they MUST mirror the JS palettes in theme.js — keep both in sync.
+   ═══════════════════════════════════════════════════════════════════ */
 :root {
-  --bg: #0f1115;
-  --bg-elev: #171a21;
-  --bg-elev-2: #1f232c;
-  --border: #2a2f3a;
-  --text: #e6e8ee;
-  --text-muted: #9aa1ad;
-  --accent: #4f8cff;
-  --accent-hover: #3b78e8;
-  --danger: #e5484d;
-  --radius: 10px;
-  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --bg: var(--holaf-surface, #0f1115);
+  --bg-elev: var(--holaf-surface-elev, #171a21);
+  --bg-elev-2: var(--holaf-surface-raised, #1f232c);
+  --border: var(--holaf-border, #2a2f3a);
+  --text: var(--holaf-text, #e6e8ee);
+  --text-muted: var(--holaf-text-muted, #9aa1ad);
+  --accent: var(--holaf-accent, #4f8cff);
+  --accent-hover: var(--holaf-accent-hover, #3b78e8);
+  --danger: var(--holaf-danger, #e5484d);
+  --radius: var(--holaf-radius, 10px);
+  --shadow: var(--holaf-shadow, 0 8px 24px rgba(0, 0, 0, 0.35));
+  --overlay: var(--holaf-overlay, rgba(0, 0, 0, 0.55));
+  --btn-hover: var(--holaf-btn-hover, #262b36);
+  --success: #2e9e5b;
+  --warning: #e0a030;
+  /* Widget surface alpha: 100% by default; relaxed when a background is
+     active (image or procedural) so widgets become translucent glass. */
+  --surface-alpha: 100%;
+}
+
+/* Light theme — same aliasing, light fallbacks. Toggled by the inline <head>
+   script (localStorage mirror) and by ui/theme.js (server = source of truth). */
+[data-theme="light"] {
+  --bg: var(--holaf-surface, #eef1f6);
+  --bg-elev: var(--holaf-surface-elev, #f7f9fc);
+  --bg-elev-2: var(--holaf-surface-raised, #ffffff);
+  --border: var(--holaf-border, #d7dce5);
+  --text: var(--holaf-text, #1a2233);
+  --text-muted: var(--holaf-text-muted, #5b6472);
+  --accent: var(--holaf-accent, #2f6fe4);
+  --accent-hover: var(--holaf-accent-hover, #4680ea);
+  --danger: var(--holaf-danger, #d33b40);
+  --shadow: var(--holaf-shadow, 0 8px 24px rgba(15, 23, 42, 0.12));
+  --overlay: var(--holaf-overlay, rgba(15, 23, 42, 0.35));
+  --btn-hover: var(--holaf-btn-hover, #e3e8f2);
+}
+
+/* A background (image or procedural) is active → translucent glass surfaces. */
+body[data-bg-active] {
+  --surface-alpha: 80%;
 }
 
 * { box-sizing: border-box; }
@@ -17,11 +54,15 @@
 html, body {
   margin: 0;
   height: 100%;
-  background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 15px;
 }
+
+/* Background layers (z-index -3/-2, see #homy-bg-*) sit between the canvas
+   background (html) and the content: body itself must stay transparent. */
+html { background: var(--bg); }
+body { background: transparent; transition: background 0.2s; }
 
 .hidden { display: none !important; }
 .muted { color: var(--text-muted); }
@@ -71,7 +112,7 @@ html, body {
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
-.btn:hover { background: #262b36; }
+.btn:hover { background: var(--btn-hover); }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-ghost { background: transparent; }
@@ -100,6 +141,8 @@ html, body {
   left: 16px;
   top: 76px;
   width: 200px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -123,6 +166,13 @@ html, body {
 .palette-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .palette-icon { font-size: 18px; line-height: 1; }
 .palette-size { opacity: 0.7; }
+.palette-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.palette-actions .btn { flex: 1; padding: 8px 10px; font-size: 13px; }
 
 /* ---------- Grid ---------- */
 .grid-wrap {
@@ -133,10 +183,39 @@ html, body {
 .grid-wrap.with-palette { margin-left: 232px; }
 #grid-container { min-height: 70vh; }
 
+/* ---------- Background layers (lot 3) ---------- */
+#homy-bg-image,
+#homy-bg-dim,
+#homy-bg-canvas {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+#homy-bg-image {
+  z-index: -3; /* image layer, below the procedural canvas */
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+#homy-bg-image.homy-bg-scroll {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 100%;
+}
+#homy-bg-dim { z-index: -2; } /* dark overlay above the image */
+#homy-bg-canvas { z-index: -2; display: block; width: 100%; height: 100%; }
+
 /* ---------- Widgets ---------- */
 .grid-stack-item-content {
+  position: relative; /* anchors the edit-mode controls */
   background: var(--bg-elev);
-  background: color-mix(in srgb, var(--widget-bg-color, var(--bg-elev)) var(--widget-bg-op, 100%), transparent);
+  /* Per-widget appearance wins: --widget-bg-color/--widget-bg-op are set
+     inline by applyAppearance() when the user configured a custom look.
+     Without them, the surface falls back to the theme elevation color at
+     var(--surface-alpha) — 100% (opaque) with no background, 80% (glass)
+     when a background is active. */
+  background: color-mix(in srgb, var(--widget-bg-color, var(--bg-elev)) var(--widget-bg-op, var(--surface-alpha)), transparent);
   border: 1px solid var(--border);
   border-color: var(--widget-border-color, var(--border));
   color: var(--text);
@@ -145,6 +224,13 @@ html, body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* backdrop-blur only when a background is active (avoids a costly filter
+   over a plain theme color for nothing). */
+body[data-bg-active] .grid-stack-item-content {
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
 }
 .grid-stack-item-content .widget-body {
   flex: 1;
@@ -165,8 +251,10 @@ html, body {
 }
 .widget-header .widget-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* edit-mode controls */
-.widget-controls { display: none; gap: 4px; }
+/* edit-mode controls — anchored top-right INSIDE the content, clear of the
+   gridstack resize handles (20×20 corner handles, z-index 101, would otherwise
+   swallow real clicks on the ⚙/✕ buttons that sat flush at the bottom). */
+.widget-controls { display: none; gap: 4px; position: absolute; top: 26px; right: 8px; z-index: 110; }
 .grid-stack-item.editing .widget-controls { display: flex; }
 .widget-controls button {
   background: var(--bg-elev-2);
@@ -218,6 +306,7 @@ html, body {
   overflow: hidden;
 }
 .shortcut-icon img { width: 100%; height: 100%; object-fit: cover; }
+.shortcut-icon svg { width: 1.35em; height: 1.35em; } /* holaf:<name> icons (stroke = currentColor) */
 .shortcut-label {
   font-size: 12px;
   text-align: center;
@@ -287,7 +376,7 @@ html, body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -352,6 +441,48 @@ html, body {
 .config-form .shortcut-row input { flex: 1; }
 .config-form .shortcut-row .remove-shortcut { flex: 0 0 auto; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+
+/* ---------- Background modal (lot 3) ---------- */
+.bg-section-title { margin: 4px 0 10px; font-size: 14px; color: var(--text-muted); }
+.bg-thumbs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.bg-thumb {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  background: var(--bg-elev-2);
+}
+.bg-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bg-thumb.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.bg-thumb-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.bg-thumb-del:hover { border-color: var(--danger); color: var(--danger); }
+.bg-empty { grid-column: 1 / -1; margin: 0; font-size: 13px; }
+.bg-file-input { font-size: 13px; }
+.bg-toggle { display: flex !important; align-items: center; gap: 8px; margin-bottom: 12px; }
+.bg-toggle input { width: auto; }
+.bg-toggle span { font-size: 13px; color: var(--text-muted); }
+.bg-error { color: var(--danger); font-size: 13px; min-height: 18px; margin: 8px 0 0; }
 
 /* ---------- Toasts ---------- */
 .toast-container {

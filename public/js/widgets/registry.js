@@ -60,6 +60,11 @@ export function getSettingsSchema(type) {
  * switch, page reload). Always resets the 4 vars first because the container
  * element persists between re-renders — without a reset a previously applied
  * custom style would linger after the config is cleared.
+ *
+ * Lot 3: when the user set a bgColor, the per-widget appearance is ALWAYS
+ * authoritative — --widget-bg-op is set for any finite bgOpacity (including
+ * 100%) so a translucent global surface (--surface-alpha, active when a
+ * dashboard background is set) never overrides an explicit widget opacity.
  */
 export function applyAppearance(container, config) {
   const c = config || {};
@@ -76,9 +81,11 @@ export function applyAppearance(container, config) {
 
   if (bgColor) {
     container.style.setProperty('--widget-bg-color', bgColor);
-    // Opacity only applies when a background color is set AND < 100%.
-    if (Number.isFinite(bgOpacity) && bgOpacity < 100) {
-      container.style.setProperty('--widget-bg-op', `${bgOpacity}%`);
+    // Opacity only applies when a background color is set. Any finite value
+    // (100 included) is applied explicitly so it keeps priority over the
+    // global --surface-alpha token.
+    if (Number.isFinite(bgOpacity)) {
+      container.style.setProperty('--widget-bg-op', `${Math.max(0, Math.min(100, bgOpacity))}%`);
     }
   }
   if (borderColor) container.style.setProperty('--widget-border-color', borderColor);

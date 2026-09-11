@@ -20,7 +20,21 @@ export const api = {
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
+    return this._handle(res);
+  },
 
+  /**
+   * Multipart upload (FormData). No explicit Content-Type: the browser sets
+   * the multipart boundary itself.
+   */
+  async upload(path, formData) {
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const res = await fetch(path, { method: 'POST', headers, body: formData });
+    return this._handle(res);
+  },
+
+  async _handle(res) {
     if (res.status === 401) {
       window.dispatchEvent(new CustomEvent('auth:expired'));
     }

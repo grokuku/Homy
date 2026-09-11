@@ -6,4 +6,5 @@ export const state = {
   mode: 'view', // 'view' | 'edit'
   layout: [], // grid items
   widgets: [], // widget type manifest
+  settings: { theme: 'dark', background: { type: 'none' } }, // dashboard settings (server = source of truth)
 };

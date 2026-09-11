@@ -70,7 +70,7 @@ const WIDGET_MANIFEST = [
           fields: [
             { key: 'label', label: 'Label', type: 'text', default: '' },
             { key: 'url', label: 'URL', type: 'url', default: '' },
-            { key: 'icon', label: 'Icon (emoji / image URL)', type: 'icon', default: '' },
+            { key: 'icon', label: 'Icon (emoji / image URL / holaf:name)', type: 'icon', default: '' },
           ],
         },
       ],
