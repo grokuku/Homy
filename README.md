@@ -237,10 +237,19 @@ Options: blur 0–20 px, dark dim overlay 0–80 %, fixed to viewport or scrolli
 background currently referenced by the settings is refused (409) — an explicit choice, no cascade.
 
 **Procedural backgrounds.** Three canvas 2D generators provided by the vendored holaf-ambient
-brick: `waves`, `particles`, `aurora` (with speed / density / opacity / links / colors options).
+brick: `waves` (liquid ribbons), `particles` (depth-based glows + optional links), `aurora`
+(drifting light sheets, transparent). Options: `speed`, `density` (a single intensity slider
+1–100 that maps to a sensible element count per generator), `opacity`, `blur` (0–40 px, global
+softening), `links` (particles only), plus a palette preset or custom hex colors. The modal shows
+a **live preview** driven by the brick itself, so the setting you see is the one applied on Save.
 The brick owns the performance contract: devicePixelRatio-aware sizing (ResizeObserver), rAF loop
-paused on `visibilitychange`, a single static frame under `prefers-reduced-motion`, and a clean
-`destroy()` on background change. Type "none" removes every layer and the canvas.
+paused on `visibilitychange`, a single static frame under `prefers-reduced-motion`, dt-based clock
+(frame-rate independent), and a clean `destroy()` on background change. Type "none" removes every
+layer and the canvas.
+
+**Brick version.** `vendor/holaf/holaf-ambient.js` is a pinned copy (see
+`vendor/holaf/holaf-manifest.json`): check/upgrade with `holaf-lib/scripts/holaf check|upgrade
+ambient /projects/Homy/public`.
 
 ## Security notes
 

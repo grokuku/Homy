@@ -482,6 +482,25 @@ body[data-bg-active] .grid-stack-item-content {
 .bg-toggle { display: flex !important; align-items: center; gap: 8px; margin-bottom: 12px; }
 .bg-toggle input { width: auto; }
 .bg-toggle span { font-size: 13px; color: var(--text-muted); }
+/* Aperçu live de la section Generator : le canvas est piloté par la brique
+   holaf-ambient, dimensionnée par le conteneur (l'hôte pose le CSS). */
+.bg-preview {
+  position: relative;
+  height: 132px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.bg-preview canvas { display: block; width: 100%; height: 100%; }
+.bg-help { display: block; margin: -6px 0 12px; font-size: 12px; color: var(--text-muted); }
+.bg-swatches { display: flex; gap: 6px; margin-top: 8px; }
+.bg-swatches i {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
 .bg-error { color: var(--danger); font-size: 13px; min-height: 18px; margin: 8px 0 0; }
 
 /* ---------- Toasts ---------- */

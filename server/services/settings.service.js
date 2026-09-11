@@ -13,7 +13,7 @@ import { Store } from './store.service.js';
  *       type: 'none' | 'image' | 'procedural',
  *       image?:      { name, blur: 0..20, dim: 0..80, fixed: bool },
  *       procedural?: { generator, speed: 0..3, density: 1..100,
- *                      opacity: 0..1, links: bool, colors?: [hex…] },
+ *                      opacity: 0..1, blur: 0..40, links: bool, colors?: [hex…] },
  *     },
  *   }
  */
@@ -160,6 +160,9 @@ export class SettingsService {
         speed: numInRange(proc.speed ?? 1, 0, 3, 'background.procedural.speed'),
         density: intInRange(proc.density ?? 10, 1, 100, 'background.procedural.density'),
         opacity: numInRange(proc.opacity ?? 1, 0, 1, 'background.procedural.opacity'),
+        // Flou global du rendu procédural (px CSS). Validé ici pour que le
+        // contrat « aucune entrée non validée n'atteint le client » tienne.
+        blur: numInRange(proc.blur ?? 0, 0, 40, 'background.procedural.blur'),
         links: proc.links === undefined ? true : !!proc.links,
         colors,
       },

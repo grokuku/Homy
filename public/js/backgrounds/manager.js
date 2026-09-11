@@ -119,6 +119,9 @@ function renderProcedural(proc) {
     speed: Number.isFinite(Number(proc.speed)) ? Number(proc.speed) : 1,
     density: Number.isFinite(Number(proc.density)) ? Number(proc.density) : 10,
     opacity: Number.isFinite(Number(proc.opacity)) ? Number(proc.opacity) : 1,
+    // Flou gaussien global du fond (0 = net). La brique l'ignore proprement
+    // là où ctx.filter n'existe pas (Safari < 18).
+    blur: Number.isFinite(Number(proc.blur)) ? Number(proc.blur) : 0,
     links: proc.links !== false,
   };
   if (Array.isArray(proc.colors) && proc.colors.length > 0) {

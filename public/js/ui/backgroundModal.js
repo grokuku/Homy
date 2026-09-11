@@ -2,6 +2,7 @@ import { el } from '../util.js';
 import { api } from '../api.js';
 import { toast } from './toast.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
+import { HolafAmbient } from '../../vendor/holaf/holaf-ambient.js';
 import { applyBackground } from '../backgrounds/manager.js';
 
 /**
@@ -10,8 +11,14 @@ import { applyBackground } from '../backgrounds/manager.js';
  *   - type: none | image | procedural
  *   - image: pick an uploaded background (thumbnails), upload new ones,
  *     blur (0-20px), dim (0-80%), fixed (viewport) vs scrolling
- *   - procedural: generator (waves / particles / aurora) + speed, density,
- *     opacity, links, optional comma-separated colors
+ *   - procedural: generator (waves / particles / aurora) + mood preset, speed,
+ *     density (intensity 1..100), opacity, blur (0-40px), links (particles
+ *     only), palette preset or custom comma-separated colors
+ *
+ * The procedural section embeds a LIVE PREVIEW canvas driven by the vendored
+ * holaf-ambient brick itself: what you see in the preview is what gets applied
+ * after Save. The preview instance is destroyed in onClose (no rAF loop left
+ * running behind a closed modal).
  *
  * Saving = PUT /api/settings (full background object, server-validated),
  * then the onSaved callback applies it live via the background manager.
@@ -19,6 +26,21 @@ import { applyBackground } from '../backgrounds/manager.js';
  * we attach an onClick handler to — per the lot-2 lesson we never replace
  * native interactions with synthetic events).
  */
+
+// Palette presets (same set as the holaf-lib test bench) and mood presets that
+// set speed / density / opacity / blur in one click.
+const PALETTES = {
+  homy: ['#7dd3fc', '#38bdf8', '#818cf8', '#22d3ee'],
+  aikore: ['#4f8cff', '#22d3ee', '#a78bfa', '#6366f1', '#38bdf8'],
+  sunset: ['#ff7a59', '#ffb86b', '#ff5f9e', '#a855f7'],
+  mono: ['#4f8cff', '#0ea5e9'],
+};
+const MOODS = {
+  discret: { speed: 0.6, density: 6, opacity: 0.7, blur: 10 },
+  equilibre: { speed: 1, density: 10, opacity: 1, blur: 0 },
+  intense: { speed: 1.6, density: 22, opacity: 1, blur: 0 },
+};
+const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 export function openBackgroundModal({ settings, onSaved }) {
   const current = settings?.background || { type: 'none' };
 
@@ -121,13 +143,113 @@ export function openBackgroundModal({ settings, onSaved }) {
     genSel.appendChild(o);
   }
   genSel.value = ['waves', 'particles', 'aurora'].includes(proc.generator) ? proc.generator : 'waves';
+
+  // Preset d'ambiance (règle vitesse/densité/opacité/flou d'un coup).
+  const presetSel = el('select');
+  for (const [value, label] of [
+    ['discret', 'Discret (calme, flouté)'],
+    ['equilibre', 'Équilibré'],
+    ['intense', 'Intense'],
+  ]) {
+    const o = el('option', null, label);
+    o.value = value;
+    presetSel.appendChild(o);
+  }
+  presetSel.value = 'equilibre';
+
   const speedInput = numberField('Speed', 0, 3, 0.1, proc.speed ?? 1);
-  const densityInput = numberField('Density', 1, 100, 1, proc.density ?? 10);
+  const densityInput = numberField('Density (intensity 1-100)', 1, 100, 1, proc.density ?? 10);
   const opacityInput = numberField('Opacity', 0, 1, 0.05, proc.opacity ?? 1);
+  const procBlurInput = numberField('Blur (px — softens the whole background)', 0, 40, 1, proc.blur ?? 0);
   const linksInput = el('input', null, null, { type: 'checkbox' });
   linksInput.checked = proc.links !== false;
+  const linksWrap = toggleWrap('Particle links', linksInput);
   const colorsInput = el('input', null, null, { type: 'text', placeholder: '#4f8cff, #22d3ee, #a78bfa (optional)' });
   colorsInput.value = Array.isArray(proc.colors) ? proc.colors.join(', ') : '';
+
+  // Palette : preset (remplit le champ hex) ou couleurs personnalisées.
+  const paletteSel = el('select');
+  for (const [value, label] of [
+    ['homy', 'Homy (default)'],
+    ['aikore', 'AiKore'],
+    ['sunset', 'Sunset'],
+    ['mono', 'Mono blue'],
+    ['custom', 'Custom (hex field below)'],
+  ]) {
+    const o = el('option', null, label);
+    o.value = value;
+    paletteSel.appendChild(o);
+  }
+  {
+    const currentColors = colorsInput.value.toLowerCase();
+    const match = Object.entries(PALETTES).find(
+      ([, hexes]) => hexes.join(', ').toLowerCase() === currentColors
+    );
+    paletteSel.value = match ? match[0] : 'custom';
+  }
+  const swatches = el('div', 'bg-swatches');
+
+  // Aperçu live : un <canvas> piloté par la brique holaf-ambient elle-même.
+  const previewCanvas = el('canvas');
+  const previewWrap = el('div', 'bg-preview');
+  previewWrap.appendChild(previewCanvas);
+  const densityHelp = el('span', 'bg-help');
+
+  /** Valeur numérique d'un champ (repli si vide / NaN). */
+  function num(input, fallback) {
+    const n = Number(input.value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  /** Couleurs valides saisies (#rrggbb), dans l'ordre. */
+  function parsedColors() {
+    return colorsInput.value
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => HEX_RE.test(s))
+      .map((s) => s.toLowerCase());
+  }
+
+  function previewOpts() {
+    return {
+      target: previewCanvas,
+      mode: genSel.value,
+      speed: num(speedInput.input, 1),
+      density: num(densityInput.input, 10),
+      opacity: num(opacityInput.input, 1),
+      blur: num(procBlurInput.input, 0),
+      links: linksInput.checked,
+      colors: parsedColors(),
+    };
+  }
+
+  let previewInst = null;
+  try {
+    previewInst = HolafAmbient.create(previewOpts());
+  } catch (err) {
+    console.error('[backgrounds] preview creation failed:', err);
+  }
+
+  /** Applique les réglages à l'aperçu + met à jour aides et pastilles. */
+  function syncPreview() {
+    try {
+      if (previewInst) previewInst.setConfig(previewOpts());
+    } catch (err) {
+      console.warn('[backgrounds] preview update failed:', err);
+    }
+    const n = HolafAmbient.elementCount(genSel.value, num(densityInput.input, 10));
+    const unit = genSel.value === 'particles' ? 'particles' : genSel.value === 'aurora' ? 'glows' : 'ribbons';
+    densityHelp.textContent = `≈ ${n} ${unit}`;
+    linksWrap.classList.toggle('hidden', genSel.value !== 'particles');
+    swatches.replaceChildren(
+      ...parsedColors().map((hex) => {
+        const i = el('i');
+        i.style.background = hex;
+        i.title = hex;
+        return i;
+      })
+    );
+  }
 
   // ---- layout -----------------------------------------------------------------
   const typeField = el('div', 'field');
@@ -150,13 +272,42 @@ export function openBackgroundModal({ settings, onSaved }) {
   const procSection = el('div', 'bg-section');
   procSection.append(
     sectionTitle('Generator'),
+    fieldWrap('Preview (live)', previewWrap),
     fieldWrap('Generator', genSel),
+    fieldWrap('Mood preset', presetSel),
     speedInput.wrap,
     densityInput.wrap,
+    densityHelp,
     opacityInput.wrap,
-    toggleWrap('Particle links', linksInput),
-    fieldWrap('Colors (comma-separated hex, empty = default)', colorsInput)
+    procBlurInput.wrap,
+    linksWrap,
+    fieldWrap('Palette', paletteSel),
+    fieldWrap('Colors (comma-separated hex, empty = default)', colorsInput),
+    swatches
   );
+
+  // Les réglages mettent l'aperçu à jour en direct.
+  genSel.addEventListener('change', syncPreview);
+  colorsInput.addEventListener('input', syncPreview);
+  linksInput.addEventListener('change', syncPreview);
+  for (const f of [speedInput, densityInput, opacityInput, procBlurInput]) {
+    f.input.addEventListener('input', syncPreview);
+  }
+  presetSel.addEventListener('change', () => {
+    const m = MOODS[presetSel.value];
+    if (!m) return;
+    speedInput.input.value = String(m.speed);
+    densityInput.input.value = String(m.density);
+    opacityInput.input.value = String(m.opacity);
+    procBlurInput.input.value = String(m.blur);
+    syncPreview();
+  });
+  paletteSel.addEventListener('change', () => {
+    const hexes = PALETTES[paletteSel.value];
+    if (!hexes) return; // « custom » : on laisse la saisie de l'utilisateur
+    colorsInput.value = hexes.join(', ');
+    syncPreview();
+  });
 
   function syncSections() {
     const t = typeSel.value;
@@ -164,7 +315,11 @@ export function openBackgroundModal({ settings, onSaved }) {
     procSection.classList.toggle('hidden', t !== 'procedural');
   }
   typeSel.addEventListener('change', syncSections);
+  // La section procédurale peut passer de cachée à visible : l'aperçu se
+  // réajuste (son canvas n'a une taille qu'une fois affiché).
+  typeSel.addEventListener('change', syncPreview);
   syncSections();
+  syncPreview();
 
   const content = el('div', 'config-form');
   content.append(typeField, imageSection, procSection);
@@ -174,6 +329,14 @@ export function openBackgroundModal({ settings, onSaved }) {
     title: 'Background',
     size: 'md',
     content,
+    // L'aperçu anime tant que la modale est ouverte : on coupe sa boucle rAF
+    // à la fermeture.
+    onClose: () => {
+      if (previewInst) {
+        previewInst.destroy();
+        previewInst = null;
+      }
+    },
     actions: [
       { label: 'Cancel', type: 'cancel' },
       {
@@ -207,19 +370,16 @@ export function openBackgroundModal({ settings, onSaved }) {
           },
         };
       } else if (type === 'procedural') {
-        const colors = colorsInput.value
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
         background = {
           type: 'procedural',
           procedural: {
             generator: genSel.value,
-            speed: Number(speedInput.input.value) || 0,
-            density: Number(densityInput.input.value) || 0,
-            opacity: Number(opacityInput.input.value) || 0,
+            speed: num(speedInput.input, 1),
+            density: num(densityInput.input, 10),
+            opacity: num(opacityInput.input, 1),
+            blur: num(procBlurInput.input, 0),
             links: linksInput.checked,
-            colors,
+            colors: parsedColors(),
           },
         };
       }
