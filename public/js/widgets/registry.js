@@ -34,6 +34,7 @@ export const APPEARANCE_FIELDS = [
   { key: 'bgColor', label: 'Background color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
   { key: 'bgOpacity', label: 'Background opacity', type: 'range', default: 100, min: 0, max: 100, step: 1, unit: '%', help: 'Requires a background color' },
   { key: 'borderColor', label: 'Border color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
+  { key: 'showBorder', label: 'Show border', type: 'toggle', default: true, help: 'Hide to remove this widget\u2019s frame border' },
   { key: 'textColor', label: 'Text color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
 ];
 
@@ -54,12 +55,12 @@ export function getSettingsSchema(type) {
 }
 
 /**
- * Apply per-widget appearance (bgColor/bgOpacity/borderColor/textColor) via
- * inline CSS custom properties on the widget container. Called from
- * renderWidget() so it runs on every render (initial, config save, view/edit
- * switch, page reload). Always resets the 4 vars first because the container
- * element persists between re-renders — without a reset a previously applied
- * custom style would linger after the config is cleared.
+ * Apply per-widget appearance (bgColor/bgOpacity/borderColor/showBorder/
+ * textColor) via inline CSS custom properties on the widget container. Called
+ * from renderWidget() so it runs on every render (initial, config save,
+ * view/edit switch, page reload). Always resets the 5 vars first because the
+ * container element persists between re-renders — without a reset a previously
+ * applied custom style would linger after the config is cleared.
  *
  * Lot 3: when the user set a bgColor, the per-widget appearance is ALWAYS
  * authoritative — --widget-bg-op is set for any finite bgOpacity (including
@@ -72,11 +73,16 @@ export function applyAppearance(container, config) {
   const bgOpacity = Number(c.bgOpacity);
   const borderColor = (c.borderColor || '').trim();
   const textColor = (c.textColor || '').trim();
+  // Border visibility is opt-OUT: legacy configs have no key at all and must
+  // keep the current theme border. Only an explicit false (or the string
+  // "false" from a hand-edited config) zeroes the width.
+  const borderHidden = c.showBorder === false || c.showBorder === 'false';
 
-  // Reset all 4 vars first (container persists between re-renders).
+  // Reset all 5 vars first (container persists between re-renders).
   container.style.removeProperty('--widget-bg-color');
   container.style.removeProperty('--widget-bg-op');
   container.style.removeProperty('--widget-border-color');
+  container.style.removeProperty('--widget-border-width');
   container.style.removeProperty('--widget-text-color');
 
   if (bgColor) {
@@ -89,6 +95,10 @@ export function applyAppearance(container, config) {
     }
   }
   if (borderColor) container.style.setProperty('--widget-border-color', borderColor);
+  // When hidden, force the border width to 0. The CSS keeps
+  // var(--widget-border-width, 1px) as the fallback so a widget without the
+  // setting (or with it on) is unchanged.
+  if (borderHidden) container.style.setProperty('--widget-border-width', '0');
   if (textColor) container.style.setProperty('--widget-text-color', textColor);
 }
 

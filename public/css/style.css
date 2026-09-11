@@ -216,7 +216,12 @@ body { background: transparent; transition: background 0.2s; }
      var(--surface-alpha) — 100% (opaque) with no background, 80% (glass)
      when a background is active. */
   background: color-mix(in srgb, var(--widget-bg-color, var(--bg-elev)) var(--widget-bg-op, var(--surface-alpha)), transparent);
-  border: 1px solid var(--border);
+  /* Border width is per-widget: applyAppearance() sets
+     --widget-border-width: 0 when the user turned « Show border » off. The
+     fallback keeps the theme's 1px frame for every widget without the
+     setting (legacy configs). */
+  border-style: solid;
+  border-width: var(--widget-border-width, 1px);
   border-color: var(--widget-border-color, var(--border));
   color: var(--text);
   color: var(--widget-text-color, var(--text));
@@ -318,7 +323,7 @@ body[data-bg-active] .grid-stack-item-content {
 
 /* clock */
 .clock-widget { align-items: center; justify-content: center; text-align: center; gap: 4px; }
-.clock-time { font-size: 2.2em; font-weight: 700; font-variant-numeric: tabular-nums; }
+.clock-time { font-size: 2.2em; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .clock-date { color: var(--text-muted); font-size: 0.9em; }
 
 /* iframe */

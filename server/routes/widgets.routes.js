@@ -24,6 +24,7 @@ const APPEARANCE_FIELDS = [
   { key: 'bgColor', label: 'Background color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
   { key: 'bgOpacity', label: 'Background opacity', type: 'range', default: 100, min: 0, max: 100, step: 1, unit: '%', help: 'Requires a background color' },
   { key: 'borderColor', label: 'Border color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
+  { key: 'showBorder', label: 'Show border', type: 'toggle', default: true, help: 'Hide to remove this widget\u2019s frame border' },
   { key: 'textColor', label: 'Text color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
 ];
 
@@ -115,6 +116,18 @@ const WIDGET_MANIFEST = [
             { value: 'digital', label: 'Digital' },
             { value: 'minimal', label: 'Minimal' },
           ],
+        },
+        { key: 'fitToFrame', label: 'Fit to frame', type: 'toggle', default: false, help: 'Scale time and date to the widget size' },
+        {
+          key: 'autoSizeMax',
+          label: 'Maximum size',
+          type: 'range',
+          default: 120,
+          min: 16,
+          max: 400,
+          step: 4,
+          unit: 'px',
+          help: 'Upper bound for the auto-fitted clock (Fit to frame only)',
         },
       ],
     },
