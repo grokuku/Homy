@@ -2,7 +2,7 @@ import { el, isValidHttpUrl } from '../util.js';
 
 /**
  * Shortcut widget: a block of icon shortcuts in an internal grid.
- * config: { title, accent, iconSize, shortcuts: [{ label, url, icon }] }
+ * config: { title, iconSize, shortcuts: [{ label, url, icon }] }
  * icon is one of: emoji text, an image URL, or empty (→ initials).
  */
 export const shortcut = {
@@ -13,7 +13,6 @@ export const shortcut = {
   settingsSchema: {
     fields: [
       { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Shortcuts' },
-      { key: 'accent', label: 'Accent color', type: 'color', default: '' },
       {
         key: 'iconSize',
         label: 'Icon size',
@@ -41,7 +40,6 @@ export const shortcut = {
 
   render(container, config) {
     const title = (config?.title || '').trim();
-    const accent = (config?.accent || '').trim();
     const iconSize = config?.iconSize || 'md';
     const shortcuts = Array.isArray(config?.shortcuts) ? config.shortcuts : [];
 
@@ -52,7 +50,6 @@ export const shortcut = {
       container.appendChild(header);
     }
     const grid = el('div', `shortcut-grid size-${iconSize}`);
-    if (accent) grid.style.setProperty('--accent', accent);
     container.appendChild(grid);
 
     for (const s of shortcuts) {

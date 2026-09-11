@@ -11,6 +11,20 @@ import { Hono } from 'hono';
  * placeholder?, required?, min?, max?, step?, help? }. A `list` field carries
  * a nested `fields` array describing each row.
  */
+
+/**
+ * ⚠️ APPEARANCE_FIELDS — shared per-widget appearance section, merged into
+ * EVERY widget's settingsSchema below. MUST stay in sync with the identical
+ * constant in public/js/widgets/registry.js (getSettingsSchema). Any change
+ * here must be mirrored there, and vice-versa.
+ */
+const APPEARANCE_FIELDS = [
+  { key: 'bgColor', label: 'Background color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
+  { key: 'bgOpacity', label: 'Background opacity (%)', type: 'number', default: 100, min: 0, max: 100, step: 1, help: 'Requires a background color' },
+  { key: 'borderColor', label: 'Border color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
+  { key: 'textColor', label: 'Text color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
+];
+
 const WIDGET_MANIFEST = [
   {
     id: 'frame',
@@ -23,18 +37,6 @@ const WIDGET_MANIFEST = [
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Frame title' },
-        { key: 'accent', label: 'Accent / border color', type: 'color', default: '' },
-        {
-          key: 'background',
-          label: 'Background',
-          type: 'select',
-          default: 'solid',
-          options: [
-            { value: 'solid', label: 'Solid' },
-            { value: 'translucent', label: 'Translucent' },
-            { value: 'transparent', label: 'Transparent' },
-          ],
-        },
       ],
     },
   },
@@ -49,7 +51,6 @@ const WIDGET_MANIFEST = [
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Shortcuts' },
-        { key: 'accent', label: 'Accent color', type: 'color', default: '' },
         {
           key: 'iconSize',
           label: 'Icon size',
@@ -232,6 +233,15 @@ const WIDGET_MANIFEST = [
   },
 ];
 
+// Merge the shared appearance section into every widget's settingsSchema.
+const WIDGET_MANIFEST_FINAL = WIDGET_MANIFEST.map((w) => ({
+  ...w,
+  settingsSchema: {
+    ...w.settingsSchema,
+    fields: [...w.settingsSchema.fields, ...APPEARANCE_FIELDS],
+  },
+}));
+
 export const widgetRoutes = new Hono();
 
-widgetRoutes.get('/', (c) => c.json({ widgets: WIDGET_MANIFEST }));
+widgetRoutes.get('/', (c) => c.json({ widgets: WIDGET_MANIFEST_FINAL }));

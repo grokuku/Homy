@@ -60,6 +60,18 @@ Each widget exposes a declarative `settingsSchema` (field types: `text`, `number
 `url`, `icon`, `color`, `toggle`, `textarea`, `list`) that drives the generic config modal —
 no per-widget UI code. The weather widget fetches through the backend proxy to avoid CORS.
 
+Every widget also gets a **common appearance section** in the ⚙ modal, merged centrally into
+its `settingsSchema` (server manifest + frontend registry, kept in sync):
+
+- `bgColor` — background color (leave empty to use the theme default)
+- `bgOpacity` — background opacity in % (0–100, only applies when a `bgColor` is set)
+- `borderColor` — border color (leave empty to use the theme default)
+- `textColor` — text color (leave empty to use the theme default)
+
+These are applied per-widget via inline CSS custom properties (`--widget-bg-color`,
+`--widget-bg-op`, `--widget-border-color`, `--widget-text-color`) with theme fallbacks, so
+widgets without a custom appearance keep the default look.
+
 ## Storage layout (`server/data/`)
 
 - `config.json` — auth config (user, bcrypt hash, JWT secret, expiry)
