@@ -13,6 +13,8 @@ import { toast } from './toast.js';
  * On save it PATCHes `/api/layout/items/:id/config`, then calls `onSaved` with
  * the new config so the caller can re-render the widget.
  */
+let modalSeq = 0; // unique <form> ids when several modals are alive
+
 export function openSettingsModal({ itemId, title, schema, config, onSaved }) {
   const fields = Array.isArray(schema?.fields) ? schema.fields : [];
 
@@ -20,10 +22,19 @@ export function openSettingsModal({ itemId, title, schema, config, onSaved }) {
   const modal = el('div', 'modal');
   const heading = el('h3', null, title || 'Edit widget');
   const form = el('form', 'config-form');
+  // The Save button lives outside the <form> (in .modal-actions, below it).
+  // A type="submit" button only submits its *form owner* — rendered outside
+  // the form it has none and a real click would silently do nothing. Give the
+  // form a unique id and associate the button via the `form` attribute.
+  // novalidate keeps all validation in collect() (errorEl messages), matching
+  // the behavior of the submit handler (native bubbles never interfere).
+  const formId = `settings-form-${++modalSeq}`;
+  form.id = formId;
+  form.setAttribute('novalidate', '');
   const errorEl = el('p', 'form-error', '', { role: 'alert' });
   const actions = el('div', 'modal-actions');
   const cancelBtn = el('button', 'btn btn-ghost', 'Cancel', { type: 'button' });
-  const saveBtn = el('button', 'btn btn-primary', 'Save', { type: 'submit' });
+  const saveBtn = el('button', 'btn btn-primary', 'Save', { type: 'submit', form: formId });
 
   const controls = {};
   for (const f of fields) {
