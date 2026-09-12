@@ -6,11 +6,14 @@ import { GRID_COLUMNS, MAX_ITEMS } from './grid/config.js';
 import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js';
 import { applyBackground, setBackgroundHost } from './backgrounds/manager.js';
 import { openBackgroundModal } from './ui/backgroundModal.js';
+import { initTabs, renderTabs } from './ui/tabs.js';
 import { toast } from './ui/toast.js';
 
 const $ = (id) => document.getElementById(id);
 
 let grid = null; // current grid instance (viewer gridstack or editor handle)
+let viewTopbarVisible = false; // VIEW-mode topbar state (right-click toggles; default hidden)
+let switchingPage = false; // page switch in flight (double-click guard on the tabs)
 
 // Must match MAX_BODY_BYTES in server/routes/layout.routes.js (review C3):
 // the client refuses to send a body the server would 413, so the failure is
@@ -39,6 +42,14 @@ async function showDashboard() {
   $('login-view').classList.add('hidden');
   $('dashboard-view').classList.remove('hidden');
   $('user-label').textContent = state.user || '';
+  // VIEW-mode topbar starts HIDDEN on every (re)entry (right-click reveals it).
+  // Apply the collapsed state SYNCHRONOUSLY, before the first await: the
+  // dashboard was just revealed, so the bar is laid out and its height can be
+  // measured right now — a slow layout/settings fetch can therefore never
+  // flash the bar before setMode('view') below re-affirms the same state.
+  viewTopbarVisible = false;
+  state.mode = 'view';
+  applyTopbarState({ animate: false });
 
   try {
     const [layoutRes, widgetsRes, settingsRes] = await Promise.all([
@@ -51,6 +62,9 @@ async function showDashboard() {
     // `columns` field in layout.json) report 12 and are migrated client-side
     // by the editor/viewer via gridstack's column(32, 'moveScale') reflow.
     state.layoutColumns = Number(layoutRes.columns) || 12;
+    // Multiple pages (schema v3): tab summary + memorized active page.
+    state.pages = Array.isArray(layoutRes.pages) ? layoutRes.pages : [];
+    state.activePageId = layoutRes.activePageId || state.pages[0]?.id || null;
     state.widgets = widgetsRes.widgets || [];
     state.settings = settingsRes || state.settings;
   } catch {
@@ -117,6 +131,46 @@ const PREVIEW_CELL_MIN = 20; // px — rendered cell-width floor
 const PREVIEW_MIN_SCALE = 0.3; // hard floor on the adaptive scale f
 const PREVIEW_BORDER = 2; // px — #grid-preview border width (style.css)
 
+// ---- Canvas width pinning (lot E) ------------------------------------------
+/**
+ * Pin the 16:9 canvas width to a FRESH JavaScript measurement (CSS var
+ * --canvas-w on #grid-wrap, consumed by #grid-container's width in CSS).
+ *
+ * WHY (lot E, empty-page scrollbar in view mode): the CSS width used pure
+ * container-query units (min(100cqw, 100cqh·16/9)). Those units resolve
+ * against the query container's CURRENT box — which is mid-flight whenever a
+ * grid rebuild races the 200ms topbar reveal animation (right-click toggle
+ * followed immediately by a tab switch): gridstack then reads a stale
+ * clientWidth, freezes cellHeight from it (its ResizeObserver is throttled
+ * and short-circuits on prevWidth === clientWidth, so it may never converge
+ * in frame-starved environments) and the canvas ends up TALLER than the real
+ * area — a phantom vertical scrollbar on .grid-wrap (most visible on an
+ * empty page). A JS measurement here is never stale: getBoundingClientRect /
+ * clientWidth force a synchronous layout with the transition already snapped
+ * to its final value by applyTopbarState({animate:false}) in setMode().
+ *
+ * The measured width is floored to an INTEGER pixel: gridstack derives the
+ * square cell height from the container's clientWidth (integer), so an
+ * integer width makes the gridstack inline height (18 × clientWidth/32)
+ * agree EXACTLY with the CSS aspect-ratio box — no sub-pixel overflow, no
+ * scrollbar, by construction, at every instant (≤1px narrower than the
+ * theoretical cq value: imperceptible).
+ */
+function updateCanvasWidth() {
+  const wrap = $('grid-wrap');
+  const cs = getComputedStyle(wrap);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  // clientWidth: integer, EXCLUDES a classic scrollbar (pan case stays sane);
+  // rect.height: fractional, exact — no rounding slack on the vertical fit.
+  const contentW = wrap.clientWidth - padX;
+  const contentH = wrap.getBoundingClientRect().height - padY;
+  // −0.5 shave: clientWidth rounds to integer, the shave absorbs a round-up
+  // so the width can never exceed the true visible content either.
+  const w = Math.floor(Math.min(contentW, (contentH * 16) / 9) - 0.5);
+  if (w > 0) wrap.style.setProperty('--canvas-w', `${w}px`);
+}
+
 /**
  * Compute (and apply) `--preview-scale` so the whole 16:9 frame fits the area
  * left of the docked palette. Formula (all in CSS px):
@@ -176,6 +230,64 @@ function syncBackgroundScope() {
   setBackgroundHost(scoped ? $('grid-preview-bg') : null);
 }
 
+// ---- Topbar visibility (VIEW mode) -----------------------------------------
+// The topbar is HIDDEN by default in view mode so the display area gets the
+// full height; a right-click toggles it. Edit mode keeps it permanently (but
+// compact). Collapsing pulls the bar above the viewport by its MEASURED height
+// (--topbar-h): #dashboard-body (flex:1) then reclaims exactly that space, so
+// the frame is never masked by the bar. The measure is refreshed on every
+// layout change (ResizeObserver below) — no hardcoded height anywhere.
+function updateTopbarHeight() {
+  const view = $('dashboard-view');
+  const topbar = view.querySelector('.topbar');
+  if (!topbar) return;
+  const h = topbar.offsetHeight; // margin independent → valid even when collapsed
+  if (h > 0 && view.style.getPropertyValue('--topbar-h') !== `${h}px`) {
+    view.style.setProperty('--topbar-h', `${h}px`);
+  }
+}
+
+function applyTopbarState({ animate = true } = {}) {
+  // Edit: always shown. View: only after a right-click toggle.
+  const collapsed = state.mode === 'view' && !viewTopbarVisible;
+  const topbar = $('dashboard-view').querySelector('.topbar');
+  // Measure BEFORE collapsing so the negative margin uses the real height.
+  updateTopbarHeight();
+  // Mode switches must be INSTANT: gridstack reads the container size right
+  // after setMode() (square cell height from clientWidth) and an animating
+  // margin would feed it a stale intermediate size — the same trap the old
+  // animated with-palette margin fell into. The right-click toggle keeps the
+  // 200ms transition (pure view mode: no grid rebuild follows).
+  if (!animate && topbar) topbar.classList.add('topbar-instant');
+  $('dashboard-view').classList.toggle('topbar-collapsed', collapsed);
+  if (!animate && topbar) {
+    void topbar.offsetHeight; // flush layout while the transition is disabled
+    requestAnimationFrame(() => topbar.classList.remove('topbar-instant'));
+  }
+}
+
+function toggleViewTopbar() {
+  if (state.mode !== 'view') return;
+  viewTopbarVisible = !viewTopbarVisible;
+  applyTopbarState(); // animated
+}
+
+// Right-click: toggle the bar in view mode, and suppress the browser context
+// menu everywhere on the dashboard EXCEPT on genuine native targets (text
+// fields, links) where the user legitimately wants copy/inspect. Events fired
+// inside an <iframe> widget do not bubble to this document at all, so a
+// cross-origin iframe keeps its own browser menu (and cannot toggle the bar) —
+// documented limitation, not a regression.
+function isNativeContextTarget(target) {
+  return !!(target && target.closest && target.closest('input, textarea, select, [contenteditable], a[href]'));
+}
+
+$('dashboard-view').addEventListener('contextmenu', (e) => {
+  if (isNativeContextTarget(e.target)) return;
+  e.preventDefault();
+  if (state.mode === 'view') toggleViewTopbar();
+});
+
 function setMode(mode) {
   state.mode = mode;
   const btn = $('toggle-mode');
@@ -186,7 +298,21 @@ function setMode(mode) {
   // palette was (they live in the topbar since lot 2).
   $('editor-actions').classList.toggle('hidden', mode !== 'edit');
   $('grid-wrap').classList.toggle('with-palette', mode === 'edit');
+  // Tab strip (multiple pages): rendered BEFORE the topbar is measured so
+  // --topbar-h includes the row whenever it must be visible (edit: always;
+  // view: only when ≥ 2 pages — see ui/tabs.js renderTabs).
+  renderTabs();
+  // View mode starts collapsed; edit mode forces the bar visible (compact).
+  // Instant (no slide) so the geometry read below is final from the first
+  // frame: the snap (topbar-instant) makes the used margin-top the target
+  // value NOW, so the canvas width pinned next is measured at final geometry
+  // and gridstack can never initialize from a mid-animation size.
+  applyTopbarState({ animate: false });
 
+  // Pin the canvas width from a FRESH measurement (see updateCanvasWidth):
+  // must run BEFORE initEditor/renderViewer, whose gridstack reads the
+  // container's clientWidth to derive the square cell height.
+  updateCanvasWidth();
   destroyGrid();
   // Frame + scale must be applied BEFORE initEditor: gridstack reads the
   // container's clientWidth at init to derive the square cell height, and the
@@ -223,23 +349,92 @@ function saveLayout(items) {
   // init, before any save can happen) → persist the migrated coordinates with
   // the columns field so the next load skips the migration.
   state.layoutColumns = GRID_COLUMNS;
+  // Multiple pages: the save MUST target the page the grid currently edits
+  // (explicit pageId — the server replaces THAT page's items without ever
+  // switching the active one). Read at call time so a page switch that
+  // happened between the edit and the debounced save can never misroute it.
+  const pageId = state.activePageId || undefined;
   // Review C3: persistence failures are NEVER swallowed. Two pre-checks plus
   // a toasting catch keep the UI and the server from diverging silently:
   //  - body > 256 KB would 413 server-side (limit duplicated above);
   //  - > MAX_ITEMS would 400 server-side (the palette already blocks adding,
   //    this covers layouts that were already over the cap at load).
-  const body = JSON.stringify({ items, columns: GRID_COLUMNS });
+  const body = JSON.stringify({ items, columns: GRID_COLUMNS, pageId });
   if (new TextEncoder().encode(body).length > MAX_BODY_BYTES) {
     toast('Save failed: layout is too large (server limit 256 KB). Remove widgets or shorten notes.', 'error');
-    return;
+    return Promise.resolve();
   }
-  api.put('/api/layout', { items, columns: GRID_COLUMNS })
+  // The returned promise lets the page-switch flush await the actual PUT
+  // (ordering: the flushed save must land BEFORE PUT /api/layout/active).
+  return api.put('/api/layout', { items, columns: GRID_COLUMNS, pageId })
     .then((res) => {
       // Converge on the server's sanitized items (e.g. h clamped to 18 rows)
       // so the client can never drift from what is actually on disk.
       if (Array.isArray(res?.items)) state.layout = res.items;
+      // Item counts (and a possibly server-clamped columns/active id) follow.
+      // NOTE: no renderTabs() here — the tab row displays only names + the
+      // active state (itemCount lives in the title tooltip only), and a
+      // silent row rebuild mid-interaction would cancel an armed delete
+      // confirmation or an open rename input for nothing. The row refreshes
+      // on its own triggers (setMode / switchPage / page mutations).
+      if (Array.isArray(res?.pages)) state.pages = res.pages;
+      if (Number(res?.columns) > 0) state.layoutColumns = Number(res.columns);
+      if (res?.activePageId) state.activePageId = res.activePageId;
     })
     .catch((err) => toast(err.message || 'Failed to save layout', 'error'));
+}
+
+// ---- Page switching (multiple pages, lot C+D) -------------------------------
+/**
+ * Switch the active dashboard page. Allowed in BOTH modes (view + edit);
+ * creation/rename/delete stay edit-only (ui/tabs.js).
+ *
+ * ORDER IS CRITICAL (the 500 ms debounce window):
+ *   1. FLUSH the editor's pending debounced save (and cancel its timer) —
+ *      it PUTs the CURRENT page's items with an explicit pageId, so it must
+ *      land while state.activePageId still points at the old page. A save
+ *      firing AFTER the switch would carry the OLD items under the NEW
+ *      active page and silently move them across pages.
+ *   2. PUT /api/layout/active {pageId} — ONE round-trip: the server switches
+ *      the active page and returns its items + the fresh page list.
+ *   3. destroyGrid() — every widget's timers/observers go through the
+ *      existing disposeWidget mechanism (editor/viewer destroy).
+ *   4. setMode(current mode) — rebuilds the grid through the SAME path as
+ *      the initial load: initEditor/renderViewer re-apply normalizeItems()
+ *      (geometry hardening + search h:1→h:2) and the legacy 12→32 column
+ *      migration client-side, because the server NEVER re-scales
+ *      coordinates (columns is global to the file) and a joined page may
+ *      still be stored in 12-column coordinates.
+ *   updatePreviewScale() + syncBackgroundScope() run inside setMode, and
+ *   renderTabs() refreshes the active-tab highlight. NO animation: the
+ *   geometry must be final from the first frame (gridstack reads the
+ *   container size right after init).
+ */
+async function switchPage(pageId) {
+  if (!pageId || switchingPage) return;
+  if (pageId === state.activePageId) return; // re-click the active tab: no-op
+  switchingPage = true;
+  try {
+    // 1) flush (awaitable — saveLayout resolves after the PUT settles; it
+    //    toasts on failure itself, a failed save must not block navigation).
+    try {
+      await grid?.flush?.();
+    } catch {
+      /* already toasted */
+    }
+    // 2) single round-trip switch
+    const res = await api.put('/api/layout/active', { pageId });
+    state.activePageId = res.activePageId;
+    if (Array.isArray(res.pages)) state.pages = res.pages;
+    state.layout = Array.isArray(res.items) ? res.items : [];
+    if (Number(res.columns) > 0) state.layoutColumns = Number(res.columns);
+    // 3+4) teardown + rebuild (same normalization path as initial load).
+    setMode(state.mode);
+  } catch (err) {
+    toast(err.message || 'Failed to switch page', 'error');
+  } finally {
+    switchingPage = false;
+  }
 }
 
 // ---- Auth forms ------------------------------------------------------------
@@ -315,6 +510,21 @@ window.addEventListener('homy:widget-config', (e) => {
   grid?.applyConfig?.(id, config);
 });
 
+// ---- Dashboard pages tab strip (multiple pages, lot C+D) --------------------
+// The row itself is rendered by ui/tabs.js into the reserved #topbar-tabs
+// slot; main.js owns the navigation/flush/rebuild pieces it needs:
+//  - onSwitch: page switch (the ordered flush→PUT /active→rebuild flow above);
+//  - onFlush: the editor's awaitable pending-save flush (before delete/switch);
+//  - onRebuild: full grid rebuild after a state change that swapped the active
+//    page's items (deletion of the active page → server fallback). setMode
+//    already runs destroyGrid + updatePreviewScale + syncBackgroundScope +
+//    renderTabs in the right order.
+initTabs({
+  onSwitch: (pageId) => switchPage(pageId),
+  onFlush: () => grid?.flush?.(),
+  onRebuild: () => setMode(state.mode),
+});
+
 // ---- Editor toolbar: Background + Theme (lot 3) -----------------------------
 
 function updateThemeButton() {
@@ -366,6 +576,12 @@ window.addEventListener('auth:expired', () => {
 // (fallback threshold) and the background must follow the new host.
 if (typeof ResizeObserver !== 'undefined') {
   new ResizeObserver(() => {
+    // Topbar height can wrap/change with the width: re-measure it FIRST so the
+    // collapse margin and the edit-preview dezoom both use the fresh value.
+    updateTopbarHeight();
+    // Re-pin the canvas width (the wrap resizes with the body — topbar
+    // animation, window resize, palette docking) BEFORE the dezoom math.
+    updateCanvasWidth();
     updatePreviewScale();
     syncBackgroundScope();
   }).observe($('dashboard-body'));

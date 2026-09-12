@@ -69,19 +69,35 @@
 
     <!-- ===== Dashboard view ===== -->
     <section id="dashboard-view" class="view hidden">
+      <!-- Topbar: a compact 2-row flex column. Row 1 is the live bar
+           (brand + actions); row 2 (#topbar-tabs) is the reserved slot for
+           the future pages/tabs nav (separate chantier) — empty today, so the
+           bar can grow without restructuring. In VIEW mode the whole header is
+           hidden by default and a right-click toggles it (main.js
+           applyTopbarState): it is pulled above the viewport by its MEASURED
+           height so #dashboard-body reclaims exactly that space. In EDIT mode
+           it stays visible permanently. -->
       <header class="topbar">
-        <h1 class="brand">Homy</h1>
-        <div class="topbar-actions">
-          <span id="user-label" class="muted"></span>
-          <!-- Edit-only toolbar actions (lot 2): moved out of the palette so
-               they live in the topbar. Hidden outside edit mode (setMode). -->
-          <div id="editor-actions" class="editor-actions hidden">
-            <button id="bg-btn" class="btn" type="button">Background</button>
-            <button id="theme-btn" class="btn" type="button">Theme: Dark</button>
+        <div class="topbar-row">
+          <h1 class="brand">Homy</h1>
+          <div class="topbar-actions">
+            <span id="user-label" class="muted"></span>
+            <!-- Edit-only toolbar actions (lot 2): moved out of the palette so
+                 they live in the topbar. Hidden outside edit mode (setMode). -->
+            <div id="editor-actions" class="editor-actions hidden">
+              <button id="bg-btn" class="btn" type="button">Background</button>
+              <button id="theme-btn" class="btn" type="button">Theme: Dark</button>
+            </div>
+            <button id="toggle-mode" class="btn">Edit</button>
+            <button id="logout-btn" class="btn btn-ghost">Logout</button>
           </div>
-          <button id="toggle-mode" class="btn">Edit</button>
-          <button id="logout-btn" class="btn btn-ghost">Logout</button>
         </div>
+        <!-- Pages/tabs row (multiple pages, lot C+D): filled by public/js/
+             ui/tabs.js (renderTabs). Visibility is decided there: always
+             visible in EDIT mode (the only way to create the 2nd page),
+             visible in VIEW mode only when there are ≥ 2 pages — the whole
+             topbar then follows the right-click toggle. -->
+        <nav id="topbar-tabs" class="topbar-tabs hidden" aria-label="Dashboard pages"></nav>
       </header>
 
       <div id="dashboard-body" class="dashboard-body">

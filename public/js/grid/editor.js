@@ -2,7 +2,7 @@ import { renderWidget, disposeWidget, getWidget, getDefaultSize, getSettingsSche
 import { openSettingsModal } from '../ui/settingsModal.js';
 import { toast } from '../ui/toast.js';
 import { api } from '../api.js';
-import { uuid, debounce, el } from '../util.js';
+import { uuid, el } from '../util.js';
 import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, normalizeItems } from './config.js';
 
 /**
@@ -89,9 +89,15 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
     }
   }
 
-  // ---- persistence (debounced) ----
+  // ---- persistence (debounced, CANCELLABLE) ----
+  // Unlike the shared debounce() helper, the timer is kept in a handle so a
+  // page switch can FLUSH synchronously and CANCEL the pending tick: a stale
+  // tick firing after the switch would re-send the old page's items (the
+  // gridstack race guard would usually catch it, but cancellation removes the
+  // race window entirely).
   let ready = false;
   let pendingSave = false; // a debounced save is scheduled but not yet run
+  let saveTimer = 0;
   // Serialize from the LIVE engine nodes — NOT from grid.save(). gridstack's
   // removeInternalForSave() strips `w`/`h` whenever they equal 1, so a
   // grid.save()-based body silently dropped the geometry of every 1-cell item
@@ -103,18 +109,35 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
       const m = meta.get(n.id) || { type: 'frame', config: {} };
       return { id: n.id, x: n.x, y: n.y, w: n.w || 1, h: n.h || 1, type: m.type, config: m.config };
     });
-  const save = debounce(() => {
+  const runSave = () => {
+    saveTimer = 0;
     pendingSave = false;
     // Known race: a debounced save can fire after destroy() (fast edit→view
     // toggle). gridstack's destroy() deletes .engine/.opts — bail out quietly
-    // instead of throwing inside the timer (destroy() flushes pending saves
-    // itself BEFORE tearing the grid down, see below).
+    // instead of throwing inside the timer.
     if (!ready || !grid.engine) return;
-    onSave(serialize());
-  }, 500);
+    return onSave(serialize());
+  };
   const scheduleSave = () => {
     pendingSave = true;
-    save();
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(runSave, 500);
+  };
+  /**
+   * Flush a pending debounced save NOW and cancel its timer. Returns the
+   * result of onSave() when a save actually ran (a promise when onSave is
+   * async — main.js's switchPage awaits it), undefined when nothing was
+   * pending. Used BEFORE page switches / grid teardown so a drag-edit made
+   * in the 500 ms debounce window is never lost.
+   */
+  const flushSave = () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = 0;
+    }
+    if (!pendingSave) return;
+    pendingSave = false;
+    if (ready && grid.engine) return onSave(serialize());
   };
 
   grid.on('change', scheduleSave);
@@ -252,17 +275,16 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   return {
     addWidget,
     applyConfig,
+    /** Flush a pending debounced save NOW (awaitable — see flushSave). */
+    flush: flushSave,
     destroy() {
       // Flush a pending debounced save BEFORE gridstack tears the DOM down:
       // without this, a change (e.g. a drag) followed by an immediate
       // edit→view toggle inside the 500ms window would be silently lost.
-      if (pendingSave && grid.engine) {
-        pendingSave = false;
-        try {
-          onSave(serialize());
-        } catch {
-          /* ignore — the debounced path already guards */
-        }
+      try {
+        flushSave();
+      } catch {
+        /* ignore — the debounced path already guards */
       }
       // Dispose every widget's cleanup (timers) before gridstack tears the DOM down.
       for (const node of grid.engine.nodes) {

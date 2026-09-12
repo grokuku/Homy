@@ -131,24 +131,170 @@ body { background: transparent; transition: background 0.2s; }
 .btn-danger:hover { background: rgba(229, 72, 77, 0.12); }
 .btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-/* ---------- Topbar ---------- */
+/* ---------- Topbar ----------
+   Compact 2-row flex column: row 1 = brand + actions, row 2 = reserved tabs
+   slot. Height is reduced vs the old bar (padding 14px 20px → 6px 14px, brand
+   20px → 16px, buttons 9/16 → 5/10) so the display area below gets more room
+   and a future tab row can be added without growing the bar itself. */
 .topbar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 20px;
+  flex-direction: column;
+  padding: 6px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
-  position: sticky;
-  top: 0;
+  /* position:relative instead of sticky: the dashboard is a fixed 100dvh flex
+     column that never scrolls, and sticky would fight the collapsed state's
+     negative margin (sticky top:0 would clamp the pulled-up bar back into the
+     viewport). z-index kept for the same stacking as before. */
+  position: relative;
   z-index: 20;
 }
-.topbar .brand { margin: 0; font-size: 20px; }
-.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.topbar-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.topbar .brand { margin: 0; font-size: 16px; letter-spacing: 0.4px; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+.topbar .btn { padding: 5px 10px; font-size: 13px; }
 /* Edit-only topbar actions (Background / Theme, lot 2): a flex row inline with
    the other topbar buttons, so they never overlap the preview area. Hidden
    outside edit mode via .hidden (toggled in main.js setMode). */
-.editor-actions { display: flex; align-items: center; gap: 10px; }
+.editor-actions { display: flex; align-items: center; gap: 8px; }
+/* Reserved tabs/pages row (multiple pages, lot C+D) — rendered by
+   public/js/ui/tabs.js. CONSTANT height (the topbar must only grow ONCE when
+   the row appears): fixed row height + hidden scrollbars + NO wrap ever. On
+   narrow screens the row scrolls horizontally (overflow-x:auto) while the
+   tabs shrink (max-width + ellipsis on the label) instead of stacking. */
+.topbar-tabs {
+  display: flex;
+  flex-wrap: nowrap; /* NEVER wrap: the topbar must not grow row by row */
+  align-items: center;
+  gap: 6px;
+  height: 32px; /* constant row height (tabs + « + » are 24px) */
+  margin-top: 6px;
+  padding-bottom: 2px;
+  overflow-x: auto; /* narrow screens: scroll instead of wrap */
+  overflow-y: hidden;
+  /* Hidden scrollbar (no reserved gutter → height stays constant): */
+  scrollbar-width: none; /* Firefox */
+}
+.topbar-tabs::-webkit-scrollbar { display: none; } /* Chromium/Safari */
+
+/* Tab: name (ellipsized, full name in title) + hover-revealed ✕ (edit). */
+.topbar-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0; /* allow shrinking below content so the ellipsis can engage */
+  max-width: 160px;
+  padding: 3px 8px 3px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.topbar-tab:hover { border-color: var(--accent); }
+.topbar-tab-label {
+  /* Floor: the label keeps ≥ 36px of visible text before the row scrolls —
+     an ellipsized-to-nothing tab is useless; past that floor the ROW
+     (overflow-x:auto) scrolls instead of shrinking further. */
+  min-width: 36px;
+  overflow: hidden; /* ellipsis carrier (label only, never the ✕) */
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Active tab: accent underline + tinted surface, readable in BOTH themes
+   (accent on the elevated surface passes contrast in dark and light). */
+.topbar-tab.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev-2));
+  box-shadow: inset 0 -2px 0 var(--accent); /* the underline */
+}
+.topbar-tab.active:hover { background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev-2)); }
+
+/* Delete ✕ (edit only — the button is not even attached in view mode).
+   ALWAYS laid out (visibility, not display): hover must not reflow the row. */
+.topbar-tab-del {
+  visibility: hidden;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.topbar-tab:hover .topbar-tab-del,
+.topbar-tab-del:focus-visible { visibility: visible; }
+.topbar-tab-del:hover { background: var(--btn-hover); color: var(--danger); }
+/* 2-step confirmation (no modal): armed state = filled red ✕, ~3 s (tabs.js). */
+.topbar-tab-del.confirm {
+  visibility: visible;
+  background: var(--danger);
+  color: #fff;
+}
+.topbar-tab-del.confirm:hover { background: var(--danger); color: #fff; }
+
+/* « + » (edit only): ghost button pinned at the end of the row. */
+.topbar-tab-add {
+  flex: none;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.topbar-tab-add:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Inline rename input (replaces the tab content on dblclick, edit only). */
+.topbar-tab-input {
+  width: 150px;
+  min-width: 60px;
+  padding: 2px 6px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+}
+.topbar-tab-input:focus { outline: none; }
+
+/* VIEW-mode hiding (right-click toggles it via main.js). The bar is pulled
+   ABOVE the viewport by its MEASURED height (--topbar-h, set by
+   updateTopbarHeight()), so the flex:1 #dashboard-body reclaims exactly that
+   space and no content is ever masked. The animated margin-top/opacity give
+   the fluid dezoom (200ms, within the 150–250ms budget); visibility flips
+   after the slide so the hidden bar is neither clickable nor focusable in the
+   meantime. The fixed background layers live on <body> and are NOT affected. */
+#dashboard-view.topbar-collapsed .topbar {
+  margin-top: calc(-1 * var(--topbar-h, 0px));
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: margin-top 200ms ease, opacity 200ms ease, visibility 0s linear 200ms;
+}
+/* Base transition (expanding back): visibility must switch on immediately. */
+.topbar { transition: margin-top 200ms ease, opacity 200ms ease, visibility 0s linear 0s; }
+/* Mode switches (setMode) disable the slide for one frame so gridstack reads
+   the final container size — the right-click toggle never sets this class. */
+.topbar.topbar-instant { transition: none !important; }
 
 /* ---------- Palette ---------- */
 .palette {
@@ -269,7 +415,14 @@ body { background: transparent; transition: background 0.2s; }
      square. No min-height here: gridstack only reads the computed min-height
      when no minRow is configured (we always set minRow:18), so the 18-row
      exact fill is enforced by minRow/maxRow alone. */
-  width: min(100cqw, calc(100cqh * 16 / 9));
+  width: var(--canvas-w, min(100cqw, calc(100cqh * 16 / 9)));
+  /* --canvas-w (main.js updateCanvasWidth): the SAME fit formula measured in
+     JS and pinned as an integer pixel value — a source of truth shared with
+     gridstack, so the inline height (18 × clientWidth/32) always agrees with
+     this box even when the grid is (re)built while the topbar transition is
+     mid-flight (stale container-query units would otherwise freeze an
+     oversized canvas and show a phantom scrollbar — lot E). The cq fallback
+     covers the first paint before main.js runs. */
   /* Review C2 — cell floor: never let a cell shrink below a readable 20px.
      640px = 20px × 32 cells: on viewports narrower than ~680px (or short
      landscape phones where 100cqh × 16/9 would win) the canvas is clamped to
@@ -284,6 +437,21 @@ body { background: transparent; transition: background 0.2s; }
    overflow vertically on short windows — pre-2023 behavior). */
 @supports not (container-type: size) {
   #grid-container { width: 100%; }
+}
+
+/* Lot E — hard containment of the canvas in VIEW mode (and the edit
+   small-screen fallback). Belt-and-braces over --canvas-w: even if gridstack's
+   inline height (18 × clientWidth/32, its ResizeObserver is throttled) is
+   stale by a few px after a mid-animation rebuild, the BOX can never exceed
+   the exact 16:9 fit of the pinned width and nothing rendered inside it can
+   spill a phantom scrollbar into .grid-wrap (the empty-page scrollbar of lot
+   E's screenshots). max() keeps the 640px pan floor unsquashed (a clamped
+   640-wide canvas keeps its full 360px height); the 100000px fallback is a
+   no-clamp before main.js pins --canvas-w. overflow:clip (not hidden) also
+   never creates a scroll container. */
+#dashboard-view:not(.preview-active) #grid-container {
+  max-height: calc(max(var(--canvas-w, 100000px), 640px) * 9 / 16);
+  overflow: clip;
 }
 
 /* The 16:9 frame that hosts the whole canvas in edit-preview mode. Its width

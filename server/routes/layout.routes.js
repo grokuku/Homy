@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { LayoutService, MAX_COLUMNS } from '../services/layout.service.js';
+import { LayoutService, MAX_COLUMNS, MAX_PAGES, PAGE_NAME_MAX } from '../services/layout.service.js';
 import { WIDGET_MANIFEST_FINAL } from './widgets.routes.js';
 
-const MAX_ITEMS = 100;
+const MAX_ITEMS = 100; // per PAGE (widgets are confined to their page)
 const MAX_BODY_BYTES = 256 * 1024; // 256 KB
 const VALID_TYPES = new Set(WIDGET_MANIFEST_FINAL.map((w) => w.type));
 
@@ -15,20 +15,35 @@ export function layoutRoutes(store) {
   const layout = new LayoutService(store);
   const routes = new Hono();
 
-  // Get full layout — items + the column count they are expressed in
-  // (12 for legacy layouts, converted client-side by gridstack) + schema version.
-  routes.get('/', (c) => c.json({ items: layout.list(), ...layout.meta() }));
+  // Get full layout — items of the ACTIVE page + the column count they are
+  // expressed in (12 for legacy layouts, converted client-side by gridstack)
+  // + schema version + the page list (tabs). RETRO-COMPATIBLE: the legacy
+  // front only reads `items`/`columns`, which keep their meaning.
+  routes.get('/', (c) =>
+    c.json({
+      ...layout.meta(),
+      activePageId: layout.activePageId,
+      pages: layout.pagesSummary(),
+      items: layout.list(),
+    })
+  );
 
-  // Replace full layout (from gridstack serialization). `columns` (optional)
-  // records the grid the coordinates are expressed in; legacy 12-column
-  // coordinates are migrated client-side BEFORE this call (editor.js), so a
-  // PUT with columns: 32 stores already-rescaled items.
+  // Replace the items of the ACTIVE page (from gridstack serialization).
+  // `pageId` (optional) targets another page WITHOUT switching the active one.
+  // `columns` (optional) records the grid the coordinates are expressed in;
+  // legacy 12-column coordinates are migrated client-side BEFORE this call
+  // (editor.js), so a PUT with columns: 32 stores already-rescaled items.
   routes.put('/', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    let targetId;
+    if (parsed.body.pageId !== undefined) {
+      targetId = layout.page(String(parsed.body.pageId))?.id;
+      if (!targetId) return c.json({ error: 'Not found' }, 404);
+    }
     const rawItems = Array.isArray(parsed.body.items) ? parsed.body.items : [];
     if (rawItems.length > MAX_ITEMS) {
-      return c.json({ error: `Too many items (max ${MAX_ITEMS})` }, 400);
+      return c.json({ error: `Too many items (max ${MAX_ITEMS} per page)` }, 400);
     }
     let columns;
     if (parsed.body.columns !== undefined) {
@@ -45,17 +60,17 @@ export function layoutRoutes(store) {
       if (error) return c.json({ error }, 400);
       clean.push(cleanItem);
     }
-    layout.replace(clean, columns);
-    return c.json({ items: clean, ...layout.meta() });
+    const items = layout.replace(clean, columns, targetId);
+    return c.json({ items, ...layout.meta(), activePageId: layout.activePageId, pages: layout.pagesSummary() });
   });
 
-  // Add a single item — missing w/h default to the widget's manifest
-  // defaultSize (32-col values, e.g. search = 11×2).
+  // Add a single item to the ACTIVE page — missing w/h default to the widget's
+  // manifest defaultSize (32-col values, e.g. search = 11×2).
   routes.post('/items', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
     if (layout.list().length >= MAX_ITEMS) {
-      return c.json({ error: `Too many items (max ${MAX_ITEMS})` }, 400);
+      return c.json({ error: `Too many items (max ${MAX_ITEMS} per page)` }, 400);
     }
     const error = validateType(parsed.body);
     if (error) return c.json({ error }, 400);
@@ -66,7 +81,7 @@ export function layoutRoutes(store) {
     return c.json(entry, 201);
   });
 
-  // Update an item's config
+  // Update an item's config (id looked up across all pages — ids are unique)
   routes.patch('/items/:id/config', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
@@ -83,6 +98,82 @@ export function layoutRoutes(store) {
     const ok = layout.remove(c.req.param('id'));
     if (!ok) return c.json({ error: 'Not found' }, 404);
     return c.json({ ok: true });
+  });
+
+  // ---- Pages (tabs) ---------------------------------------------------------
+
+  // Items of a specific page (the active one is NOT switched).
+  routes.get('/pages/:id', (c) => {
+    const page = layout.page(c.req.param('id'));
+    if (!page) return c.json({ error: 'Not found' }, 404);
+    return c.json({
+      id: page.id,
+      name: page.name,
+      itemCount: page.items.length,
+      items: page.items,
+      ...layout.meta(),
+    });
+  });
+
+  // Create a page — optional {name} (1..40 chars after trim), defaults to
+  // "Page N" (first free index). Page ids are server-generated UUIDs.
+  routes.post('/pages', async (c) => {
+    const parsed = await parseBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (layout.pages.length >= MAX_PAGES) {
+      return c.json({ error: `Too many pages (max ${MAX_PAGES})` }, 400);
+    }
+    let name;
+    if (parsed.body.name !== undefined) {
+      name = normalizePageName(parsed.body.name);
+      if (!name) return c.json({ error: `name must be 1 to ${PAGE_NAME_MAX} characters after trim` }, 400);
+    }
+    return c.json(layout.createPage(name), 201);
+  });
+
+  // Rename a page — {name} required, 1..40 chars after trim.
+  routes.patch('/pages/:id', async (c) => {
+    const parsed = await parseBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const name = normalizePageName(parsed.body.name);
+    if (!name) return c.json({ error: `name must be 1 to ${PAGE_NAME_MAX} characters after trim` }, 400);
+    const page = layout.renamePage(c.req.param('id'), name);
+    if (!page) return c.json({ error: 'Not found' }, 404);
+    return c.json(page);
+  });
+
+  // Delete a page. The last page cannot be deleted (400). Deleting the ACTIVE
+  // page falls back to the FIRST remaining page: the response carries the new
+  // activePageId AND its items + the fresh page list (single round-trip).
+  routes.delete('/pages/:id', (c) => {
+    const result = layout.deletePage(c.req.param('id'));
+    if (!result.ok) {
+      if (result.reason === 'not-found') return c.json({ error: 'Not found' }, 404);
+      return c.json({ error: 'Cannot delete the last page' }, 400);
+    }
+    return c.json({
+      ok: true,
+      activePageId: result.activePageId,
+      items: layout.list(),
+      ...layout.meta(),
+      pages: layout.pagesSummary(),
+    });
+  });
+
+  // Switch the active page — {pageId}. One round-trip: returns the new active
+  // page's items + the page list, so the front can swap tabs instantly.
+  routes.put('/active', async (c) => {
+    const parsed = await parseBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (parsed.body.pageId === undefined) return c.json({ error: 'pageId required' }, 400);
+    const page = layout.setActive(String(parsed.body.pageId));
+    if (!page) return c.json({ error: 'Not found' }, 404);
+    return c.json({
+      activePageId: page.id,
+      items: page.items,
+      ...layout.meta(),
+      pages: layout.pagesSummary(),
+    });
   });
 
   return routes;
@@ -119,6 +210,12 @@ function defaultSizeFor(item) {
   if (def && item?.w === undefined) out.w = def.w;
   if (def && item?.h === undefined) out.h = def.h;
   return out;
+}
+
+/** Page name: trim + length check (1..40). Returns the trimmed name or null. */
+function normalizePageName(raw) {
+  const name = String(raw ?? '').trim();
+  return name && name.length <= PAGE_NAME_MAX ? name : null;
 }
 
 /**
