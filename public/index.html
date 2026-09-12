@@ -79,15 +79,23 @@
            it stays visible permanently. -->
       <header class="topbar">
         <div class="topbar-row">
+          <!-- GROUP 1 — brand (anchored left, STATIC: no motion). -->
           <h1 class="brand">Homy</h1>
+          <!-- GROUP 3 — edit-only admin actions (Background / Theme). A SIBLING
+               of the cluster (not a child) so it can descend from the top
+               independently in the validated 2-beat topbar choreography. It is
+               absolutely positioned to the LEFT of the cluster in EDIT mode
+               (right: --cluster-w + gap) and parked above the bar in VIEW
+               (opacity 0 / translateY). Visibility is a CSS state (mode-view /
+               mode-edit, see style.css) — NOT .hidden, which would kill the
+               transition. main.js keeps it inert outside edit mode. -->
+          <div id="editor-actions" class="editor-actions">
+            <button id="bg-btn" class="btn" type="button">Background</button>
+            <button id="theme-btn" class="btn" type="button">Theme: Dark</button>
+          </div>
+          <!-- GROUP 2 — user / Edit / Logout (slides RIGHT on ENTER). -->
           <div class="topbar-actions">
             <span id="user-label" class="muted"></span>
-            <!-- Edit-only toolbar actions (lot 2): moved out of the palette so
-                 they live in the topbar. Hidden outside edit mode (setMode). -->
-            <div id="editor-actions" class="editor-actions hidden">
-              <button id="bg-btn" class="btn" type="button">Background</button>
-              <button id="theme-btn" class="btn" type="button">Theme: Dark</button>
-            </div>
             <button id="toggle-mode" class="btn">Edit</button>
             <button id="logout-btn" class="btn btn-ghost">Logout</button>
           </div>

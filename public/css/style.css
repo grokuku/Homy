@@ -153,14 +153,29 @@ body { background: transparent; transition: background 0.2s; }
   position: relative;
   z-index: 20;
 }
-.topbar-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* position:relative is the anchor for the absolutely-positioned #editor-actions
+   (GROUP 3): it must sit to the LEFT of the right cluster in EDIT mode and be
+   free to translate/descend without ever affecting the flex layout. */
+.topbar-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .topbar .brand { margin: 0; font-size: 16px; letter-spacing: 0.4px; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .topbar .btn { padding: 5px 10px; font-size: 13px; }
-/* Edit-only topbar actions (Background / Theme, lot 2): a flex row inline with
-   the other topbar buttons, so they never overlap the preview area. Hidden
-   outside edit mode via .hidden (toggled in main.js setMode). */
-.editor-actions { display: flex; align-items: center; gap: 8px; }
+/* Edit-only topbar actions (Background / Theme, lot 2; re-homed by the topbar
+   motion chantier): GROUP 3 of the validated 2-beat choreography. ABSOLUTELY
+   positioned to the left of the cluster (right = cluster width + gap) so the
+   cluster can slide right while the admin descends into the vacated slot.
+   Its resting VIEW/EDIT look (translateY + opacity + inert) is defined with the
+   other topbar-motion states further down — NOT via .hidden, which would
+   display:none the group and make the transition impossible. */
+.editor-actions {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(var(--cluster-w, 0px) + 10px); /* 10px = gap to the cluster */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 /* Reserved tabs/pages row (multiple pages, lot C+D) — rendered by
    public/js/ui/tabs.js. CONSTANT height (the topbar must only grow ONCE when
    the row appears): fixed row height + hidden scrollbars + NO wrap ever. On
@@ -627,6 +642,122 @@ body { background: transparent; transition: background 0.2s; }
   transform-origin: top left;
 }
 
+/* ---------- Topbar motion — validated 2-beat choreography ----------
+   The topbar is ONE bar that grows, in two beats, mirroring the standalone
+   reference mockup with the REAL measured geometry (never the mockup's fixed
+   52/108 px):
+
+     ENTER (VIEW -> EDIT)               EXIT (EDIT -> VIEW)
+       beat 1 (0ms)   bar grows           beat 2 first (tabs 0ms, admin 30ms)
+                      cluster slides right beat 1 later  (cluster 150ms, bar 150ms)
+       beat 2 (~120ms) admin descends
+                       tabs slide from left = exact reverse order
+
+   4 groups, 4 motions:
+     • brand              STATIC (no motion)
+     • .topbar-actions    translateX  → slides RIGHT on enter
+     • .editor-actions    translateY from the top + opacity → descends
+     • .topbar-tabs       translateX from the left + opacity → slides in
+
+   GEOMETRY CONTRACT (same lesson as the dezoom): the topbar LAYOUT is frozen
+   at the final EDIT height for the whole swap (gridstack already read it), so
+   the bar "grows" by animating clip-path (a VISUAL prop) — never `height`,
+   which would resize #dashboard-body/.grid-wrap mid-flight and feed gridstack
+   a stale size. Every motion here is transform/opacity/clip-path only.
+   Delays/durations/easing are the validated mockup's, on --mode-ease
+   (cubic-bezier(0.4, 0, 0.2, 1)). */
+#dashboard-view {
+  /* Durations (≈480 ms total with a deliberate ~120 ms overlap between beats) */
+  --d-bar: 320ms;     /* bar growth (clip-path)      */
+  --d-cluster: 320ms; /* user / Edit / Logout        */
+  --d-admin: 340ms;   /* Background / Theme          */
+  --d-tabs: 350ms;    /* pages row                   */
+}
+/* ENTER delays (NORMAL -> EDIT): beat 1 at 0ms, beat 2 overlaps at ~120ms. */
+#dashboard-view.mode-edit,
+#dashboard-view.anim-from-view {
+  --delay-bar: 0ms;
+  --delay-cluster: 0ms;
+  --delay-admin: 120ms;
+  --delay-tabs: 130ms;
+}
+/* EXIT delays (EDIT -> NORMAL): exact reverse order. */
+#dashboard-view.mode-view,
+#dashboard-view.anim-to-view {
+  --delay-bar: 150ms;
+  --delay-cluster: 150ms;
+  --delay-admin: 30ms;
+  --delay-tabs: 0ms;
+}
+
+/* --- resting states -------------------------------------------------------
+   .mode-view / .mode-edit are set by main.js setMode (distinct from the
+   generic `.view` class carried by #login-view/#dashboard-view). The
+   .anim-from-view / .anim-to-view rules repeat the VIEW geometry exactly, so
+   the directional classes are self-contained snap/target states of the swap. */
+
+/* GROUP 2 — cluster: slides RIGHT on enter (from -shift to 0). */
+#dashboard-view.mode-edit .topbar-actions { transform: translateX(0); }
+#dashboard-view.mode-view .topbar-actions,
+#dashboard-view.anim-from-view .topbar-actions,
+#dashboard-view.anim-to-view .topbar-actions {
+  transform: translateX(calc(-1 * var(--shift, 0px)));
+}
+
+/* GROUP 3 — admin: descends from ABOVE the bar + fades in on enter.
+   No `visibility` here: it is NOT transitionable and would switch instantly at
+   exit t=0, making the admin vanish instead of fading out. `inert` (set by
+   main.js) keeps it unfocusable outside edit mode; pointer-events handles the
+   clicks during the fade. */
+#dashboard-view.mode-edit .editor-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+#dashboard-view.mode-view .editor-actions,
+#dashboard-view.anim-from-view .editor-actions,
+#dashboard-view.anim-to-view .editor-actions {
+  opacity: 0;
+  transform: translateY(calc(-1 * var(--topbar-h, 48px)));
+  pointer-events: none;
+}
+
+/* GROUP 4 — tabs: slide in from the LEFT + fade on enter. When the row is
+   already visible in VIEW (>= 2 pages, .tabs-static set by main.js) it must
+   NOT move: a slide would snap backwards on the first enter frame (pop). */
+#dashboard-view.mode-edit .topbar-tabs { opacity: 1; transform: none; }
+#dashboard-view.mode-view .topbar-tabs,
+#dashboard-view.anim-from-view .topbar-tabs,
+#dashboard-view.anim-to-view .topbar-tabs { opacity: 0; transform: translateX(-100%); }
+#dashboard-view.tabs-static .topbar-tabs { opacity: 1; transform: none; }
+
+/* GROUP 1 + bar: brand static; the bar only GROWS (clip-path). The bottom
+   inset is the measured VIEW↔EDIT height difference (--bar-grow, main.js) so
+   an edit bar with a tabs row reveals exactly that extra row. */
+#dashboard-view.mode-edit .topbar { clip-path: inset(0 0 0 0); }
+#dashboard-view.mode-view .topbar,
+#dashboard-view.anim-from-view .topbar,
+#dashboard-view.anim-to-view .topbar { clip-path: inset(0 0 var(--bar-grow, 0px) 0); }
+
+/* --- transitions (enabled only while .mode-anim is on) -------------------- */
+#dashboard-view.mode-anim .topbar {
+  transition: clip-path var(--d-bar) var(--mode-ease) var(--delay-bar, 0ms);
+  will-change: clip-path;
+}
+#dashboard-view.mode-anim .topbar-actions {
+  transition: transform var(--d-cluster) var(--mode-ease) var(--delay-cluster, 0ms);
+  will-change: transform;
+}
+#dashboard-view.mode-anim .editor-actions {
+  transition: transform var(--d-admin) var(--mode-ease) var(--delay-admin, 0ms),
+              opacity var(--d-admin) var(--mode-ease) var(--delay-admin, 0ms);
+  will-change: transform, opacity;
+}
+#dashboard-view.mode-anim .topbar-tabs {
+  transition: transform var(--d-tabs) var(--mode-ease) var(--delay-tabs, 0ms),
+              opacity var(--d-tabs) var(--mode-ease) var(--delay-tabs, 0ms);
+  will-change: transform, opacity;
+}
+
 /* ---------- VIEW ↔ EDIT mode transition (lot 4) ----------
    Fluid swap between the full-area VIEW canvas and the framed EDIT preview.
    DESIGN CONTRACT (mirrors the topbar-instant lesson): the FINAL geometry is
@@ -661,14 +792,10 @@ body { background: transparent; transition: background 0.2s; }
 #dashboard-view.mode-anim .grid-stack.editing-grid {
   transition: --guide-op var(--mode-dur) var(--mode-ease);
 }
-/* The topbar takes part in the swap too. Its LAYOUT is frozen at the final
-   edit height for the whole transition (gridstack already measured it), so only
-   a visual translateY/opacity animates it: it drops in on ENTER and slides out
-   on EXIT instead of clacking 78 px → 40 px in a single frame (the reported
-   « saut »). */
-#dashboard-view.mode-anim .topbar {
-  transition: transform var(--mode-dur) var(--mode-ease), opacity var(--mode-dur) var(--mode-ease);
-}
+/* The topbar's own motion (bar growth + the 4 groups) is declared in the
+   « Topbar motion » section above; while a mode transition runs its LAYOUT is
+   frozen at the final edit height (gridstack already measured it) and only
+   clip-path / transform / opacity animate it. */
 /* Clip the (temporarily oversized) scaled frame at the DASHBOARD level, NOT at
    .grid-wrap: at the start of the swap the frame is scaled up to the full view
    canvas, which is wider than the palette-narrowed .grid-wrap — clipping there
@@ -708,30 +835,35 @@ body { background: transparent; transition: background 0.2s; }
 #dashboard-view.anim-to-view .grid-stack.editing-grid {
   --guide-op: 0;
 }
-/* The topbar is visually collapsed in the « from view » state and must SNAP
-   there (the base .topbar transition would otherwise fade it in before the
-   real transition starts). It is pulled above by its MEASURED height so no
-   hardcoded value is needed. */
-#dashboard-view.anim-from-view .topbar {
-  transform: translateY(calc(-1 * var(--topbar-h, 0px)));
-  opacity: 0;
-  pointer-events: none;
-  transition: none !important;
-}
-#dashboard-view.anim-to-view .topbar {
-  transform: translateY(calc(-1 * var(--topbar-h, 0px)));
-  opacity: 0;
-  pointer-events: none;
-}
+/* The « from view » topbar state is the compact (clipped) VIEW bar: it must
+   SNAP there so the base .topbar collapse transition (margin-top/opacity) can
+   never fire before the real grown transition starts. The bar is NOT hidden
+   here — it grows in place (clip-path, see the Topbar motion section) instead
+   of dropping in from above, so the VIEW resting geometry is fully preserved. */
+#dashboard-view.anim-from-view .topbar { transition: none !important; }
 
 @media (prefers-reduced-motion: reduce) {
   /* Belt-and-braces: main.js already skips the animation entirely under
-     reduced-motion, but the transitions must never run either. */
-  #dashboard-view { --mode-dur: 0ms; }
+     reduced-motion (no .mode-anim is ever added), but the transitions must
+     never run either — zero the topbar beats too. */
+  #dashboard-view {
+    --mode-dur: 0ms;
+    --d-bar: 0ms;
+    --d-cluster: 0ms;
+    --d-admin: 0ms;
+    --d-tabs: 0ms;
+    --delay-bar: 0ms;
+    --delay-cluster: 0ms;
+    --delay-admin: 0ms;
+    --delay-tabs: 0ms;
+  }
   #dashboard-view.mode-anim.preview-active #grid-preview,
   #dashboard-view.mode-anim.preview-active .palette,
   #dashboard-view.mode-anim.preview-active .widget-controls,
   #dashboard-view.mode-anim .topbar,
+  #dashboard-view.mode-anim .topbar-actions,
+  #dashboard-view.mode-anim .editor-actions,
+  #dashboard-view.mode-anim .topbar-tabs,
   #dashboard-view.mode-anim .grid-stack.editing-grid {
     transition: none;
   }
@@ -747,6 +879,7 @@ body { background: transparent; transition: background 0.2s; }
   #dashboard-view.anim-to-view .topbar {
     transform: none;
     opacity: 1;
+    clip-path: none;
     --guide-op: 1;
   }
 }

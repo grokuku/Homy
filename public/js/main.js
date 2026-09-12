@@ -39,6 +39,51 @@ function modeDurMs() {
   return m ? parseFloat(m[1]) : 480; // keep the fallback in sync with style.css
 }
 
+// ---- Topbar choreography measurement ----------------------------------------
+// The right cluster (user/Edit/Logout) slides RIGHT by the width of the
+// edit-only admin group (Background/Theme) so the admin can descend into the
+// vacated slot. Both groups are laid out in EVERY mode (the admin is
+// absolutely positioned and only faded/moved in VIEW), so offsetWidth is valid
+// whatever the current mode. Kept in sync with the CSS contract: the admin's
+// `right` is `--cluster-w + 10px` (see .editor-actions in style.css).
+const TOPBAR_GROUP_GAP = 10;
+function measureTopbarGroups() {
+  const view = $('dashboard-view');
+  const admin = $('editor-actions');
+  const cluster = view.querySelector('.topbar-actions');
+  if (!admin || !cluster) return;
+  view.style.setProperty('--shift', `${admin.offsetWidth + TOPBAR_GROUP_GAP}px`);
+  view.style.setProperty('--cluster-w', `${cluster.offsetWidth}px`);
+}
+
+/**
+ * Publish `--bar-grow`: how much taller the bar is in EDIT than in VIEW (the
+ * pages row appears in edit mode). It is the bottom inset of the topbar's
+ * clip-path, so the bar GROWS IN PLACE (visual only) instead of animating its
+ * layout — gridstack must keep reading the final EDIT geometry from frame 1.
+ * 0 whenever the VIEW bar already includes the tabs row (>= 2 pages), and 0 in
+ * view mode (there is nothing to grow back to).
+ */
+function updateBarGrow() {
+  const view = $('dashboard-view');
+  const topbar = view.querySelector('.topbar');
+  if (!topbar) return;
+  const grow =
+    state.mode === 'edit' ? Math.max(0, topbar.offsetHeight - lastViewTopbarH) : 0;
+  view.style.setProperty('--bar-grow', `${grow}px`);
+}
+
+/**
+ * Tabs are visible in VIEW mode iff there are >= 2 pages (tabs.js contract).
+ * When that is the case the row must NOT slide on a mode change (it is already
+ * there — sliding it would snap backwards on the first frame): `.tabs-static`
+ * pins it to its resting look. With a single page the row is edit-only, so it
+ * animates in/out like the mockup.
+ */
+function syncTabsStatic() {
+  $('dashboard-view').classList.toggle('tabs-static', (state.pages?.length || 0) >= 2);
+}
+
 // Must match MAX_BODY_BYTES in server/routes/layout.routes.js (review C3):
 // the client refuses to send a body the server would 413, so the failure is
 // explained instead of silently dropped.
@@ -332,6 +377,11 @@ function applyTopbarState({ animate = true } = {}) {
   const topbar = $('dashboard-view').querySelector('.topbar');
   // Measure BEFORE collapsing so the negative margin uses the real height.
   updateTopbarHeight();
+  // Keep the topbar-choreography measurements in lockstep with the layout:
+  // the cluster/admin widths feed --shift/--cluster-w, the height difference
+  // feeds --bar-grow (both must be final before any swap reads them).
+  measureTopbarGroups();
+  updateBarGrow();
   // Mode switches must be INSTANT: gridstack reads the container size right
   // after setMode() (square cell height from clientWidth) and an animating
   // margin would feed it a stale intermediate size — the same trap the old
@@ -474,13 +524,23 @@ function setMode(mode, { animate = false } = {}) {
   // the new grid must never inherit a stale transform/fade (fast re-toggle).
   stopModeAnim();
   state.mode = mode;
+  const view = $('dashboard-view');
+  // Mode state drives the topbar choreography (resting geometry + per-state
+  // beat delays, see style.css « Topbar motion »). mode-* / anim-* names avoid
+  // the generic `.view` class (login/dashboard sections).
+  view.classList.toggle('mode-edit', mode === 'edit');
+  view.classList.toggle('mode-view', mode === 'view');
+  syncTabsStatic();
   const btn = $('toggle-mode');
   btn.textContent = mode === 'edit' ? 'Done' : 'Edit';
   btn.classList.toggle('active', mode === 'edit');
   $('editor-palette').classList.toggle('hidden', mode !== 'edit');
-  // The Background / Theme toolbar buttons are edit-only, exactly like the
-  // palette was (they live in the topbar since lot 2).
-  $('editor-actions').classList.toggle('hidden', mode !== 'edit');
+  // The Background / Theme buttons are edit-only, exactly like the palette was
+  // (they live in the topbar since lot 2). Their visibility is now a CSS state
+  // (mode-view parks + fades the group) so it can ANIMATE — the old `.hidden`
+  // (display:none) made that impossible. `inert` keeps them unfocusable and
+  // unclickable outside edit mode without touching the animation.
+  $('editor-actions').toggleAttribute('inert', mode !== 'edit');
   $('grid-wrap').classList.toggle('with-palette', mode === 'edit');
   // Tab strip (multiple pages): rendered BEFORE the topbar is measured so
   // --topbar-h includes the row whenever it must be visible (edit: always;
@@ -775,6 +835,9 @@ if (typeof ResizeObserver !== 'undefined') {
     // Topbar height can wrap/change with the width: re-measure it FIRST so the
     // collapse margin and the edit-preview dezoom both use the fresh value.
     updateTopbarHeight();
+    // Re-measure the choreography inputs too (cluster/admin widths, bar grow).
+    measureTopbarGroups();
+    updateBarGrow();
     // Re-pin the canvas width (the wrap resizes with the body — topbar
     // animation, window resize, palette docking) BEFORE the dezoom math.
     updateCanvasWidth();
