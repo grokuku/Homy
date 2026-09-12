@@ -36,7 +36,7 @@ const WIDGET_MANIFEST = [
     icon: '▭',
     category: 'generic',
     description: 'Empty titled container to group widgets.',
-    defaultSize: { w: 4, h: 3 },
+    defaultSize: { w: 11, h: 3 } /* 4×3 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Frame title' },
@@ -50,7 +50,7 @@ const WIDGET_MANIFEST = [
     icon: '🔗',
     category: 'generic',
     description: 'Block of icon shortcuts (label, URL, icon = emoji | URL | initials).',
-    defaultSize: { w: 2, h: 2 },
+    defaultSize: { w: 5, h: 2 } /* 2×2 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Shortcuts' },
@@ -86,7 +86,7 @@ const WIDGET_MANIFEST = [
     icon: '🕐',
     category: 'data',
     description: 'Live clock widget.',
-    defaultSize: { w: 2, h: 2 },
+    defaultSize: { w: 5, h: 2 } /* 2×2 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
     settingsSchema: {
       fields: [
         {
@@ -139,7 +139,7 @@ const WIDGET_MANIFEST = [
     icon: '🖼',
     category: 'tools',
     description: 'Embed an external page in an iframe.',
-    defaultSize: { w: 6, h: 4 },
+    defaultSize: { w: 16, h: 4 } /* 6×4 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Widget title' },
@@ -156,7 +156,7 @@ const WIDGET_MANIFEST = [
     icon: '🔖',
     category: 'generic',
     description: 'Simple column of text links (bookmarks).',
-    defaultSize: { w: 2, h: 3 },
+    defaultSize: { w: 5, h: 3 } /* 2×3 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: 'Links', placeholder: 'Links' },
@@ -180,7 +180,7 @@ const WIDGET_MANIFEST = [
     icon: '🔍',
     category: 'tools',
     description: 'Search bar (Google, DuckDuckGo, Bing or custom URL).',
-    defaultSize: { w: 4, h: 1 },
+    defaultSize: { w: 11, h: 1 } /* 4×1 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
     settingsSchema: {
       fields: [
         {
@@ -214,7 +214,7 @@ const WIDGET_MANIFEST = [
     icon: '📝',
     category: 'tools',
     description: 'Free-form editable text block (persisted in config).',
-    defaultSize: { w: 3, h: 3 },
+    defaultSize: { w: 8, h: 3 } /* 3×3 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: 'Notes', placeholder: 'Notes' },
@@ -229,7 +229,7 @@ const WIDGET_MANIFEST = [
     icon: '🌤',
     category: 'data',
     description: 'Current weather via open-meteo (no API key).',
-    defaultSize: { w: 2, h: 2 },
+    defaultSize: { w: 5, h: 2 } /* 2×2 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
     settingsSchema: {
       fields: [
         { key: 'city', label: 'City', type: 'text', default: '', required: true, placeholder: 'e.g. Paris' },

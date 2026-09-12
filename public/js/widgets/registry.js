@@ -43,7 +43,7 @@ export function getWidget(type) {
 }
 
 export function getDefaultSize(type) {
-  return getWidget(type)?.defaultSize || { w: 4, h: 3 };
+  return getWidget(type)?.defaultSize || { w: 11, h: 3 }; // 11×3 = legacy 4×3 fallback, rescaled ×32/12
 }
 
 export function getSettingsSchema(type) {

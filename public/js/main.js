@@ -2,6 +2,7 @@ import { api } from './api.js';
 import { state } from './state.js';
 import { renderViewer } from './grid/viewer.js';
 import { initEditor, renderPalette } from './grid/editor.js';
+import { GRID_COLUMNS } from './grid/config.js';
 import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js';
 import { applyBackground } from './backgrounds/manager.js';
 import { openBackgroundModal } from './ui/backgroundModal.js';
@@ -41,6 +42,10 @@ async function showDashboard() {
       api.get('/api/settings'),
     ]);
     state.layout = layoutRes.items || [];
+    // Column count the layout was last saved with. Legacy layouts (no
+    // `columns` field in layout.json) report 12 and are migrated client-side
+    // by the editor/viewer via gridstack's column(32, 'moveScale') reflow.
+    state.layoutColumns = Number(layoutRes.columns) || 12;
     state.widgets = widgetsRes.widgets || [];
     state.settings = settingsRes || state.settings;
   } catch {
@@ -91,17 +96,25 @@ function setMode(mode) {
   $('grid-wrap').classList.toggle('with-palette', mode === 'edit');
 
   destroyGrid();
+  // Both grids initialize at the SAVED column count and migrate to 32
+  // themselves when needed. The viewer never persists: state.layout keeps its
+  // original coordinates until the editor actually saves.
+  const columns = state.layoutColumns || GRID_COLUMNS;
   if (mode === 'edit') {
-    grid = initEditor($('grid-container'), state.layout, { onSave: saveLayout });
+    grid = initEditor($('grid-container'), state.layout, { onSave: saveLayout, columns });
     renderPalette($('palette-list'), state.widgets, (type) => grid.addWidget(type));
   } else {
-    grid = renderViewer($('grid-container'), state.layout);
+    grid = renderViewer($('grid-container'), state.layout, { columns });
   }
 }
 
 function saveLayout(items) {
   state.layout = items;
-  api.put('/api/layout', { items }).catch(() => {});
+  // The editor grid always runs at 32 columns (legacy layouts are migrated at
+  // init, before any save can happen) → persist the migrated coordinates with
+  // the columns field so the next load skips the migration.
+  state.layoutColumns = GRID_COLUMNS;
+  api.put('/api/layout', { items, columns: GRID_COLUMNS }).catch(() => {});
 }
 
 // ---- Auth forms ------------------------------------------------------------

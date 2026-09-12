@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /**
- * settingsSchema sync check — server manifest (routes/widgets.routes.js) vs
- * frontend registry (public/js/widgets/registry.js).
+ * Widget manifest sync check — server (routes/widgets.routes.js) vs frontend
+ * registry (public/js/widgets/registry.js).
  *
- * The schemas are intentionally duplicated (no build step); this script fails
- * with a diff if the two sides drift apart. Run: node scripts/check-schema-sync.mjs
+ * The manifest data is intentionally duplicated (no build step); this script
+ * fails with a diff if the two sides drift apart, for BOTH:
+ *   - settingsSchema (incl. the shared APPEARANCE_FIELDS section), and
+ *   - defaultSize (grid cells — since the 32×18 grid, server and front must
+ *     agree on the rescaled defaults or the palette and gridstack disagree).
+ * Run: node scripts/check-schema-sync.mjs
  */
 import { widgetRoutes } from '../server/routes/widgets.routes.js';
 
@@ -18,7 +22,7 @@ globalThis.localStorage = {
 };
 globalThis.window = { dispatchEvent() {}, addEventListener() {} };
 
-const { registry, getSettingsSchema } = await import('../public/js/widgets/registry.js');
+const { registry, getSettingsSchema, getWidget } = await import('../public/js/widgets/registry.js');
 
 // Fields compared (any other prop would be compared too — keep strict).
 function normField(f) {
@@ -55,6 +59,16 @@ for (const w of widgets) {
   } else {
     console.log(`✓ ${w.type}: settingsSchema in sync (${(front.fields || []).length} fields)`);
   }
+
+  // defaultSize must match too (grid cells: server manifest ↔ front registry).
+  const frontSize = getWidget(w.type)?.defaultSize || null;
+  const serverSize = w.defaultSize || null;
+  if (JSON.stringify(frontSize) !== JSON.stringify(serverSize)) {
+    failures++;
+    console.error(`✗ ${w.type}: defaultSize MISMATCH\n  front : ${JSON.stringify(frontSize)}\n  server: ${JSON.stringify(serverSize)}`);
+  } else {
+    console.log(`✓ ${w.type}: defaultSize in sync (${JSON.stringify(serverSize)})`);
+  }
 }
 
 for (const t of frontTypes) {
@@ -65,7 +79,7 @@ for (const t of frontTypes) {
 }
 
 if (failures > 0) {
-  console.error(`\n${failures} mismatch(es) — server/front settingsSchema must stay in sync.`);
+  console.error(`\n${failures} mismatch(es) — server/front widget manifest (settingsSchema + defaultSize) must stay in sync.`);
   process.exit(1);
 }
-console.log('\nAll widget settingsSchemas are in sync (server ↔ front).');
+console.log('\nAll widget settingsSchemas and defaultSizes are in sync (server ↔ front).');

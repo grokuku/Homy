@@ -9,7 +9,7 @@ export const frame = {
   name: 'Frame',
   icon: '▭',
   category: 'generic',
-  defaultSize: { w: 4, h: 3 },
+  defaultSize: { w: 11, h: 3 }, // 4×3 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change)
   settingsSchema: {
     fields: [
       { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Frame title' },

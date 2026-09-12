@@ -1,19 +1,28 @@
 import { Hono } from 'hono';
-import { LayoutService } from '../services/layout.service.js';
+import { LayoutService, MAX_COLUMNS } from '../services/layout.service.js';
 import { WIDGET_MANIFEST_FINAL } from './widgets.routes.js';
 
 const MAX_ITEMS = 100;
 const MAX_BODY_BYTES = 256 * 1024; // 256 KB
 const VALID_TYPES = new Set(WIDGET_MANIFEST_FINAL.map((w) => w.type));
 
+// The grid canvas (must stay in sync with public/js/grid/config.js and with
+// MAX_COLUMNS in layout.service.js): 32 columns × 18 rows.
+const GRID_COLUMNS = MAX_COLUMNS;
+const GRID_ROWS = 18;
+
 export function layoutRoutes(store) {
   const layout = new LayoutService(store);
   const routes = new Hono();
 
-  // Get full layout
-  routes.get('/', (c) => c.json({ items: layout.list() }));
+  // Get full layout — items + the column count they are expressed in
+  // (12 for legacy layouts, converted client-side by gridstack) + schema version.
+  routes.get('/', (c) => c.json({ items: layout.list(), ...layout.meta() }));
 
-  // Replace full layout (from gridstack serialization)
+  // Replace full layout (from gridstack serialization). `columns` (optional)
+  // records the grid the coordinates are expressed in; legacy 12-column
+  // coordinates are migrated client-side BEFORE this call (editor.js), so a
+  // PUT with columns: 32 stores already-rescaled items.
   routes.put('/', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
@@ -21,17 +30,27 @@ export function layoutRoutes(store) {
     if (rawItems.length > MAX_ITEMS) {
       return c.json({ error: `Too many items (max ${MAX_ITEMS})` }, 400);
     }
+    let columns;
+    if (parsed.body.columns !== undefined) {
+      columns = Math.round(Number(parsed.body.columns));
+      if (!Number.isFinite(columns) || columns < 1 || columns > MAX_COLUMNS) {
+        return c.json({ error: `columns must be an integer between 1 and ${MAX_COLUMNS}` }, 400);
+      }
+    }
     const clean = [];
     for (const item of rawItems) {
-      const error = validateType(item);
+      const typeError = validateType(item);
+      if (typeError) return c.json({ error: typeError }, 400);
+      const { error, item: cleanItem } = sanitizeItem(item);
       if (error) return c.json({ error }, 400);
-      clean.push(sanitizeItem(item));
+      clean.push(cleanItem);
     }
-    layout.replace(clean);
-    return c.json({ items: clean });
+    layout.replace(clean, columns);
+    return c.json({ items: clean, ...layout.meta() });
   });
 
-  // Add a single item
+  // Add a single item — missing w/h default to the widget's manifest
+  // defaultSize (32-col values, e.g. search = 11×1).
   routes.post('/items', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
@@ -40,7 +59,10 @@ export function layoutRoutes(store) {
     }
     const error = validateType(parsed.body);
     if (error) return c.json({ error }, 400);
-    const entry = layout.add(sanitizeItem(parsed.body) || {});
+    const defaults = defaultSizeFor(parsed.body);
+    const { error: sanitizeError, item } = sanitizeItem({ ...parsed.body, ...defaults });
+    if (sanitizeError) return c.json({ error: sanitizeError }, 400);
+    const entry = layout.add(item);
     return c.json(entry, 201);
   });
 
@@ -90,24 +112,63 @@ function validateType(item) {
   return null;
 }
 
-/** Validate/normalize a grid item. Returns null if invalid. */
-function sanitizeItem(item) {
-  if (!item || typeof item !== 'object') return null;
-  const type = String(item.type || 'frame');
-  const id = String(item.id || '');
-  return {
-    id: id || undefined,
-    x: clampInt(item.x, 0, 0),
-    y: clampInt(item.y, 0, 0),
-    w: clampInt(item.w, 1, 1),
-    h: clampInt(item.h, 1, 1),
-    type,
-    config: item.config && typeof item.config === 'object' ? item.config : {},
-  };
+/** Manifest defaultSize for a type (only fills fields the caller omitted). */
+function defaultSizeFor(item) {
+  const def = WIDGET_MANIFEST_FINAL.find((w) => w.type === String(item?.type || 'frame'))?.defaultSize;
+  const out = {};
+  if (def && item?.w === undefined) out.w = def.w;
+  if (def && item?.h === undefined) out.h = def.h;
+  return out;
 }
 
-function clampInt(v, min, fallback) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.floor(n));
+/**
+ * Validate/normalize a grid item for the 32×18 canvas.
+ * Returns `{ item }` on success or `{ error }` (HTTP 400) on rejection.
+ *
+ * Rejected: non-integer or negative x/y, w outside 1..32, h < 1, non-numeric
+ * coordinates. Tolerated (documented leniency): missing w/h/x/y fall back to
+ * the historical defaults (11×3 — the old 12-col default 4×3, rescaled —
+ * at 0,0), and h is CLAMPED to 18 instead of rejected so a hand-edited legacy
+ * item taller than the canvas can still be saved (a rejection here would
+ * strand the whole layout: the client could never persist its edits again).
+ */
+function sanitizeItem(item) {
+  if (!item || typeof item !== 'object') return { error: 'Invalid layout item' };
+  const type = String(item.type || 'frame');
+  const id = String(item.id || '');
+
+  const int = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.floor(n) : null;
+  };
+
+  let x = int(item.x);
+  if (x === null) x = 0;
+  if (x < 0) return { error: 'x must be an integer >= 0' };
+
+  let y = int(item.y);
+  if (y === null) y = 0;
+  if (y < 0) return { error: 'y must be an integer >= 0' };
+
+  let w = int(item.w);
+  if (w === null) w = 11;
+  if (w < 1 || w > GRID_COLUMNS) {
+    return { error: `w must be an integer between 1 and ${GRID_COLUMNS}` };
+  }
+
+  let h = int(item.h);
+  if (h === null) h = 3;
+  if (h < 1) return { error: 'h must be an integer >= 1' };
+
+  return {
+    item: {
+      id: id || undefined,
+      x,
+      y,
+      w,
+      h: Math.min(h, GRID_ROWS),
+      type,
+      config: item.config && typeof item.config === 'object' ? item.config : {},
+    },
+  };
 }

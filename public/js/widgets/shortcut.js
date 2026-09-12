@@ -11,7 +11,7 @@ export const shortcut = {
   name: 'Shortcut',
   icon: '🔗',
   category: 'generic',
-  defaultSize: { w: 2, h: 2 },
+  defaultSize: { w: 5, h: 2 }, // 2×2 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change)
   settingsSchema: {
     fields: [
       { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Shortcuts' },

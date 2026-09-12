@@ -14,7 +14,7 @@ export const search = {
   name: 'Search',
   icon: '🔍',
   category: 'tools',
-  defaultSize: { w: 4, h: 1 },
+  defaultSize: { w: 11, h: 1 }, // 4×1 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change)
   settingsSchema: {
     fields: [
       {

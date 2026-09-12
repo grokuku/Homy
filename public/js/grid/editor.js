@@ -2,21 +2,37 @@ import { renderWidget, disposeWidget, getWidget, getDefaultSize, getSettingsSche
 import { openSettingsModal } from '../ui/settingsModal.js';
 import { api } from '../api.js';
 import { uuid, debounce, el } from '../util.js';
+import { GRID_COLUMNS, GRID_ROWS } from './config.js';
 
 /**
  * Editable grid (edit mode): interactive gridstack + per-widget controls +
  * generic config modal. Persists changes via the `onSave` callback (debounced).
+ *
+ * Grid canvas: 32×18, square cells (cellHeight 'auto' → cell height = cell
+ * width, and 32/18 = 16/9 so 18 rows fill a 16:9 viewport). `columns` is the
+ * column count the incoming items were saved with (12 for legacy layouts):
+ * the grid is initialized at that count, items are loaded, then — when it
+ * differs from 32 — gridstack's native `column(32, 'moveScale')` reflow
+ * rescales every x/w client-side. The caller must persist the result (the
+ * 'change' event fired by column() plus the explicit save below).
  */
-export function initEditor(container, items, { onSave }) {
+export function initEditor(container, items, { onSave, columns = GRID_COLUMNS }) {
   const meta = new Map(); // id -> { type, config }
   items.forEach((i) => meta.set(i.id, { type: i.type, config: i.config || {} }));
+
+  // Class hook for the edit-mode-only grid lines (see style.css): the visual
+  // grid must never appear in view mode nor on the login view.
+  container.classList.add('editing-grid');
 
   const grid = window.GridStack.init(
     {
       staticGrid: false,
-      cellHeight: 80,
-      margin: 8,
-      column: 12,
+      cellHeight: 'auto', // square cells: height tracks cellWidth (= containerWidth/32)
+      margin: 8, // INSIDE the cell: items snap to multiples of the cell width,
+      // so the CSS grid lines (also at multiples) align with item edges.
+      column: columns, // saved column count (12 for legacy) — migrated below if ≠ 32
+      minRow: GRID_ROWS, // fixed 18-row canvas: gridstack's inline height stays 18*cellH
+      maxRow: GRID_ROWS, // …and content can never exceed it → exact 16:9 fill
       float: false,
       resizable: { handles: 'all' },
       draggable: { handle: '.grid-stack-item-content' },
@@ -39,6 +55,15 @@ export function initEditor(container, items, { onSave }) {
     }))
   );
 
+  // ---- legacy column migration (12 → 32), BEFORE widgets are rendered so the
+  // DOM node list is already final (columnChanged re-adds the same elements).
+  const migrated = columns !== GRID_COLUMNS;
+  if (migrated) {
+    // Native reflow: scales x/w by 32/columns with rounding (±1 cell possible).
+    // y/h are unchanged (row heights are unchanged by the migration).
+    grid.column(GRID_COLUMNS, 'moveScale');
+  }
+
   for (const node of grid.engine.nodes) {
     const item = items.find((i) => i.id === node.id);
     const contentEl = node.el.querySelector('.grid-stack-item-content');
@@ -50,19 +75,35 @@ export function initEditor(container, items, { onSave }) {
 
   // ---- persistence (debounced) ----
   let ready = false;
-  const save = debounce(() => {
-    if (!ready) return;
-    const serialized = grid.save(false).map((n) => {
+  let pendingSave = false; // a debounced save is scheduled but not yet run
+  const serialize = () =>
+    grid.save(false).map((n) => {
       const m = meta.get(n.id) || { type: 'frame', config: {} };
       return { id: n.id, x: n.x, y: n.y, w: n.w, h: n.h, type: m.type, config: m.config };
     });
-    onSave(serialized);
+  const save = debounce(() => {
+    pendingSave = false;
+    // Known race: a debounced save can fire after destroy() (fast edit→view
+    // toggle). gridstack's destroy() deletes .engine/.opts — bail out quietly
+    // instead of throwing inside the timer (destroy() flushes pending saves
+    // itself BEFORE tearing the grid down, see below).
+    if (!ready || !grid.engine) return;
+    onSave(serialize());
   }, 500);
+  const scheduleSave = () => {
+    pendingSave = true;
+    save();
+  };
 
-  grid.on('change', save);
-  grid.on('added', save);
-  grid.on('removed', save);
+  grid.on('change', scheduleSave);
+  grid.on('added', scheduleSave);
+  grid.on('removed', scheduleSave);
   ready = true;
+
+  // After a legacy migration the rescaled coordinates must be persisted:
+  // the 'change' event fired by grid.column() above happened before these
+  // listeners were attached, so save explicitly (the debounce coalesces).
+  if (migrated) scheduleSave();
 
   // ---- add widget ----
   function addWidget(type) {
@@ -88,7 +129,7 @@ export function initEditor(container, items, { onSave }) {
       renderWidget(contentEl, { id, type, config: {} });
       attachControls(itemEl, id);
     }
-    save();
+    scheduleSave();
     return id;
   }
 
@@ -110,7 +151,7 @@ export function initEditor(container, items, { onSave }) {
           renderWidget(contentEl, { id, type: m.type, config: newConfig });
           attachControls(node.el, id);
         }
-        save();
+        scheduleSave();
       },
     });
   }
@@ -125,7 +166,7 @@ export function initEditor(container, items, { onSave }) {
     }
     meta.delete(id);
     api.del(`/api/layout/items/${id}`).catch(() => {});
-    save();
+    scheduleSave();
   }
 
   function attachControls(itemEl, id) {
@@ -150,6 +191,17 @@ export function initEditor(container, items, { onSave }) {
   return {
     addWidget,
     destroy() {
+      // Flush a pending debounced save BEFORE gridstack tears the DOM down:
+      // without this, a change (e.g. a drag) followed by an immediate
+      // edit→view toggle inside the 500ms window would be silently lost.
+      if (pendingSave && grid.engine) {
+        pendingSave = false;
+        try {
+          onSave(serialize());
+        } catch {
+          /* ignore — the debounced path already guards */
+        }
+      }
       // Dispose every widget's cleanup (timers) before gridstack tears the DOM down.
       for (const node of grid.engine.nodes) {
         const contentEl = node.el?.querySelector('.grid-stack-item-content');

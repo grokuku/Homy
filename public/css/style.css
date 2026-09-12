@@ -22,6 +22,13 @@
   --btn-hover: var(--holaf-btn-hover, #262b36);
   --success: #2e9e5b;
   --warning: #e0a030;
+  /* Edit-mode grid lines (32×18 canvas). Homy-level tokens — NOT part of the
+     holaf palette: the lines are a functional overlay drawn on .grid-stack in
+     edit mode only (see .grid-stack.editing-grid below). Minor = every cell,
+     major = every 4 columns / 3 rows, center = the two 50% axes. */
+  --grid-minor: rgba(255, 255, 255, 0.07);
+  --grid-major: rgba(255, 255, 255, 0.17);
+  --grid-center: color-mix(in srgb, var(--accent, #4f8cff) 65%, transparent);
   /* Widget surface alpha: 100% by default; relaxed when a background is
      active (image or procedural) so widgets become translucent glass. */
   --surface-alpha: 100%;
@@ -42,6 +49,10 @@
   --shadow: var(--holaf-shadow, 0 8px 24px rgba(15, 23, 42, 0.12));
   --overlay: var(--holaf-overlay, rgba(15, 23, 42, 0.35));
   --btn-hover: var(--holaf-btn-hover, #e3e8f2);
+  /* Edit-mode grid lines — light-theme variants (kept readable on #eef1f6). */
+  --grid-minor: rgba(15, 23, 42, 0.1);
+  --grid-major: rgba(15, 23, 42, 0.2);
+  --grid-center: color-mix(in srgb, var(--accent, #2f6fe4) 65%, transparent);
 }
 
 /* A background (image or procedural) is active → translucent glass surfaces. */
@@ -175,13 +186,83 @@ body { background: transparent; transition: background 0.2s; }
 .palette-actions .btn { flex: 1; padding: 8px 10px; font-size: 13px; }
 
 /* ---------- Grid ---------- */
+
+/* The dashboard is a fixed-height viewport layout: topbar (auto) + grid area
+   (everything that remains). The grid never makes the page scroll. */
+#dashboard-view {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+#dashboard-view .topbar { flex: none; }
+
 .grid-wrap {
+  flex: 1 1 auto;
+  min-height: 0; /* allow shrinking below content size inside the flex column */
   padding: 20px;
   margin-left: 0;
-  transition: margin-left 0.2s;
+  /* NOTE: no transition on margin-left on purpose. GridStack reads the
+     container width at init to derive the square cell height (cellHeight:
+     'auto'); an animating with-palette margin meant every edit entry painted
+     ~200ms of stale cell heights until the resize observer caught up. Instant
+     margin = correct geometry from the first frame. */
+  /* Size containment + container: #grid-container sizes itself from this
+     box (cqw/cqh) so the 32×18 grid always fits the visible area exactly. */
+  container-type: size;
 }
 .grid-wrap.with-palette { margin-left: 232px; }
-#grid-container { min-height: 70vh; }
+
+#grid-container {
+  /* 32×18 square-cell canvas (32/18 = 16/9). The box keeps a 16:9 aspect and
+     never exceeds the visible area: width-limited on wide windows, height-
+     limited (then horizontally centered) on tall ones. With cellHeight:'auto'
+     each cell is square (height = width/32), so 18 rows fill this box EXACTLY
+     — the vertical center line at 50% of the box is the horizontal center of
+     the visible workspace. No min-height here on purpose: gridstack reads
+     computed min-height to grow the row count, which would break the 18-row
+     exact fill. */
+  width: min(100cqw, calc(100cqh * 16 / 9));
+  aspect-ratio: 16 / 9;
+  margin: 0 auto;
+}
+/* Fallback for engines without container queries: full-width grid (may
+   overflow vertically on short windows — pre-2023 behavior). */
+@supports not (container-type: size) {
+  #grid-container { width: 100%; }
+}
+
+/* ---------- Edit-mode grid lines (32×18) ----------
+   Drawn ONLY in edit mode via the .editing-grid class set by editor.js —
+   never in view mode, never on the login view (no .grid-stack there).
+   Alignment contract: gridstack positions items at exact multiples of the
+   cell width (--gs-column-width) and the margin:8 lives INSIDE each cell, so
+   lines at multiples of that width coincide with item snap edges.
+   Layering (first = topmost): the two accent center axes (2px), the major
+   lines every 4 columns / 3 rows (2px — x=16 and y=9 ARE major positions,
+   the center axes simply cover them), then the 1px minor cell lines. */
+.grid-stack.editing-grid {
+  background-image:
+    /* center vertical axis (x = 16/32 = 50%) */
+    linear-gradient(90deg,
+      transparent calc(50% - 1px), var(--grid-center) calc(50% - 1px),
+      var(--grid-center) calc(50% + 1px), transparent calc(50% + 1px)),
+    /* center horizontal axis (y = 9/18 = 50%) */
+    linear-gradient(0deg,
+      transparent calc(50% - 1px), var(--grid-center) calc(50% - 1px),
+      var(--grid-center) calc(50% + 1px), transparent calc(50% + 1px)),
+    /* major vertical: every 4 columns (x = 4, 8, … 28 — includes 16) */
+    repeating-linear-gradient(90deg,
+      var(--grid-major) 0 2px, transparent 2px calc(var(--gs-column-width, calc(100% / 32)) * 4)),
+    /* major horizontal: every 3 rows (y = 3, 6, 9, 12, 15 — includes 9) */
+    repeating-linear-gradient(0deg,
+      var(--grid-major) 0 2px, transparent 2px calc(var(--gs-cell-height, calc(100% / 18)) * 3)),
+    /* minor vertical: every column boundary */
+    repeating-linear-gradient(90deg,
+      var(--grid-minor) 0 1px, transparent 1px var(--gs-column-width, calc(100% / 32))),
+    /* minor horizontal: every row boundary */
+    repeating-linear-gradient(0deg,
+      var(--grid-minor) 0 1px, transparent 1px var(--gs-cell-height, calc(100% / 18)));
+}
 
 /* ---------- Background layers (lot 3) ---------- */
 #homy-bg-image,
