@@ -1,5 +1,6 @@
 import { el, debounce } from '../util.js';
 import { api } from '../api.js';
+import { toast } from '../ui/toast.js';
 
 /**
  * Notes widget: a free-form editable text block persisted in the widget config.
@@ -33,10 +34,23 @@ export const notes = {
     container.appendChild(ta);
 
     if (itemId) {
+      // Inline persistence (view mode has no ⚙ modal): debounced PATCH + a
+      // 'homy:widget-config' broadcast. The event (contract documented in
+      // main.js) updates state.layout and the editor's meta cache (review C4):
+      // without it a later full-layout PUT rewrote the stale text and silently
+      // lost everything the user typed. Failures surface as toasts (review
+      // C3) — a silent .catch(() => {}) here meant data loss without a trace.
       const save = debounce((value) => {
-        api.patch(`/api/layout/items/${itemId}/config`, { config: { text: value } }).catch(() => {});
+        api.patch(`/api/layout/items/${itemId}/config`, { config: { text: value } }).catch(
+          (err) => toast(err.message || 'Failed to save notes', 'error')
+        );
       }, 600);
-      ta.addEventListener('input', () => save(ta.value));
+      ta.addEventListener('input', () => {
+        // Broadcast IMMEDIATELY (not debounced): the local caches must be
+        // fresher than any full PUT that could fire between keystrokes.
+        window.dispatchEvent(new CustomEvent('homy:widget-config', { detail: { id: itemId, config: { text: ta.value } } }));
+        save(ta.value);
+      });
     }
   },
 };

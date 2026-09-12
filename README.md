@@ -83,13 +83,50 @@ its `settingsSchema` (server manifest + frontend registry, kept in sync):
 - `textColor` — text color (leave empty to use the theme default)
 
 These are applied per-widget via inline CSS custom properties (`--widget-bg-color`,
-`--widget-bg-op`, `--widget-border-color`, `--widget-text-color`) with theme fallbacks, so
-widgets without a custom appearance keep the default look.
+`--widget-bg-op`, `--widget-border-color`, `--widget-border-width`, `--widget-text-color`) with
+theme fallbacks, so widgets without a custom appearance keep the default look. (`showBorder` is
+opt-out: only an explicit `false` removes the frame border; legacy configs keep it.)
+
+## Grid canvas (32×18)
+
+The dashboard is a fixed **32 columns × 18 rows** canvas of square cells: 32/18 = 16/9, so with
+`cellHeight: 'auto'` (gridstack derives the cell height from the cell width) the 18-row grid
+fills a 16:9 viewport exactly. Key contracts (see `public/js/grid/config.js` for details):
+
+- **Layout migration**: legacy 12-column layouts are reflowed client-side (`column(32,
+  'moveScale')` — x/w rescaled, h kept, y only ever compacted up (float:false
+  re-pack when the legacy layout left free space above an item), ids preserved); the editor persists `columns: 32` on
+  its next save, the viewer only re-applies the reflow at display time. Separately, existing
+  **search widgets saved at h=1 are grown to h=2 at load** (a 1-row cell cannot fit the search
+  bar; the manifest default is now 11×2) — the editor persists the corrected height on its next
+  save.
+- **`float: false`** is a deliberate UX decision: items compact UPWARD into the first free row,
+  so drags never leave voluntary holes in the canvas.
+- **`margin` must stay a single symmetric value**: gridstack insets each item's content box with
+  the four `--gs-item-margin-*` vars and computes the square cell height from them; asymmetric
+  margins would skew the cells and desync the 18-row fill from the 16:9 aspect box.
+- **Responsive**: cells never shrink below a readable 20px floor — on small screens the canvas
+  is clamped to its desktop geometry (640px = 20×32) and the grid area pans (scroll) instead.
+  Search bars additionally switch to a compact layout (container query) when their item is
+  shorter than 62px, so they stay usable from portrait tablets down to phones.
+- **Persistence**: PUT `/api/layout` failures are surfaced as toasts (max 100 items, 256 KB
+  body, validation errors) — the client never diverges from the server silently.
 
 ## Storage layout (`server/data/`)
 
 - `config.json` — auth config (user, bcrypt hash, JWT secret, expiry)
-- `layout.json` — grid layout (id/x/y/w/h/type/config)
+- `layout.json` — grid layout, schema **v2**:
+  `{ version: 2, columns: <int 1..32>, items: [...] }` where each item is
+  `{ id, x, y, w, h, type, config }`. `columns` records the grid the
+  coordinates are expressed in; legacy files without it are treated as
+  12-column layouts and migrated client-side (gridstack reflow to 32 columns,
+  persisted by the editor's next save). Server-side bounds on write: max
+  **100 items**, body ≤ **256 KB**, `w` integer 1..32, `h` clamped to ≤ 18
+  (the fixed 18-row canvas), `columns` integer 1..32 (default/legacy = 12),
+  unknown `type` rejected. Missing `w`/`h` on a PUT fall back to 1×1 —
+  gridstack only ever omits them when the value IS 1 (see
+  `server/routes/layout.routes.js` for the rationale); `POST /api/layout/items`
+  instead falls back to the widget manifest's `defaultSize`.
 - `settings.json` — dashboard settings (`{ theme, background }`, lot 3)
 - `backgrounds/` — uploaded background images as `<uuid>.<ext>` (served publicly under `/backgrounds/`)
 - `*.bak` — previous version of each file (kept on write)
@@ -185,7 +222,7 @@ docker-compose.yml         # deployment: bind mount ./data, port 3000
 version.txt                # single source of truth for the version (CI)
 .github/workflows/         # test-build.yml + release.yml (manual, ghcr.io)
 scripts/
-  check-schema-sync.mjs    # fails if the duplicated widget settingsSchema drifts (server ↔ front)
+  check-schema-sync.mjs    # fails if the duplicated widget settingsSchema OR defaultSize drifts (server ↔ front)
                            #   run via: npm run check:schema
 server/
   index.js                 # Hono bootstrap, static, routes, error handler
@@ -201,6 +238,7 @@ public/
     api.js                 # fetch client (+ multipart upload)
     state.js               # app state (incl. dashboard settings)
     main.js                # bootstrap, login/dashboard switch, editor toolbar (Background/Theme)
+    grid/config.js         # grid canvas constants (32×18, shared caps) + item normalization
     grid/editor.js         # editable grid + palette
     grid/viewer.js         # locked grid
     backgrounds/manager.js # background layers: image (+dim/blur) & procedural canvas (holaf-ambient)

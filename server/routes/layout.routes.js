@@ -50,7 +50,7 @@ export function layoutRoutes(store) {
   });
 
   // Add a single item — missing w/h default to the widget's manifest
-  // defaultSize (32-col values, e.g. search = 11×1).
+  // defaultSize (32-col values, e.g. search = 11×2).
   routes.post('/items', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
@@ -126,11 +126,23 @@ function defaultSizeFor(item) {
  * Returns `{ item }` on success or `{ error }` (HTTP 400) on rejection.
  *
  * Rejected: non-integer or negative x/y, w outside 1..32, h < 1, non-numeric
- * coordinates. Tolerated (documented leniency): missing w/h/x/y fall back to
- * the historical defaults (11×3 — the old 12-col default 4×3, rescaled —
- * at 0,0), and h is CLAMPED to 18 instead of rejected so a hand-edited legacy
- * item taller than the canvas can still be saved (a rejection here would
- * strand the whole layout: the client could never persist its edits again).
+ * coordinates. Tolerated (documented leniency): missing w/h/x/y and h taller
+ * than the canvas. Review A1 restored a NON-destructive fallback:
+ *   - w/h missing → 1 (NOT the old 11×3, which silently inflated every item
+ *     whose w or h was omitted). Why 1 and not the widget's defaultSize: the
+ *     only legitimate producer of a PUT body missing w/h is gridstack's own
+ *     save() (old cached frontends included), and its removeInternalForSave()
+ *     strips these fields ONLY when the value IS exactly 1 — so a missing
+ *     field semantically means "1". Deriving from defaultSize would inflate
+ *     widgets the user deliberately resized to a single cell (e.g. a clock at
+ *     h=1). The fixed client always sends explicit w/h (it serializes from
+ *     the live engine nodes, not grid.save()); POST /items keeps its
+ *     defaultSize fallback because there the caller means "create a widget
+ *     without geometry" and the manifest default IS the intent.
+ *   - x/y missing → 0 (unchanged).
+ *   - h is CLAMPED to 18 instead of rejected so a hand-edited legacy item
+ *     taller than the canvas can still be saved (a rejection here would
+ *     strand the whole layout: the client could never persist its edits again).
  */
 function sanitizeItem(item) {
   if (!item || typeof item !== 'object') return { error: 'Invalid layout item' };
@@ -151,13 +163,13 @@ function sanitizeItem(item) {
   if (y < 0) return { error: 'y must be an integer >= 0' };
 
   let w = int(item.w);
-  if (w === null) w = 11;
+  if (w === null) w = 1;
   if (w < 1 || w > GRID_COLUMNS) {
     return { error: `w must be an integer between 1 and ${GRID_COLUMNS}` };
   }
 
   let h = int(item.h);
-  if (h === null) h = 3;
+  if (h === null) h = 1;
   if (h < 1) return { error: 'h must be an integer >= 1' };
 
   return {

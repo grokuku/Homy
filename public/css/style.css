@@ -78,7 +78,7 @@ body { background: transparent; transition: background 0.2s; }
 .hidden { display: none !important; }
 .muted { color: var(--text-muted); }
 
-.view { min-height: 100vh; }
+.view { min-height: 100dvh; } /* dvh: mobile URL bars don't create dead space (review C9) */
 
 /* ---------- Auth ---------- */
 #login-view {
@@ -201,6 +201,12 @@ body { background: transparent; transition: background 0.2s; }
   min-height: 0; /* allow shrinking below content size inside the flex column */
   padding: 20px;
   margin-left: 0;
+  /* Review C2: on screens too small for a readable grid (see the 640px cell
+     floor on #grid-container) the canvas overflows this box — pan INSIDE it
+     (overflow auto) instead of scrolling the whole page. On desktop the grid
+     always fits exactly (the width formula below guarantees it), so no
+     scrollbar ever appears there. */
+  overflow: auto;
   /* NOTE: no transition on margin-left on purpose. GridStack reads the
      container width at init to derive the square cell height (cellHeight:
      'auto'); an animating with-palette margin meant every edit entry painted
@@ -216,12 +222,21 @@ body { background: transparent; transition: background 0.2s; }
   /* 32×18 square-cell canvas (32/18 = 16/9). The box keeps a 16:9 aspect and
      never exceeds the visible area: width-limited on wide windows, height-
      limited (then horizontally centered) on tall ones. With cellHeight:'auto'
-     each cell is square (height = width/32), so 18 rows fill this box EXACTLY
-     — the vertical center line at 50% of the box is the horizontal center of
-     the visible workspace. No min-height here on purpose: gridstack reads
-     computed min-height to grow the row count, which would break the 18-row
-     exact fill. */
+     gridstack computes the square cell height as cellWidth − mr − ml + mt + mb
+     (see grid/config.js for the margin-symmetry contract, review C8) and sets
+     an INLINE container height of 18 rows × cell height; that inline height
+     and the CSS aspect-ratio box agree exactly as long as the cells are
+     square. No min-height here: gridstack only reads the computed min-height
+     when no minRow is configured (we always set minRow:18), so the 18-row
+     exact fill is enforced by minRow/maxRow alone. */
   width: min(100cqw, calc(100cqh * 16 / 9));
+  /* Review C2 — cell floor: never let a cell shrink below a readable 20px.
+     640px = 20px × 32 cells: on viewports narrower than ~680px (or short
+     landscape phones where 100cqh × 16/9 would win) the canvas is clamped to
+     its desktop geometry and .grid-wrap pans instead of shrinking cells to
+     unreadable ~10px. Desktop is unaffected: the width formula already
+     yields ≥ 20px cells there. */
+  min-width: 640px;
   aspect-ratio: 16 / 9;
   margin: 0 auto;
 }
@@ -237,19 +252,19 @@ body { background: transparent; transition: background 0.2s; }
    Alignment contract: gridstack positions items at exact multiples of the
    cell width (--gs-column-width) and the margin:8 lives INSIDE each cell, so
    lines at multiples of that width coincide with item snap edges.
-   Layering (first = topmost): the two accent center axes (2px), the major
-   lines every 4 columns / 3 rows (2px — x=16 and y=9 ARE major positions,
-   the center axes simply cover them), then the 1px minor cell lines. */
+   Layering: the 4 repeating layers below (major every 4 columns / 3 rows,
+   then the 1px minor cell lines) live on the container's background-image;
+   the two accent CENTER axes live on a separate ::before layer. Review C5:
+   a single 6-layer background-image was one bad component away from losing
+   ALL the guides — the axes depend on --grid-center (a color-mix(), the most
+   fragile part), so they are isolated: an engine without color-mix support
+   drops only the two center lines and keeps the 4 structural layers.
+   .grid-stack has no ::before/::after of its own in the vendored gridstack
+   CSS (only .grid-stack-placeholder>.placeholder-content uses pseudos), so
+   this layer is free; as the container's FIRST child it paints below every
+   grid item, exactly like the old background layers did. */
 .grid-stack.editing-grid {
   background-image:
-    /* center vertical axis (x = 16/32 = 50%) */
-    linear-gradient(90deg,
-      transparent calc(50% - 1px), var(--grid-center) calc(50% - 1px),
-      var(--grid-center) calc(50% + 1px), transparent calc(50% + 1px)),
-    /* center horizontal axis (y = 9/18 = 50%) */
-    linear-gradient(0deg,
-      transparent calc(50% - 1px), var(--grid-center) calc(50% - 1px),
-      var(--grid-center) calc(50% + 1px), transparent calc(50% + 1px)),
     /* major vertical: every 4 columns (x = 4, 8, … 28 — includes 16) */
     repeating-linear-gradient(90deg,
       var(--grid-major) 0 2px, transparent 2px calc(var(--gs-column-width, calc(100% / 32)) * 4)),
@@ -262,6 +277,25 @@ body { background: transparent; transition: background 0.2s; }
     /* minor horizontal: every row boundary */
     repeating-linear-gradient(0deg,
       var(--grid-minor) 0 1px, transparent 1px var(--gs-cell-height, calc(100% / 18)));
+}
+/* Center axes (x = 16/32 = 50%, y = 9/18 = 50%) — accent-colored via
+   --grid-center (color-mix). Isolated on ::before so a failure of color-mix
+   in --grid-center cannot take the structural layers down with it (review
+   C5). As the first child of the container it stays UNDER every item. */
+.grid-stack.editing-grid::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    /* center vertical axis */
+    linear-gradient(90deg,
+      transparent calc(50% - 1px), var(--grid-center) calc(50% - 1px),
+      var(--grid-center) calc(50% + 1px), transparent calc(50% + 1px)),
+    /* center horizontal axis */
+    linear-gradient(0deg,
+      transparent calc(50% - 1px), var(--grid-center) calc(50% - 1px),
+      var(--grid-center) calc(50% + 1px), transparent calc(50% + 1px));
 }
 
 /* ---------- Background layers (lot 3) ---------- */
@@ -288,8 +322,15 @@ body { background: transparent; transition: background 0.2s; }
 #homy-bg-canvas { z-index: -2; display: block; width: 100%; height: 100%; }
 
 /* ---------- Widgets ---------- */
+/* Review C11: the vendored gridstack CSS positions .grid-stack-item-content
+   ABSOLUTELY with the four --gs-item-margin-* insets (selector specificity
+   0,3,0 beats this block's 0,1,0), so this element IS the positioned box the
+   edit-mode .widget-controls anchor to — an app-level `position: relative`
+   here was dead code and is gone. The rule below only carries the surface
+   look. Overflow is set in the 0,3,0 rule further down (overflow: hidden —
+   review A2: the vendored default is overflow-y:auto which made every widget
+   scroll internally instead of clipping). */
 .grid-stack-item-content {
-  position: relative; /* anchors the edit-mode controls */
   background: var(--bg-elev);
   /* Per-widget appearance wins: --widget-bg-color/--widget-bg-op are set
      inline by applyAppearance() when the user configured a custom look.
@@ -307,9 +348,23 @@ body { background: transparent; transition: background 0.2s; }
   color: var(--text);
   color: var(--widget-text-color, var(--text));
   border-radius: var(--radius);
-  overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+/* Review A2 (specificity): same selector as the vendored gridstack rule that
+   sets overflow-x:hidden;overflow-y:auto — style.css loads after the vendor
+   stylesheet, so this later declaration wins the cascade tie and widget
+   content CLIPS instead of scrolling inside its cell. Widgets that need to
+   scroll do it on their own children (.links-list, .notes-textarea,
+   .widget-body…), which are unaffected. */
+.grid-stack > .grid-stack-item > .grid-stack-item-content {
+  overflow: hidden;
+}
+/* Review C1 (compact mode): the item is the size container for the widget
+   @container query below. Explicit width/height (gridstack CSS vars) keep
+   the size containment harmless. */
+.grid-stack-item {
+  container-type: size;
 }
 
 /* backdrop-blur only when a background is active (avoids a costly filter
@@ -418,12 +473,23 @@ body[data-bg-active] .grid-stack-item-content {
 .links-list a { color: var(--text); text-decoration: none; }
 .links-list a:hover { color: var(--accent); text-decoration: underline; }
 
-/* search */
-.search-widget { padding: 12px; }
+/* search — review C1: a default search (11×2 since the C1 change) must never
+   clip its bar. Budget (border-box): widget padding 2×6 + input (2×7 padding
+   + 2×1 border + 16px line) + widget borders 2×1 ≈ 46px. A 2-row cell offers
+   ≥ 57px from 1366×768 up, and even a 1-row cell at 2560×1440 offers ~58px →
+   no clip, no scroll anywhere ≥ 1366×768. Vertical centering keeps the bar
+   centered in taller cells (`safe center` falls back to start-alignment when
+   the content actually overflows, so nothing is unreachable); engines that
+   don't support `safe` keep plain `center` from the first declaration. */
+.search-widget {
+  padding: 6px 10px;
+  justify-content: center;
+  justify-content: safe center;
+}
 .search-form { display: flex; gap: 8px; }
 .search-input {
   flex: 1;
-  padding: 9px 11px;
+  padding: 7px 10px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -431,6 +497,17 @@ body[data-bg-active] .grid-stack-item-content {
   font-size: 14px;
 }
 .search-input:focus { outline: none; border-color: var(--accent); }
+.search-widget .btn { padding: 7px 12px; }
+/* Compact mode (review C1/C2): when the ITEM is under ~62px tall (1-row cells
+   on small desktops, 2-row cells on portrait tablets) the normal paddings
+   cannot fit (an abs-positioned box can never be smaller than its own
+   padding+border), so shave paddings AND font so the bar stays usable:
+   budget drops to ~25px, fitting a 2-row cell at 768×1024 (~29px available). */
+@container (max-height: 62px) {
+  .search-widget { padding: 2px 6px; }
+  .search-widget .search-input { padding: 2px 8px; font-size: 13px; }
+  .search-widget .btn { padding: 2px 8px; font-size: 13px; }
+}
 
 /* notes */
 .notes-widget { padding: 0; }

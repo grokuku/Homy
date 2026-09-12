@@ -1,16 +1,22 @@
 import { renderWidget, disposeWidget } from '../widgets/registry.js';
-import { GRID_COLUMNS, GRID_ROWS } from './config.js';
+import { GRID_COLUMNS, GRID_ROWS, normalizeItems } from './config.js';
 
 /**
  * Render a locked (non-interactive) grid in view mode.
- * Returns a wrapper around the gridstack instance with a `destroy()` that also
- * disposes every widget's cleanup (timers) before teardown.
+ * Returns the gridstack instance itself with an overridden `destroy()` that
+ * also disposes every widget's cleanup (timers) before teardown (review C6:
+ * the previous `{ ...grid }` spread returned a plain object that lost every
+ * GridStack prototype method — the REAL instance keeps the full API).
  *
- * Same 32×18 square-cell canvas as the editor, and the same client-side legacy
- * column migration — but NO persistence: the viewer is static, it only applies
+ * Same 32×18 square-cell canvas as the editor, the same item normalization
+ * (search h:1→h:2, see grid/config.js) and the same client-side legacy column
+ * migration — but NO persistence: the viewer is static, it only applies
  * `column(32, 'moveScale')` at display time so a legacy 12-column layout shows
- * exactly like it will once the editor saves it. Note: unlike the editor, no
- * `editing-grid` class is added → the visual grid lines stay edit-mode-only.
+ * exactly like it will once the editor saves it. The normalization MUST run
+ * here too: with the old h=1 the float:false load compacts following items
+ * one row up, which would make the viewer disagree with the editor on y.
+ * Note: unlike the editor, no `editing-grid` class is added → the visual grid
+ * lines stay edit-mode-only.
  */
 export function renderViewer(container, items, { columns = GRID_COLUMNS } = {}) {
   const grid = window.GridStack.init(
@@ -27,8 +33,13 @@ export function renderViewer(container, items, { columns = GRID_COLUMNS } = {}) 
   );
 
   grid.removeAll(false);
+  // Same normalization as the editor (config.js): geometry hardening + the
+  // deliberate search h:1→h:2 upgrade. Applied BEFORE the load so the 12→32
+  // column reflow only sees corrected geometry — and so the viewer's rendered
+  // layout is IDENTICAL to what the editor will persist (viewer == editor).
+  const loaded = normalizeItems(items);
   grid.load(
-    items.map((item) => ({
+    loaded.map((item) => ({
       id: item.id,
       x: item.x,
       y: item.y,
@@ -50,7 +61,7 @@ export function renderViewer(container, items, { columns = GRID_COLUMNS } = {}) 
   }
 
   for (const node of grid.engine.nodes) {
-    const item = items.find((i) => i.id === node.id);
+    const item = loaded.find((i) => i.id === node.id);
     const contentEl = node.el.querySelector('.grid-stack-item-content');
     if (item && contentEl) {
       renderWidget(contentEl, item);
@@ -58,13 +69,15 @@ export function renderViewer(container, items, { columns = GRID_COLUMNS } = {}) 
     }
   }
 
+  // Return the REAL instance (review C6): the previous `{ ...grid }` spread
+  // produced a plain object that lost every GridStack prototype method.
+  // An own-property destroy() shadows the prototype method for this instance
+  // only — gridstack never calls this.destroy() internally, so it is safe.
   const originalDestroy = grid.destroy.bind(grid);
-  return {
-    ...grid,
-    destroy() {
-      for (const contentEl of contentEls) disposeWidget(contentEl);
-      contentEls.length = 0;
-      originalDestroy();
-    },
+  grid.destroy = () => {
+    for (const contentEl of contentEls) disposeWidget(contentEl);
+    contentEls.length = 0;
+    originalDestroy();
   };
+  return grid;
 }

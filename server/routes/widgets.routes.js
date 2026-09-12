@@ -180,7 +180,7 @@ const WIDGET_MANIFEST = [
     icon: '🔍',
     category: 'tools',
     description: 'Search bar (Google, DuckDuckGo, Bing or custom URL).',
-    defaultSize: { w: 11, h: 1 } /* 4×1 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
+    defaultSize: { w: 11, h: 2 } /* grown from the legacy 4×1 rescale (11×1): a 1-row cell cannot fit the search bar (review C1). Existing h=1 items are upgraded at load — see public/js/grid/config.js normalizeItems. */,
     settingsSchema: {
       fields: [
         {

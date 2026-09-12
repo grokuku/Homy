@@ -1,8 +1,9 @@
 import { renderWidget, disposeWidget, getWidget, getDefaultSize, getSettingsSchema } from '../widgets/registry.js';
 import { openSettingsModal } from '../ui/settingsModal.js';
+import { toast } from '../ui/toast.js';
 import { api } from '../api.js';
 import { uuid, debounce, el } from '../util.js';
-import { GRID_COLUMNS, GRID_ROWS } from './config.js';
+import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, normalizeItems } from './config.js';
 
 /**
  * Editable grid (edit mode): interactive gridstack + per-widget controls +
@@ -15,6 +16,11 @@ import { GRID_COLUMNS, GRID_ROWS } from './config.js';
  * differs from 32 — gridstack's native `column(32, 'moveScale')` reflow
  * rescales every x/w client-side. The caller must persist the result (the
  * 'change' event fired by column() plus the explicit save below).
+ *
+ * float: false compacts items UP into the first free row — a deliberate UX
+ * decision (no voluntary holes in the canvas), see grid/config.js (review
+ * C7). margin must stay a single symmetric value (square-cell contract), see
+ * config.js (review C8).
  */
 export function initEditor(container, items, { onSave, columns = GRID_COLUMNS }) {
   const meta = new Map(); // id -> { type, config }
@@ -41,8 +47,15 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   );
 
   grid.removeAll(false);
+  // normalizeItems: geometry hardening + the deliberate search h:1→h:2 upgrade
+  // (see config.js) — applied BEFORE the load so the 12→32 column reflow only
+  // ever sees corrected geometry. The native reflow scales x/w by 32/columns
+  // (±1 rounding) and, because float:false, re-compacts rows UPWARD — y never
+  // moves down and h is untouched (measured on gridstack v13, see the
+  // migration comment above grid.column()).
+  const loaded = normalizeItems(items);
   grid.load(
-    items.map((item) => ({
+    loaded.map((item) => ({
       id: item.id,
       x: item.x,
       y: item.y,
@@ -60,12 +73,15 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   const migrated = columns !== GRID_COLUMNS;
   if (migrated) {
     // Native reflow: scales x/w by 32/columns with rounding (±1 cell possible).
-    // y/h are unchanged (row heights are unchanged by the migration).
+    // Row heights are unchanged by the migration (h is untouched); y is never
+    // pushed DOWN — with float:false the reflow re-compacts rows upward when a
+    // legacy y left free space above (measured on gridstack v13), matching the
+    // float:false « no voluntary holes » rule (C7).
     grid.column(GRID_COLUMNS, 'moveScale');
   }
 
   for (const node of grid.engine.nodes) {
-    const item = items.find((i) => i.id === node.id);
+    const item = loaded.find((i) => i.id === node.id);
     const contentEl = node.el.querySelector('.grid-stack-item-content');
     if (item && contentEl) {
       renderWidget(contentEl, item);
@@ -76,10 +92,16 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   // ---- persistence (debounced) ----
   let ready = false;
   let pendingSave = false; // a debounced save is scheduled but not yet run
+  // Serialize from the LIVE engine nodes — NOT from grid.save(). gridstack's
+  // removeInternalForSave() strips `w`/`h` whenever they equal 1, so a
+  // grid.save()-based body silently dropped the geometry of every 1-cell item
+  // and the server re-inflated it (review A1). node.w/node.h are always
+  // defined here (gridstack defaults missing values at load/add time); the
+  // `|| 1` guards are belt-and-braces for hand-crafted nodes.
   const serialize = () =>
-    grid.save(false).map((n) => {
+    grid.engine.nodes.map((n) => {
       const m = meta.get(n.id) || { type: 'frame', config: {} };
-      return { id: n.id, x: n.x, y: n.y, w: n.w, h: n.h, type: m.type, config: m.config };
+      return { id: n.id, x: n.x, y: n.y, w: n.w || 1, h: n.h || 1, type: m.type, config: m.config };
     });
   const save = debounce(() => {
     pendingSave = false;
@@ -107,6 +129,12 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
 
   // ---- add widget ----
   function addWidget(type) {
+    // Client-side cap (review C3): mirrors the server's MAX_ITEMS so a full
+    // layout fails LOUDLY here instead of at PUT time (silent divergence).
+    if (grid.engine.nodes.length >= MAX_ITEMS) {
+      toast(`Cannot add widget: layout is full (max ${MAX_ITEMS} items)`, 'error');
+      return null;
+    }
     const size = getDefaultSize(type);
     const id = uuid();
     // gridstack v13 types addWidget() as `GridItemHTMLElement | undefined`:
@@ -165,8 +193,26 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
       grid.removeWidget(node.el, true);
     }
     meta.delete(id);
-    api.del(`/api/layout/items/${id}`).catch(() => {});
+    // The deletion is also carried by the debounced full PUT below (the server
+    // replace() drops it) — this endpoint just reconciles faster. A failure is
+    // surfaced, never swallowed (review C3): the PUT remains the source of truth.
+    api.del(`/api/layout/items/${id}`).catch((err) => toast(err.message || 'Failed to delete item', 'error'));
     scheduleSave();
+  }
+
+  /**
+   * Merge a config patch into the meta Map without touching geometry. Fed by
+   * main.js's 'homy:widget-config' listener (review C4): widgets that persist
+   * config changes outside the ⚙ modal (notes inline textarea) must keep this
+   * cache fresh, or the next full-layout PUT would rewrite the stale config
+   * and silently lose the user's text. Does NOT schedule a save: the widget's
+   * own PATCH persists the change; this only keeps the next full PUT correct.
+   */
+  function applyConfig(id, config) {
+    const m = meta.get(id);
+    if (m && config && typeof config === 'object') {
+      m.config = { ...(m.config || {}), ...config };
+    }
   }
 
   function attachControls(itemEl, id) {
@@ -186,10 +232,26 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
     controls.append(editBtn, delBtn);
     contentEl.appendChild(controls);
     itemEl.classList.add('editing');
+    // Review C14: the vendored gridstack v13 drag engine has no
+    // draggable.cancel — a mousedown on an interactive child (<a>, inputs,
+    // buttons…) bubbles to the drag handle (.grid-stack-item-content), starts
+    // an item drag on move, and its preventDefault() kills text selection in
+    // e.g. the notes textarea. Block the bubbling AT the child, before the
+    // handle sees it (children fire before their ancestors while bubbling).
+    // stopPropagation() only — the native behavior (links, focus, typing,
+    // clicks) is untouched.
+    for (const interactive of contentEl.querySelectorAll('a, textarea, input, select, button')) {
+      if (interactive.dataset.dragGuard) continue;
+      interactive.dataset.dragGuard = '1';
+      const stop = (e) => e.stopPropagation();
+      interactive.addEventListener('mousedown', stop);
+      interactive.addEventListener('touchstart', stop, { passive: true });
+    }
   }
 
   return {
     addWidget,
+    applyConfig,
     destroy() {
       // Flush a pending debounced save BEFORE gridstack tears the DOM down:
       // without this, a change (e.g. a drag) followed by an immediate

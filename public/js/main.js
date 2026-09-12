@@ -2,7 +2,7 @@ import { api } from './api.js';
 import { state } from './state.js';
 import { renderViewer } from './grid/viewer.js';
 import { initEditor, renderPalette } from './grid/editor.js';
-import { GRID_COLUMNS } from './grid/config.js';
+import { GRID_COLUMNS, MAX_ITEMS } from './grid/config.js';
 import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js';
 import { applyBackground } from './backgrounds/manager.js';
 import { openBackgroundModal } from './ui/backgroundModal.js';
@@ -11,6 +11,11 @@ import { toast } from './ui/toast.js';
 const $ = (id) => document.getElementById(id);
 
 let grid = null; // current grid instance (viewer gridstack or editor handle)
+
+// Must match MAX_BODY_BYTES in server/routes/layout.routes.js (review C3):
+// the client refuses to send a body the server would 413, so the failure is
+// explained instead of silently dropped.
+const MAX_BODY_BYTES = 256 * 1024;
 
 // ---- View switching --------------------------------------------------------
 
@@ -85,6 +90,13 @@ function destroyGrid() {
     container.className = 'grid-stack';
     $('grid-wrap').appendChild(container);
   }
+  // Review C12: scrub whatever gridstack/editor left on the container. The
+  // fresh re-creation above is normally clean, but if destroy() threw (e.g.
+  // double-destroy) the SAME element is reused: it would keep the editor's
+  // .editing-grid class (grid lines visible in view mode) and gridstack's
+  // inline style (CSS vars + fixed height) — both must go before the next init.
+  container.classList.remove('editing-grid');
+  container.removeAttribute('style');
 }
 
 function setMode(mode) {
@@ -102,7 +114,16 @@ function setMode(mode) {
   const columns = state.layoutColumns || GRID_COLUMNS;
   if (mode === 'edit') {
     grid = initEditor($('grid-container'), state.layout, { onSave: saveLayout, columns });
-    renderPalette($('palette-list'), state.widgets, (type) => grid.addWidget(type));
+    renderPalette($('palette-list'), state.widgets, (type) => {
+      // Client-side cap (review C3): mirrors server MAX_ITEMS — adding to a
+      // full layout must fail with a visible message HERE, not silently at
+      // PUT time (editor.addWidget re-checks, this keeps state.layout honest).
+      if (state.layout.length >= MAX_ITEMS) {
+        toast(`Cannot add widget: layout is full (max ${MAX_ITEMS} items)`, 'error');
+        return;
+      }
+      grid.addWidget(type);
+    });
   } else {
     grid = renderViewer($('grid-container'), state.layout, { columns });
   }
@@ -114,7 +135,23 @@ function saveLayout(items) {
   // init, before any save can happen) → persist the migrated coordinates with
   // the columns field so the next load skips the migration.
   state.layoutColumns = GRID_COLUMNS;
-  api.put('/api/layout', { items, columns: GRID_COLUMNS }).catch(() => {});
+  // Review C3: persistence failures are NEVER swallowed. Two pre-checks plus
+  // a toasting catch keep the UI and the server from diverging silently:
+  //  - body > 256 KB would 413 server-side (limit duplicated above);
+  //  - > MAX_ITEMS would 400 server-side (the palette already blocks adding,
+  //    this covers layouts that were already over the cap at load).
+  const body = JSON.stringify({ items, columns: GRID_COLUMNS });
+  if (new TextEncoder().encode(body).length > MAX_BODY_BYTES) {
+    toast('Save failed: layout is too large (server limit 256 KB). Remove widgets or shorten notes.', 'error');
+    return;
+  }
+  api.put('/api/layout', { items, columns: GRID_COLUMNS })
+    .then((res) => {
+      // Converge on the server's sanitized items (e.g. h clamped to 18 rows)
+      // so the client can never drift from what is actually on disk.
+      if (Array.isArray(res?.items)) state.layout = res.items;
+    })
+    .catch((err) => toast(err.message || 'Failed to save layout', 'error'));
 }
 
 // ---- Auth forms ------------------------------------------------------------
@@ -171,6 +208,22 @@ $('logout-btn').addEventListener('click', async () => {
 
 $('toggle-mode').addEventListener('click', () => {
   setMode(state.mode === 'edit' ? 'view' : 'edit');
+});
+
+// ---- Widget config changes outside the ⚙ modal (review C4) -----------------
+// Widgets may persist config changes themselves (notes: inline textarea →
+// PATCH /api/layout/items/:id/config). Broadcast via 'homy:widget-config'
+// (see widgets/notes.js), this keeps BOTH sources of truth in sync so a later
+// full-layout PUT can never overwrite the fresh config with a stale copy:
+//  - state.layout: the next initEditor/renderViewer must show the new text;
+//  - the editor's meta Map (via applyConfig): the next serialize() must
+//    include it. In view mode there is no editor — state.layout is enough.
+window.addEventListener('homy:widget-config', (e) => {
+  const { id, config } = e.detail || {};
+  if (!id || !config || typeof config !== 'object') return;
+  const item = state.layout.find((i) => i.id === id);
+  if (item) item.config = { ...(item.config || {}), ...config };
+  grid?.applyConfig?.(id, config);
 });
 
 // ---- Editor toolbar: Background + Theme (lot 3) -----------------------------

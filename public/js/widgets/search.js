@@ -14,7 +14,12 @@ export const search = {
   name: 'Search',
   icon: '🔍',
   category: 'tools',
-  defaultSize: { w: 11, h: 1 }, // 4×1 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change)
+  // h:2 since the 32×18 grid review (C1): a 1-row cell cannot fit the search
+  // bar (at 1366×768 a 1-row cell offers ~21px of content for a ~46px bar).
+  // Existing h=1 search items are grown to h=2 at load time — see the shared
+  // normalizeItems() in grid/config.js (editor + viewer). Must stay in sync
+  // with server/routes/widgets.routes.js (check-schema-sync enforces it).
+  defaultSize: { w: 11, h: 2 }, // 4×2 after rescale: w = legacy 4×1 ×32/12 rounded, h grown for C1 (was 11×1)
   settingsSchema: {
     fields: [
       {
