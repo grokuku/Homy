@@ -17,10 +17,15 @@ import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, normalizeItems } from './config.js'
  * rescales every x/w client-side. The caller must persist the result (the
  * 'change' event fired by column() plus the explicit save below).
  *
- * float: false compacts items UP into the first free row — a deliberate UX
- * decision (no voluntary holes in the canvas), see grid/config.js (review
- * C7). margin must stay a single symmetric value (square-cell contract), see
- * config.js (review C8).
+ * float: true = FREE VERTICAL PLACEMENT (review C7 fix): an item dropped in
+ * the lower rows STAYS there, voluntary vertical holes are preserved (no
+ * compaction toward the top) and the drag placeholder follows the real mouse
+ * position (with float:false it stayed pinned to the compacted top row, which
+ * read as a dark « shadow zone » glued to the top of the edit area). View mode
+ * uses the same flag (viewer.js) so the rendered layout is IDENTICAL to the
+ * saved positions. gridstack still forbids overlaps in both modes (collision
+ * push). margin must stay a single symmetric value (square-cell contract),
+ * see config.js (review C8).
  */
 export function initEditor(container, items, { onSave, columns = GRID_COLUMNS }) {
   const meta = new Map(); // id -> { type, config }
@@ -39,7 +44,7 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
       column: columns, // saved column count (12 for legacy) — migrated below if ≠ 32
       minRow: GRID_ROWS, // fixed 18-row canvas: gridstack's inline height stays 18*cellH
       maxRow: GRID_ROWS, // …and content can never exceed it → exact 16:9 fill
-      float: false,
+      float: true, // free vertical placement (review C7) — holes are preserved
       resizable: { handles: 'all' },
       draggable: { handle: '.grid-stack-item-content' },
     },
@@ -50,9 +55,9 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   // normalizeItems: geometry hardening + the deliberate search h:1→h:2 upgrade
   // (see config.js) — applied BEFORE the load so the 12→32 column reflow only
   // ever sees corrected geometry. The native reflow scales x/w by 32/columns
-  // (±1 rounding) and, because float:false, re-compacts rows UPWARD — y never
-  // moves down and h is untouched (measured on gridstack v13, see the
-  // migration comment above grid.column()).
+  // (±1 rounding); y only moves when an overlap must be resolved (h is
+  // untouched) — with float:true saved rows are NEVER compacted upward
+  // (measured on gridstack v13, see the migration comment above grid.column()).
   const loaded = normalizeItems(items);
   grid.load(
     loaded.map((item) => ({
@@ -73,10 +78,10 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   const migrated = columns !== GRID_COLUMNS;
   if (migrated) {
     // Native reflow: scales x/w by 32/columns with rounding (±1 cell possible).
-    // Row heights are unchanged by the migration (h is untouched); y is never
-    // pushed DOWN — with float:false the reflow re-compacts rows upward when a
-    // legacy y left free space above (measured on gridstack v13), matching the
-    // float:false « no voluntary holes » rule (C7).
+    // Row heights are unchanged by the migration (h is untouched); y only
+    // moves when the rescaled footprint collides with a neighbour (engine
+    // collision resolution) — no upward compaction with float:true (measured
+    // on gridstack v13), matching the free-placement rule (review C7 fix).
     grid.column(GRID_COLUMNS, 'moveScale');
   }
 

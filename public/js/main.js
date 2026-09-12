@@ -15,6 +15,17 @@ let grid = null; // current grid instance (viewer gridstack or editor handle)
 let viewTopbarVisible = false; // VIEW-mode topbar state (right-click toggles; default hidden)
 let switchingPage = false; // page switch in flight (double-click guard on the tabs)
 
+// ---- VIEW ↔ EDIT transition (lot 4) ----------------------------------------
+// Visual-only animation between the two modes (see style.css « VIEW ↔ EDIT »):
+// the final geometry is always in place on the first frame (gridstack has
+// already measured it); only transform/opacity/--guide-op are animated. A
+// generation counter invalidates any in-flight rAF/timer so a fast re-toggle
+// can never leave a stale callback mutating the classes.
+const MODE_ANIM_MS = 240; // keep in sync with --mode-dur in style.css
+let modeAnimTimer = 0;
+let modeAnimRaf = 0;
+let modeAnimId = 0;
+
 // Must match MAX_BODY_BYTES in server/routes/layout.routes.js (review C3):
 // the client refuses to send a body the server would 413, so the failure is
 // explained instead of silently dropped.
@@ -272,6 +283,101 @@ function toggleViewTopbar() {
   applyTopbarState(); // animated
 }
 
+// ---- VIEW ↔ EDIT transition orchestration (lot 4) --------------------------
+
+/** prefers-reduced-motion is honored: no animation at all in that case. */
+function prefersReducedMotion() {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+/**
+ * Cancel any running/pending mode transition and remove every transition
+ * class. Idempotent and safe to call from setMode() on any rebuild: it leaves
+ * the dashboard with no residual transform/opacity and no guide fade pending.
+ */
+function stopModeAnim() {
+  modeAnimId += 1; // invalidate in-flight rAF/timer callbacks
+  if (modeAnimTimer) {
+    clearTimeout(modeAnimTimer);
+    modeAnimTimer = 0;
+  }
+  if (modeAnimRaf) {
+    cancelAnimationFrame(modeAnimRaf);
+    modeAnimRaf = 0;
+  }
+  $('dashboard-view').classList.remove('mode-anim', 'anim-from-view', 'anim-to-view');
+}
+
+/**
+ * VIEW → EDIT: the edit grid has just been BUILT at its final geometry; we
+ * paint the « from view » state (frame at view scale, palette off to the left,
+ * controls hidden, guides transparent) WITHOUT transitions so it snaps, then
+ * enable transitions and drop the state class so everything animates to the
+ * final EDIT look. Two rAFs are required (see the comments inside).
+ */
+function playEnterEdit() {
+  const view = $('dashboard-view');
+  stopModeAnim();
+  const id = modeAnimId;
+  // Phase 1 — apply the from-state WITHOUT .mode-anim so it SNAPS (no
+  // transition): otherwise adding the class while transitions are on would
+  // make the from-state itself the transition TARGET and the frame would only
+  // wiggle around its final value. The from-state also switches
+  // #grid-preview display:contents→block and reveals the palette
+  // (display:none→flex), which must be painted once before a transition can
+  // start from it.
+  view.classList.add('anim-from-view');
+  modeAnimRaf = requestAnimationFrame(() => {
+    modeAnimRaf = requestAnimationFrame(() => {
+      modeAnimRaf = 0;
+      if (id !== modeAnimId) return;
+      // Phase 2 — enable transitions and drop the from-state in the SAME
+      // frame: the painted from-state is the start value, the final EDIT look
+      // is the target.
+      view.classList.add('mode-anim');
+      view.classList.remove('anim-from-view');
+      modeAnimTimer = setTimeout(() => {
+        modeAnimTimer = 0;
+        if (id !== modeAnimId) return;
+        view.classList.remove('mode-anim'); // done: no residual transition class
+      }, MODE_ANIM_MS + 40);
+    });
+  });
+}
+
+/**
+ * EDIT → VIEW: we animate the CURRENT edit DOM toward the view look (frame
+ * grows back to view scale, palette slides out, guides fade out) and only
+ * rebuild the viewer grid at the end. That keeps the reverse animation truly
+ * symmetric (guides/controls/palette all present to animate), and the viewer
+ * gridstack still initializes on final geometry after the swap.
+ */
+function playExitEdit() {
+  const view = $('dashboard-view');
+  stopModeAnim();
+  const id = modeAnimId;
+  view.classList.add('mode-anim');
+  // Double rAF for the same reason as playEnterEdit: the « to view » state must
+  // be painted once before it becomes the transition target (the edit DOM here
+  // is already rendered, but this keeps both directions on the same footing).
+  modeAnimRaf = requestAnimationFrame(() => {
+    modeAnimRaf = requestAnimationFrame(() => {
+      modeAnimRaf = 0;
+      if (id !== modeAnimId) return;
+      view.classList.add('anim-to-view'); // → animate toward VIEW
+      modeAnimTimer = setTimeout(() => {
+        modeAnimTimer = 0;
+        if (id !== modeAnimId) return;
+        view.classList.remove('mode-anim', 'anim-to-view');
+        setMode('view'); // instant, clean rebuild → final VIEW geometry
+      }, MODE_ANIM_MS + 40);
+    });
+  });
+}
+
 // Right-click: toggle the bar in view mode, and suppress the browser context
 // menu everywhere on the dashboard EXCEPT on genuine native targets (text
 // fields, links) where the user legitimately wants copy/inspect. Events fired
@@ -288,7 +394,11 @@ $('dashboard-view').addEventListener('contextmenu', (e) => {
   if (state.mode === 'view') toggleViewTopbar();
 });
 
-function setMode(mode) {
+function setMode(mode, { animate = false } = {}) {
+  const from = state.mode;
+  // Any rebuild cancels a pending/running transition and scrubs its classes:
+  // the new grid must never inherit a stale transform/fade (fast re-toggle).
+  stopModeAnim();
   state.mode = mode;
   const btn = $('toggle-mode');
   btn.textContent = mode === 'edit' ? 'Done' : 'Edit';
@@ -340,6 +450,13 @@ function setMode(mode) {
     });
   } else {
     grid = renderViewer($('grid-container'), state.layout, { columns });
+  }
+
+  // Lot 4 — user-driven VIEW → EDIT swap plays the enter animation now that
+  // the edit grid exists at its final geometry. Reduced-motion and every
+  // non-interactive rebuild (initial load, page switch) stay instant.
+  if (animate && !prefersReducedMotion() && from === 'view' && mode === 'edit') {
+    playEnterEdit();
   }
 }
 
@@ -491,7 +608,12 @@ $('logout-btn').addEventListener('click', async () => {
 });
 
 $('toggle-mode').addEventListener('click', () => {
-  setMode(state.mode === 'edit' ? 'view' : 'edit');
+  if (state.mode === 'edit' && !prefersReducedMotion()) {
+    // Animate the current edit DOM toward view, THEN rebuild (see playExitEdit).
+    playExitEdit();
+    return;
+  }
+  setMode(state.mode === 'edit' ? 'view' : 'edit', { animate: true });
 });
 
 // ---- Widget config changes outside the ⚙ modal (review C4) -----------------

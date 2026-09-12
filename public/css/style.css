@@ -25,10 +25,14 @@
   /* Edit-mode grid lines (32×18 canvas). Homy-level tokens — NOT part of the
      holaf palette: the lines are a functional overlay drawn on .grid-stack in
      edit mode only (see .grid-stack.editing-grid below). Minor = every cell,
-     major = every 4 columns / 3 rows, center = the two 50% axes. */
-  --grid-minor: rgba(255, 255, 255, 0.07);
-  --grid-major: rgba(255, 255, 255, 0.17);
-  --grid-center: color-mix(in srgb, var(--accent, #4f8cff) 65%, transparent);
+     major = every 4 columns / 3 rows, center = the two 50% axes.
+     Lot 4 (mode transition): the line colors are now split into CHANNELS +
+     per-theme ALPHAS so the whole guide overlay can be FADED by multiplying
+     those alphas by --guide-op (a registered, transitionable custom property,
+     see @property below and .grid-stack.editing-grid). */
+  --grid-line-rgb: 255 255 255;
+  --grid-minor-a: 0.07;
+  --grid-major-a: 0.17;
   /* Widget surface alpha: 100% by default; relaxed when a background is
      active (image or procedural) so widgets become translucent glass. */
   --surface-alpha: 100%;
@@ -50,9 +54,9 @@
   --overlay: var(--holaf-overlay, rgba(15, 23, 42, 0.35));
   --btn-hover: var(--holaf-btn-hover, #e3e8f2);
   /* Edit-mode grid lines — light-theme variants (kept readable on #eef1f6). */
-  --grid-minor: rgba(15, 23, 42, 0.1);
-  --grid-major: rgba(15, 23, 42, 0.2);
-  --grid-center: color-mix(in srgb, var(--accent, #2f6fe4) 65%, transparent);
+  --grid-line-rgb: 15 23 42;
+  --grid-minor-a: 0.1;
+  --grid-major-a: 0.2;
 }
 
 /* A background (image or procedural) is active → translucent glass surfaces. */
@@ -362,6 +366,12 @@ body { background: transparent; transition: background 0.2s; }
      compute the adaptive dezoom; keep it in sync with the docked .palette
      rule above (they are a contract, not a coincidence). */
   --palette-dock-w: 228px;
+  /* Lot 4 — VIEW↔EDIT transition timing (main.js toggles .mode-anim). All the
+     animated properties are VISUAL only (transform/opacity and the registered
+     --guide-op): none of them feeds gridstack's clientWidth, so the grid
+     geometry stays final from the first frame (the topbar-instant lesson). */
+  --mode-dur: 240ms;
+  --mode-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 #dashboard-view .topbar { flex: none; }
 
@@ -531,8 +541,29 @@ body { background: transparent; transition: background 0.2s; }
    .grid-stack has no ::before/::after of its own in the vendored gridstack
    CSS (only .grid-stack-placeholder>.placeholder-content uses pseudos), so
    this layer is free; as the container's FIRST child it paints below every
-   grid item, exactly like the old background layers did. */
+   grid item, exactly like the old background layers did.
+
+   Lot 4 (mode transition) — FADEABLE GUIDES: the four structural layers stay
+   on the SAME background-image and the axes stay on ::before, but their colors
+   now derive from --guide-op (a registered <number>, default 1, see @property
+   below). Multiplying the per-theme alphas (--grid-minor-a/--grid-major-a)
+   and the center color-mix weight by --guide-op fades the WHOLE overlay —
+   background layers AND ::before axes — without touching opacity (which would
+   also fade the grid items). --guide-op is animated by main.js during the
+   VIEW↔EDIT swap so the guides fade IN/OUT in sync with the frame dezoom. */
+@property --guide-op {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
 .grid-stack.editing-grid {
+  --guide-op: 1;
+  /* Compose the fadeable line colors here (on the element that uses them) so
+     a class toggle on an ancestor that changes --guide-op is picked up — a
+     derived token declared at :root would substitute --guide-op too early. */
+  --grid-minor: rgb(var(--grid-line-rgb) / calc(var(--grid-minor-a) * var(--guide-op)));
+  --grid-major: rgb(var(--grid-line-rgb) / calc(var(--grid-major-a) * var(--guide-op)));
+  --grid-center: color-mix(in srgb, var(--accent, #4f8cff) calc(65% * var(--guide-op)), transparent);
   /* Lot 2 — CONSTANT RENDERED THICKNESS: .editing-grid is scaled by
      --preview-scale (f ∈ (0,1]) in edit-preview mode, so a raw `2px` stroke
      would render 2·f px wide (thinner as the canvas dezooms). Dividing each
@@ -585,6 +616,92 @@ body { background: transparent; transition: background 0.2s; }
 .grid-stack.editing-grid {
   transform: scale(var(--preview-scale, 1));
   transform-origin: top left;
+}
+
+/* ---------- VIEW ↔ EDIT mode transition (lot 4) ----------
+   Fluid swap between the full-area VIEW canvas and the framed EDIT preview.
+   DESIGN CONTRACT (mirrors the topbar-instant lesson): the FINAL geometry is
+   in place on the first frame — gridstack already measured it — and ONLY
+   visual props are animated:
+     • #grid-preview  : transform scale()/translateX()  → the framed preview
+                        DEZOOMS from (or back to) the view-sized canvas;
+     • .palette       : transform translateX() + opacity  → slides in/out of
+                        its docked column (translate never moves the layout);
+     • .widget-controls: opacity + transform  → the ⚙/✕ arrive sliding;
+     • .editing-grid  : --guide-op (registered) → the guide overlay FADES,
+                        in sync with the frame scale, so the grid of markers
+                        follows the workspace zoom instead of popping in.
+   main.js adds .mode-anim + a directional state for one transition, forces a
+   reflow so the start style is committed, then removes the state class on the
+   next frame → the transitions run. All classes are removed at the end and
+   on any new toggle, so VIEW is always left with no residual transform or
+   opacity. Fallback (no .preview-active) leaves --preview-scale unset →
+   var(...,1) → scale(1): zero visual change. */
+#dashboard-view.mode-anim.preview-active #grid-preview {
+  transition: transform var(--mode-dur) var(--mode-ease);
+}
+#dashboard-view.mode-anim.preview-active .palette {
+  transition: transform var(--mode-dur) var(--mode-ease), opacity var(--mode-dur) var(--mode-ease);
+}
+#dashboard-view.mode-anim.preview-active .widget-controls {
+  transition: opacity calc(var(--mode-dur) * 0.8) var(--mode-ease) 40ms,
+              transform calc(var(--mode-dur) * 0.8) var(--mode-ease) 40ms;
+}
+#dashboard-view.mode-anim .grid-stack.editing-grid {
+  transition: --guide-op var(--mode-dur) var(--mode-ease);
+}
+/* While a mode transition runs, clip the (temporarily oversized) scaled frame
+   inside .grid-wrap: overflow:clip never creates a scroll container, so no
+   scrollbar can steal clientWidth from the already-initialized grid. */
+#dashboard-view.mode-anim .grid-wrap { overflow: clip; }
+
+/* Start/end state, both directions. The frame grows back to the VIEW canvas
+   size (scale 1/f) and is pulled left by half the palette column (the docked
+   area is narrower than the full-body view area, so its centre sits
+   dockW/2 further right — this lines the two states up). translateX comes
+   FIRST so its offset is not scaled by the following scale(). */
+#dashboard-view.anim-from-view.preview-active #grid-preview,
+#dashboard-view.anim-to-view.preview-active #grid-preview {
+  transform: translateX(calc(var(--palette-dock-w, 0px) / -2)) scale(calc(1 / var(--preview-scale, 1)));
+}
+#dashboard-view.anim-from-view.preview-active .palette,
+#dashboard-view.anim-to-view.preview-active .palette {
+  transform: translateX(calc(-1 * var(--palette-dock-w, 228px)));
+  opacity: 0;
+}
+#dashboard-view.anim-from-view.preview-active .widget-controls,
+#dashboard-view.anim-to-view.preview-active .widget-controls {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+/* The guides follow the zoom: opacity 0 at the beginning/end of the swap. */
+#dashboard-view.anim-from-view .grid-stack.editing-grid,
+#dashboard-view.anim-to-view .grid-stack.editing-grid {
+  --guide-op: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Belt-and-braces: main.js already skips the animation entirely under
+     reduced-motion, but the transitions must never run either. */
+  #dashboard-view { --mode-dur: 0ms; }
+  #dashboard-view.mode-anim.preview-active #grid-preview,
+  #dashboard-view.mode-anim.preview-active .palette,
+  #dashboard-view.mode-anim.preview-active .widget-controls,
+  #dashboard-view.mode-anim .grid-stack.editing-grid {
+    transition: none;
+  }
+  #dashboard-view.anim-from-view.preview-active #grid-preview,
+  #dashboard-view.anim-to-view.preview-active #grid-preview,
+  #dashboard-view.anim-from-view.preview-active .palette,
+  #dashboard-view.anim-to-view.preview-active .palette,
+  #dashboard-view.anim-from-view.preview-active .widget-controls,
+  #dashboard-view.anim-to-view.preview-active .widget-controls,
+  #dashboard-view.anim-from-view .grid-stack.editing-grid,
+  #dashboard-view.anim-to-view .grid-stack.editing-grid {
+    transform: none;
+    opacity: 1;
+    --guide-op: 1;
+  }
 }
 
 /* ---------- Background layers (lot 3) ---------- */

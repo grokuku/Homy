@@ -11,10 +11,14 @@
  * coordinates are migrated client-side via gridstack's native
  * `column(32, 'moveScale')` reflow (see editor.js / viewer.js).
  *
- * float: false (set by editor.js and viewer.js) is a deliberate UX decision:
- * items compact UPWARD into the first free row, so the canvas never shows
- * voluntary holes — a drag cannot leave a gap under a widget. Documented here
- * because it is a design choice, not an accident (review C7).
+ * float: true (set by editor.js and viewer.js) = FREE VERTICAL PLACEMENT
+ * (review C7 fix): an item dropped in the lower rows keeps its y, voluntary
+ * vertical holes are preserved (no compaction toward the top) and the drag
+ * placeholder follows the real mouse position. gridstack still forbids
+ * overlaps: a drop on an occupied cell pushes the occupant (collision
+ * resolution), it never stacks. Deleting an item leaves its rows empty (no
+ * auto re-flow) — deliberate. Editor and viewer use the SAME flag so the
+ * rendered layout is always identical to the persisted coordinates.
  *
  * margin (editor/viewer) must stay a single SYMMETRIC value (review C8):
  * gridstack insets each item's content box with the four --gs-item-margin-*

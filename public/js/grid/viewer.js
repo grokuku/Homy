@@ -13,8 +13,11 @@ import { GRID_COLUMNS, GRID_ROWS, normalizeItems } from './config.js';
  * migration — but NO persistence: the viewer is static, it only applies
  * `column(32, 'moveScale')` at display time so a legacy 12-column layout shows
  * exactly like it will once the editor saves it. The normalization MUST run
- * here too: with the old h=1 the float:false load compacts following items
- * one row up, which would make the viewer disagree with the editor on y.
+ * here too: with the old h=1 a following item could load one row higher than
+ * the editor would show it, making the viewer disagree with the editor on y.
+ * float: true, same as the editor (review C7 fix): the saved y of every item
+ * is rendered AS SAVED — no upward compaction, voluntary holes preserved — so
+ * VIEW is pixel-identical to what was laid out in edit mode.
  * Note: unlike the editor, no `editing-grid` class is added → the visual grid
  * lines stay edit-mode-only.
  */
@@ -27,7 +30,7 @@ export function renderViewer(container, items, { columns = GRID_COLUMNS } = {}) 
       column: columns, // saved column count (12 for legacy) — migrated below if ≠ 32
       minRow: GRID_ROWS, // fixed 18-row canvas (same as the editor)
       maxRow: GRID_ROWS,
-      float: false,
+      float: true, // free vertical placement (review C7) — same as the editor
     },
     container
   );
