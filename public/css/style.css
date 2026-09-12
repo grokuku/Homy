@@ -369,9 +369,12 @@ body { background: transparent; transition: background 0.2s; }
   /* Lot 4 — VIEW↔EDIT transition timing (main.js toggles .mode-anim). All the
      animated properties are VISUAL only (transform/opacity and the registered
      --guide-op): none of them feeds gridstack's clientWidth, so the grid
-     geometry stays final from the first frame (the topbar-instant lesson). */
-  --mode-dur: 240ms;
-  --mode-ease: cubic-bezier(0.22, 1, 0.36, 1);
+     geometry stays final from the first frame (the topbar-instant lesson).
+     480ms = 2 × the original 240ms; the easing is a standard ease-in-out so
+     the motion RAMP UP instead of the old exponential ease-out which reached
+     its target in the first ~10% of the timeline (that was the « pop »). */
+  --mode-dur: 480ms;
+  --mode-ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 #dashboard-view .topbar { flex: none; }
 
@@ -495,7 +498,13 @@ body { background: transparent; transition: background 0.2s; }
    internal layout stays at its natural (view-mode) size. min-width/auto and
    aspect-ratio are neutralized so the logical box can exceed the frame. */
 #dashboard-view.preview-active #grid-container {
-  width: calc(100% / var(--preview-scale, 1));
+  /* --view-canvas-w: the LOGICAL canvas width, pinned to the real VIEW canvas
+     width by main.js. Keeping it a constant px value decouples gridstack from
+     the animating frame box (topbar reveal, dezoom transform): the container
+     clientWidth never changes during a transition, so cellHeight — and every
+     item geometry — stays final from the first frame. Fallback keeps the old
+     proportional behaviour before the var is set. */
+  width: var(--view-canvas-w, calc(100% / var(--preview-scale, 1)));
   height: calc(100% / var(--preview-scale, 1));
   min-width: 0;
   aspect-ratio: auto;
@@ -638,31 +647,51 @@ body { background: transparent; transition: background 0.2s; }
    opacity. Fallback (no .preview-active) leaves --preview-scale unset →
    var(...,1) → scale(1): zero visual change. */
 #dashboard-view.mode-anim.preview-active #grid-preview {
-  transition: transform var(--mode-dur) var(--mode-ease);
+  transition: transform var(--mode-dur) var(--mode-ease),
+              border-color var(--mode-dur) var(--mode-ease),
+              box-shadow var(--mode-dur) var(--mode-ease);
 }
 #dashboard-view.mode-anim.preview-active .palette {
   transition: transform var(--mode-dur) var(--mode-ease), opacity var(--mode-dur) var(--mode-ease);
 }
 #dashboard-view.mode-anim.preview-active .widget-controls {
-  transition: opacity calc(var(--mode-dur) * 0.8) var(--mode-ease) 40ms,
-              transform calc(var(--mode-dur) * 0.8) var(--mode-ease) 40ms;
+  transition: opacity calc(var(--mode-dur) * 0.7) var(--mode-ease) 60ms,
+              transform calc(var(--mode-dur) * 0.7) var(--mode-ease) 60ms;
 }
 #dashboard-view.mode-anim .grid-stack.editing-grid {
   transition: --guide-op var(--mode-dur) var(--mode-ease);
 }
-/* While a mode transition runs, clip the (temporarily oversized) scaled frame
-   inside .grid-wrap: overflow:clip never creates a scroll container, so no
-   scrollbar can steal clientWidth from the already-initialized grid. */
-#dashboard-view.mode-anim .grid-wrap { overflow: clip; }
+/* The topbar takes part in the swap too. Its LAYOUT is frozen at the final
+   edit height for the whole transition (gridstack already measured it), so only
+   a visual translateY/opacity animates it: it drops in on ENTER and slides out
+   on EXIT instead of clacking 78 px → 40 px in a single frame (the reported
+   « saut »). */
+#dashboard-view.mode-anim .topbar {
+  transition: transform var(--mode-dur) var(--mode-ease), opacity var(--mode-dur) var(--mode-ease);
+}
+/* Clip the (temporarily oversized) scaled frame at the DASHBOARD level, NOT at
+   .grid-wrap: at the start of the swap the frame is scaled up to the full view
+   canvas, which is wider than the palette-narrowed .grid-wrap — clipping there
+   sliced ~190 px off the canvas edges. overflow:clip never creates a scroll
+   container, so no scrollbar can steal clientWidth from the grid. */
+#dashboard-view.mode-anim,
+#dashboard-view.anim-from-view,
+#dashboard-view.anim-to-view { overflow: clip; }
+#dashboard-view.mode-anim .grid-wrap,
+#dashboard-view.anim-from-view .grid-wrap,
+#dashboard-view.anim-to-view .grid-wrap { overflow: visible; }
 
-/* Start/end state, both directions. The frame grows back to the VIEW canvas
-   size (scale 1/f) and is pulled left by half the palette column (the docked
-   area is narrower than the full-body view area, so its centre sits
-   dockW/2 further right — this lines the two states up). translateX comes
-   FIRST so its offset is not scaled by the following scale(). */
+/* Start/end state, both directions. The frame grows back to the REAL view
+   canvas rect: --from-scale/--from-tx/--from-ty are measured by main.js from
+   the live view geometry (not the old edit-area ratio which was ≈1 and made
+   the dezoom invisible). translate comes FIRST so its offset is not scaled by
+   the following scale(); the fallback keeps a sane value if unset. */
 #dashboard-view.anim-from-view.preview-active #grid-preview,
 #dashboard-view.anim-to-view.preview-active #grid-preview {
-  transform: translateX(calc(var(--palette-dock-w, 0px) / -2)) scale(calc(1 / var(--preview-scale, 1)));
+  transform: translate(var(--from-tx, calc(var(--palette-dock-w, 0px) / -2)), var(--from-ty, 0px))
+             scale(var(--from-scale, calc(1 / var(--preview-scale, 1))));
+  border-color: transparent;
+  box-shadow: none;
 }
 #dashboard-view.anim-from-view.preview-active .palette,
 #dashboard-view.anim-to-view.preview-active .palette {
@@ -679,6 +708,21 @@ body { background: transparent; transition: background 0.2s; }
 #dashboard-view.anim-to-view .grid-stack.editing-grid {
   --guide-op: 0;
 }
+/* The topbar is visually collapsed in the « from view » state and must SNAP
+   there (the base .topbar transition would otherwise fade it in before the
+   real transition starts). It is pulled above by its MEASURED height so no
+   hardcoded value is needed. */
+#dashboard-view.anim-from-view .topbar {
+  transform: translateY(calc(-1 * var(--topbar-h, 0px)));
+  opacity: 0;
+  pointer-events: none;
+  transition: none !important;
+}
+#dashboard-view.anim-to-view .topbar {
+  transform: translateY(calc(-1 * var(--topbar-h, 0px)));
+  opacity: 0;
+  pointer-events: none;
+}
 
 @media (prefers-reduced-motion: reduce) {
   /* Belt-and-braces: main.js already skips the animation entirely under
@@ -687,6 +731,7 @@ body { background: transparent; transition: background 0.2s; }
   #dashboard-view.mode-anim.preview-active #grid-preview,
   #dashboard-view.mode-anim.preview-active .palette,
   #dashboard-view.mode-anim.preview-active .widget-controls,
+  #dashboard-view.mode-anim .topbar,
   #dashboard-view.mode-anim .grid-stack.editing-grid {
     transition: none;
   }
@@ -697,7 +742,9 @@ body { background: transparent; transition: background 0.2s; }
   #dashboard-view.anim-from-view.preview-active .widget-controls,
   #dashboard-view.anim-to-view.preview-active .widget-controls,
   #dashboard-view.anim-from-view .grid-stack.editing-grid,
-  #dashboard-view.anim-to-view .grid-stack.editing-grid {
+  #dashboard-view.anim-to-view .grid-stack.editing-grid,
+  #dashboard-view.anim-from-view .topbar,
+  #dashboard-view.anim-to-view .topbar {
     transform: none;
     opacity: 1;
     --guide-op: 1;

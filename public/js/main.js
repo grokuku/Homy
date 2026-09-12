@@ -13,6 +13,7 @@ const $ = (id) => document.getElementById(id);
 
 let grid = null; // current grid instance (viewer gridstack or editor handle)
 let viewTopbarVisible = false; // VIEW-mode topbar state (right-click toggles; default hidden)
+let lastViewTopbarH = 0; // VIEW-mode topbar natural height (for the animated swap)
 let switchingPage = false; // page switch in flight (double-click guard on the tabs)
 
 // ---- VIEW ↔ EDIT transition (lot 4) ----------------------------------------
@@ -21,10 +22,22 @@ let switchingPage = false; // page switch in flight (double-click guard on the t
 // already measured it); only transform/opacity/--guide-op are animated. A
 // generation counter invalidates any in-flight rAF/timer so a fast re-toggle
 // can never leave a stale callback mutating the classes.
-const MODE_ANIM_MS = 240; // keep in sync with --mode-dur in style.css
 let modeAnimTimer = 0;
 let modeAnimRaf = 0;
 let modeAnimId = 0;
+
+/**
+ * Transition duration, read LIVE from the CSS token --mode-dur. Keeps the
+ * JS cleanup timer and the CSS transition in lockstep: they can never drift
+ * (the old hardcoded 240ms was a latent bug — slowing --mode-dur left the
+ * timer rebuilding the DOM mid-animation), and prefers-reduced-motion's
+ * `--mode-dur: 0ms` is honored for free.
+ */
+function modeDurMs() {
+  const raw = getComputedStyle($('dashboard-view')).getPropertyValue('--mode-dur').trim();
+  const m = /^([\d.]+)ms$/.exec(raw);
+  return m ? parseFloat(m[1]) : 480; // keep the fallback in sync with style.css
+}
 
 // Must match MAX_BODY_BYTES in server/routes/layout.routes.js (review C3):
 // the client refuses to send a body the server would 413, so the failure is
@@ -200,6 +213,7 @@ function updatePreviewScale() {
   if (state.mode !== 'edit') {
     view.classList.remove('preview-active');
     preview.style.removeProperty('--preview-scale');
+    preview.style.removeProperty('--view-canvas-w');
     return;
   }
   const wrap = $('grid-wrap');
@@ -208,12 +222,16 @@ function updatePreviewScale() {
   const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
   const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
   const availH = wrap.clientHeight - padY;
-  const fullW = body.clientWidth - padX;
-  const naturalW = Math.min(fullW, (availH * 16) / 9);
   const dockW = parseFloat(getComputedStyle(view).getPropertyValue('--palette-dock-w')) || 0;
   const frameW = Math.min(body.clientWidth - padX - dockW, (availH * 16) / 9);
   const frameContentW = frameW - 2 * PREVIEW_BORDER;
-  const scale = naturalW > 0 ? frameContentW / naturalW : 0;
+  // The logical canvas keeps the VIEW-mode size (true WYSIWYG). The scale is
+  // the ratio between the framed content and the REAL view canvas — NOT the
+  // framed area and its own natural fit (those are ~equal, which made f ≈ 1
+  // and turned the « dezoom » into a plain size pop). computeViewTarget()
+  // reproduces the view-mode fit (collapsed/visible topbar aware).
+  const naturalW = computeViewTarget().w;
+  const scale = naturalW > 0 && frameContentW > 0 ? frameContentW / naturalW : 0;
   const ok =
     naturalW > 0 &&
     frameContentW / GRID_COLUMNS >= PREVIEW_CELL_MIN &&
@@ -222,10 +240,56 @@ function updatePreviewScale() {
     // Fallback: no frame, no scale — today's behavior (pan inside .grid-wrap).
     view.classList.remove('preview-active');
     preview.style.removeProperty('--preview-scale');
+    preview.style.removeProperty('--view-canvas-w');
     return;
   }
   view.classList.add('preview-active');
   preview.style.setProperty('--preview-scale', String(scale));
+  // Pin the LOGICAL canvas width to the view width (constant px, read by CSS as
+  // #grid-container's width). gridstack derives cellHeight from clientWidth, so
+  // this keeps every cell/item stable while the frame box animates — the
+  // container never sees a mid-transition size.
+  preview.style.setProperty('--view-canvas-w', `${naturalW}px`);
+}
+
+/**
+ * The geometry the canvas has in VIEW mode for the CURRENT viewport and
+ * topbar visibility ({ w, cx, cy } = width + center). Mirrors the view-mode
+ * fit of updateCanvasWidth() (collapsed bar: full height; right-click-visible
+ * bar: minus its measured height), and is used both as the logical canvas
+ * width and as the origin/destination rect of the animated dezoom.
+ */
+function computeViewTarget() {
+  const view = $('dashboard-view');
+  const wrap = $('grid-wrap');
+  const cs = getComputedStyle(wrap);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  const viewportW = view.clientWidth;
+  const viewportH = view.clientHeight;
+  const barH = viewTopbarVisible ? lastViewTopbarH : 0;
+  const availH = Math.max(0, viewportH - barH - padY);
+  let w = Math.floor(Math.min(viewportW - padX, (availH * 16) / 9) - 0.5);
+  if (!(w > 0)) w = Math.floor(viewportW - padX);
+  return { w, cx: viewportW / 2, cy: barH + (viewportH - barH) / 2 };
+}
+
+/**
+ * Measure the exact transform that maps the framed preview (identity, final
+ * layout) onto the view canvas rect, and publish it as --from-* custom props
+ * consumed by the .anim-from-view/.anim-to-view styles. This is what makes
+ * the swap a single glide: the first edit frame renders EXACTLY where the view
+ * canvas was (same size + center), then dezooms into the frame.
+ */
+function setViewOriginTransform() {
+  const preview = $('grid-preview');
+  const target = computeViewTarget();
+  const r = preview.getBoundingClientRect(); // identity (no anim class yet)
+  const frameContentW = r.width - 2 * PREVIEW_BORDER;
+  if (!(r.width > 0 && frameContentW > 0 && target.w > 0)) return;
+  preview.style.setProperty('--from-scale', String(target.w / frameContentW));
+  preview.style.setProperty('--from-tx', `${target.cx - (r.left + r.width / 2)}px`);
+  preview.style.setProperty('--from-ty', `${target.cy - (r.top + r.height / 2)}px`);
 }
 
 /**
@@ -253,6 +317,10 @@ function updateTopbarHeight() {
   const topbar = view.querySelector('.topbar');
   if (!topbar) return;
   const h = topbar.offsetHeight; // margin independent → valid even when collapsed
+  // The VIEW-mode height is remembered while we ARE in view: the animated
+  // VIEW↔EDIT swap needs it as the target geometry (the bar is 40px with one
+  // row, 78px with the pages row — never assume a constant).
+  if (state.mode === 'view' && h > 0) lastViewTopbarH = h;
   if (h > 0 && view.style.getPropertyValue('--topbar-h') !== `${h}px`) {
     view.style.setProperty('--topbar-h', `${h}px`);
   }
@@ -313,20 +381,23 @@ function stopModeAnim() {
 
 /**
  * VIEW → EDIT: the edit grid has just been BUILT at its final geometry; we
- * paint the « from view » state (frame at view scale, palette off to the left,
- * controls hidden, guides transparent) WITHOUT transitions so it snaps, then
- * enable transitions and drop the state class so everything animates to the
- * final EDIT look. Two rAFs are required (see the comments inside).
+ * paint the « from view » state (frame mapped onto the exact view canvas rect,
+ * palette off to the left, controls hidden, guides transparent, topbar visually
+ * collapsed) WITHOUT transitions so it snaps, then enable transitions and drop
+ * the state class so everything glides to the final EDIT look. Two rAFs are
+ * required (see the comments inside).
  */
 function playEnterEdit() {
   const view = $('dashboard-view');
   stopModeAnim();
   const id = modeAnimId;
+  // Publish the measured view→frame transform BEFORE the from-state class is
+  // applied, so getBoundingClientRect() still reads the identity frame box.
+  setViewOriginTransform();
   // Phase 1 — apply the from-state WITHOUT .mode-anim so it SNAPS (no
   // transition): otherwise adding the class while transitions are on would
   // make the from-state itself the transition TARGET and the frame would only
-  // wiggle around its final value. The from-state also switches
-  // #grid-preview display:contents→block and reveals the palette
+  // wiggle around its final value. The from-state also reveals the palette
   // (display:none→flex), which must be painted once before a transition can
   // start from it.
   view.classList.add('anim-from-view');
@@ -343,22 +414,25 @@ function playEnterEdit() {
         modeAnimTimer = 0;
         if (id !== modeAnimId) return;
         view.classList.remove('mode-anim'); // done: no residual transition class
-      }, MODE_ANIM_MS + 40);
+      }, modeDurMs() + 60);
     });
   });
 }
 
 /**
  * EDIT → VIEW: we animate the CURRENT edit DOM toward the view look (frame
- * grows back to view scale, palette slides out, guides fade out) and only
- * rebuild the viewer grid at the end. That keeps the reverse animation truly
- * symmetric (guides/controls/palette all present to animate), and the viewer
- * gridstack still initializes on final geometry after the swap.
+ * grows back onto the view canvas rect, palette slides out, guides fade out,
+ * topbar slides away) and only rebuild the viewer grid at the end. That keeps
+ * the reverse animation truly symmetric (guides/controls/palette all present
+ * to animate), and the viewer gridstack still initializes on final geometry
+ * after the swap. The target rect is computed analytically from the current
+ * viewport + topbar visibility, so it matches the rebuilt viewer exactly.
  */
 function playExitEdit() {
   const view = $('dashboard-view');
   stopModeAnim();
   const id = modeAnimId;
+  setViewOriginTransform();
   view.classList.add('mode-anim');
   // Double rAF for the same reason as playEnterEdit: the « to view » state must
   // be painted once before it becomes the transition target (the edit DOM here
@@ -373,7 +447,7 @@ function playExitEdit() {
         if (id !== modeAnimId) return;
         view.classList.remove('mode-anim', 'anim-to-view');
         setMode('view'); // instant, clean rebuild → final VIEW geometry
-      }, MODE_ANIM_MS + 40);
+      }, modeDurMs() + 60);
     });
   });
 }
