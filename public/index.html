@@ -73,23 +73,34 @@
         <h1 class="brand">Homy</h1>
         <div class="topbar-actions">
           <span id="user-label" class="muted"></span>
+          <!-- Edit-only toolbar actions (lot 2): moved out of the palette so
+               they live in the topbar. Hidden outside edit mode (setMode). -->
+          <div id="editor-actions" class="editor-actions hidden">
+            <button id="bg-btn" class="btn" type="button">Background</button>
+            <button id="theme-btn" class="btn" type="button">Theme: Dark</button>
+          </div>
           <button id="toggle-mode" class="btn">Edit</button>
           <button id="logout-btn" class="btn btn-ghost">Logout</button>
         </div>
       </header>
 
-      <div id="editor-palette" class="palette hidden">
-        <h3>Add widget</h3>
-        <div class="palette-actions">
-          <button id="bg-btn" class="btn" type="button">Background</button>
-          <button id="theme-btn" class="btn" type="button">Theme: Dark</button>
+      <div id="dashboard-body" class="dashboard-body">
+        <div id="editor-palette" class="palette hidden">
+          <h3>Add widget</h3>
+          <div id="palette-list" class="palette-list"></div>
         </div>
-        <div id="palette-list" class="palette-list"></div>
-      </div>
 
-      <main id="grid-wrap" class="grid-wrap">
-        <div id="grid-container" class="grid-stack"></div>
-      </main>
+        <main id="grid-wrap" class="grid-wrap">
+          <!-- Framed dezoomed preview (edit mode only): the wrapper is a
+               no-op in view mode (display:contents) and becomes the 16:9
+               frame in edit mode. #grid-preview-bg is the host for the
+               themed background clipped inside the frame (lot 2). -->
+          <div id="grid-preview" class="grid-preview">
+            <div id="grid-preview-bg"></div>
+            <div id="grid-container" class="grid-stack"></div>
+          </div>
+        </main>
+      </div>
     </section>
 
   </div>

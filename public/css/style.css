@@ -145,6 +145,10 @@ body { background: transparent; transition: background 0.2s; }
 }
 .topbar .brand { margin: 0; font-size: 20px; }
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
+/* Edit-only topbar actions (Background / Theme, lot 2): a flex row inline with
+   the other topbar buttons, so they never overlap the preview area. Hidden
+   outside edit mode via .hidden (toggled in main.js setMode). */
+.editor-actions { display: flex; align-items: center; gap: 10px; }
 
 /* ---------- Palette ---------- */
 .palette {
@@ -171,19 +175,33 @@ body { background: transparent; transition: background 0.2s; }
   cursor: grab;
   font-size: 14px;
   text-align: left;
+  /* Buttons do NOT inherit the body color: the UA sheet pins `color:
+     buttontext` (black — no color-scheme is declared), which left the widget
+     name unreadable (black) on the dark --bg-elev-2 surface while the <small>
+     description stayed readable via its explicit --text-muted. Theme it. */
+  color: var(--text);
 }
 .palette-item:hover { border-color: var(--accent); }
 .palette-item small { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
 .palette-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .palette-icon { font-size: 18px; line-height: 1; }
 .palette-size { opacity: 0.7; }
-.palette-actions {
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-  margin-bottom: 14px;
+
+/* Docked palette (edit-preview mode): a real flex column to the LEFT of the
+   framed preview, so it never covers the canvas. Only active when the preview
+   frame is on — on too-small screens the preview bails out (see main.js) and
+   the palette keeps its floating `position: fixed` behavior (step 5). */
+#dashboard-view.preview-active .palette {
+  position: static;
+  flex: 0 0 auto;
+  width: 200px;
+  max-height: none;
+  margin: 20px 8px 20px 20px;
+  z-index: auto;
 }
-.palette-actions .btn { flex: 1; padding: 8px 10px; font-size: 13px; }
+/* Docked mode reserves its column itself: drop the floating-mode margin that
+   used to keep the (fixed) palette clear of the grid. */
+#dashboard-view.preview-active .grid-wrap.with-palette { margin-left: 0; }
 
 /* ---------- Grid ---------- */
 
@@ -193,8 +211,23 @@ body { background: transparent; transition: background 0.2s; }
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* Main-axis space reserved by the DOCKED palette in edit-preview mode:
+     left margin 20 + palette width 200 + right margin 8. Read by main.js to
+     compute the adaptive dezoom; keep it in sync with the docked .palette
+     rule above (they are a contract, not a coincidence). */
+  --palette-dock-w: 228px;
 }
 #dashboard-view .topbar { flex: none; }
+
+/* Horizontal row hosting the (optionally docked) palette and the grid area.
+   In view mode the palette is .hidden, so this row collapses onto the single
+   grid column: identical geometry to the pre-preview layout. */
+.dashboard-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
 
 .grid-wrap {
   flex: 1 1 auto;
@@ -217,6 +250,13 @@ body { background: transparent; transition: background 0.2s; }
   container-type: size;
 }
 .grid-wrap.with-palette { margin-left: 232px; }
+
+/* ---------- Framed dezoomed preview (edit mode, lot 1) ----------
+   Base state: the wrapper is transparent to layout, so VIEW mode keeps the
+   exact same DOM/CSS sizing as before (the canvas sizes itself from
+   .grid-wrap through container queries). Only `preview-active` turns it into
+   a real 16:9 frame. */
+#grid-preview { display: contents; }
 
 #grid-container {
   /* 32×18 square-cell canvas (32/18 = 16/9). The box keeps a 16:9 aspect and
@@ -246,6 +286,67 @@ body { background: transparent; transition: background 0.2s; }
   #grid-container { width: 100%; }
 }
 
+/* The 16:9 frame that hosts the whole canvas in edit-preview mode. Its width
+   is the largest 16:9 box that fits the grid area (now narrowed by the docked
+   palette); it is centered in the area. `overflow: hidden` + `isolation`
+   clip and isolate the scaled canvas (grid lines, and the drag helper, which
+   is the item element itself and therefore lives inside this tree). */
+#dashboard-view.preview-active #grid-preview {
+  display: block;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  width: min(100cqw, calc(100cqh * 16 / 9));
+  aspect-ratio: 16 / 9;
+  margin: auto;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+/* Host for the themed background clipped inside the frame: the background
+   manager re-parents its 3 layers here in edit-preview mode (lot 2). Sits
+   behind the grid (first child, same stacking context). */
+#dashboard-view.preview-active #grid-preview-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* The logical canvas keeps the SAME size it has in view mode (so widgets lay
+   out identically — true WYSIWYG), enlarged by 1/scale and then uniformly
+   shrunk by the scale: the rendered box fills the frame exactly while the
+   internal layout stays at its natural (view-mode) size. min-width/auto and
+   aspect-ratio are neutralized so the logical box can exceed the frame. */
+#dashboard-view.preview-active #grid-container {
+  width: calc(100% / var(--preview-scale, 1));
+  height: calc(100% / var(--preview-scale, 1));
+  min-width: 0;
+  aspect-ratio: auto;
+  margin: 0;
+}
+/* Keep the per-item ⚙/✕ controls at their 24px logical size (and clickable)
+   whatever the dezoom factor: undo the scale on the controls only. */
+#dashboard-view.preview-active .widget-controls button {
+  width: calc(24px / var(--preview-scale, 1));
+  height: calc(24px / var(--preview-scale, 1));
+  font-size: calc(12px / var(--preview-scale, 1));
+  border-width: calc(1px / var(--preview-scale, 1));
+}
+/* Lot 2 — same compensation for gridstack's resize handles: they live INSIDE
+   the scaled canvas, so their hit boxes would shrink to 20·f px. Counter-scale
+   them about their own center to keep a ~20px grab area at any dezoom. The
+   four corner handles also carry a vendor rotate(45deg) which must be kept. */
+#dashboard-view.preview-active .grid-stack-item > .ui-resizable-handle {
+  transform: scale(calc(1 / var(--preview-scale, 1)));
+}
+#dashboard-view.preview-active .grid-stack-item > .ui-resizable-ne,
+#dashboard-view.preview-active .grid-stack-item > .ui-resizable-sw {
+  transform: rotate(45deg) scale(calc(1 / var(--preview-scale, 1)));
+}
+#dashboard-view.preview-active .grid-stack-item > .ui-resizable-nw,
+#dashboard-view.preview-active .grid-stack-item > .ui-resizable-se {
+  transform: rotate(-45deg) scale(calc(1 / var(--preview-scale, 1)));
+}
+
 /* ---------- Edit-mode grid lines (32×18) ----------
    Drawn ONLY in edit mode via the .editing-grid class set by editor.js —
    never in view mode, never on the login view (no .grid-stack there).
@@ -264,38 +365,58 @@ body { background: transparent; transition: background 0.2s; }
    this layer is free; as the container's FIRST child it paints below every
    grid item, exactly like the old background layers did. */
 .grid-stack.editing-grid {
+  /* Lot 2 — CONSTANT RENDERED THICKNESS: .editing-grid is scaled by
+     --preview-scale (f ∈ (0,1]) in edit-preview mode, so a raw `2px` stroke
+     would render 2·f px wide (thinner as the canvas dezooms). Dividing each
+     stroke width by f makes the rendered width (CSS width × f) constant.
+     --preview-scale is unset in view mode and in the small-screen fallback →
+     var(..., 1) → f = 1 → identical to before. */
+  --guide-major-w: calc(2px / var(--preview-scale, 1));
+  --guide-minor-w: calc(1px / var(--preview-scale, 1));
   background-image:
     /* major vertical: every 4 columns (x = 4, 8, … 28 — includes 16) */
     repeating-linear-gradient(90deg,
-      var(--grid-major) 0 2px, transparent 2px calc(var(--gs-column-width, calc(100% / 32)) * 4)),
+      var(--grid-major) 0 var(--guide-major-w), transparent var(--guide-major-w) calc(var(--gs-column-width, calc(100% / 32)) * 4)),
     /* major horizontal: every 3 rows (y = 3, 6, 9, 12, 15 — includes 9) */
     repeating-linear-gradient(0deg,
-      var(--grid-major) 0 2px, transparent 2px calc(var(--gs-cell-height, calc(100% / 18)) * 3)),
+      var(--grid-major) 0 var(--guide-major-w), transparent var(--guide-major-w) calc(var(--gs-cell-height, calc(100% / 18)) * 3)),
     /* minor vertical: every column boundary */
     repeating-linear-gradient(90deg,
-      var(--grid-minor) 0 1px, transparent 1px var(--gs-column-width, calc(100% / 32))),
+      var(--grid-minor) 0 var(--guide-minor-w), transparent var(--guide-minor-w) var(--gs-column-width, calc(100% / 32))),
     /* minor horizontal: every row boundary */
     repeating-linear-gradient(0deg,
-      var(--grid-minor) 0 1px, transparent 1px var(--gs-cell-height, calc(100% / 18)));
+      var(--grid-minor) 0 var(--guide-minor-w), transparent var(--guide-minor-w) var(--gs-cell-height, calc(100% / 18)));
 }
 /* Center axes (x = 16/32 = 50%, y = 9/18 = 50%) — accent-colored via
    --grid-center (color-mix). Isolated on ::before so a failure of color-mix
    in --grid-center cannot take the structural layers down with it (review
-   C5). As the first child of the container it stays UNDER every item. */
+   C5). As the first child of the container it stays UNDER every item.
+   Lot 2: the 1px half-offsets are also divided by the dezoom factor so the
+   two axis bands keep a constant RENDERED width at any zoom. */
 .grid-stack.editing-grid::before {
   content: '';
   position: absolute;
   inset: 0;
   pointer-events: none;
+  --guide-axis-w: calc(1px / var(--preview-scale, 1));
   background-image:
     /* center vertical axis */
     linear-gradient(90deg,
-      transparent calc(50% - 1px), var(--grid-center) calc(50% - 1px),
-      var(--grid-center) calc(50% + 1px), transparent calc(50% + 1px)),
+      transparent calc(50% - var(--guide-axis-w)), var(--grid-center) calc(50% - var(--guide-axis-w)),
+      var(--grid-center) calc(50% + var(--guide-axis-w)), transparent calc(50% + var(--guide-axis-w))),
     /* center horizontal axis */
     linear-gradient(0deg,
-      transparent calc(50% - 1px), var(--grid-center) calc(50% - 1px),
-      var(--grid-center) calc(50% + 1px), transparent calc(50% + 1px));
+      transparent calc(50% - var(--guide-axis-w)), var(--grid-center) calc(50% - var(--guide-axis-w)),
+      var(--grid-center) calc(50% + var(--guide-axis-w)), transparent calc(50% + var(--guide-axis-w)));
+}
+/* Adaptive dezoom (edit mode). --preview-scale is computed in main.js so the
+   ENTIRE frame fits the available area; it is unset → scale(1) when the frame
+   falls back on small screens (zero visual change). The transform also makes
+   the container a containing block for the position:fixed drag helper (which
+   is the item element itself), keeping it correctly placed at any scale. */
+.grid-stack.editing-grid {
+  transform: scale(var(--preview-scale, 1));
+  transform-origin: top left;
 }
 
 /* ---------- Background layers (lot 3) ---------- */
@@ -305,6 +426,24 @@ body { background: transparent; transition: background 0.2s; }
   position: fixed;
   inset: 0;
   pointer-events: none;
+}
+
+/* Scoped host (lot 2): in the framed edit preview the layers are re-parented
+   into #grid-preview-bg and switched from fixed full-viewport to absolute, so
+   they fill — and are CLIPPED by — the 16:9 frame (overflow:hidden on
+   #grid-preview). The containing block is #grid-preview (position:relative). */
+#homy-bg-image.bg-scoped,
+#homy-bg-dim.bg-scoped,
+#homy-bg-canvas.bg-scoped {
+  position: absolute;
+  inset: 0;
+}
+#homy-bg-image.bg-scoped {
+  /* Scoped mode always covers the frame; the page-scroll option is
+     neutralized (manager.js drops .homy-bg-scroll; the height clamp here is
+     belt-and-braces against a stale inline scroll height). */
+  background-size: cover;
+  height: 100% !important;
 }
 #homy-bg-image {
   z-index: -3; /* image layer, below the procedural canvas */
