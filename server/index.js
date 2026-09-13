@@ -9,6 +9,8 @@ import { authGuard } from './middleware/auth.middleware.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { layoutRoutes } from './routes/layout.routes.js';
 import { elementsRoutes } from './routes/elements.routes.js';
+import { reportsRoutes } from './routes/reports.routes.js';
+import { iconsRoutes } from './routes/icons.routes.js';
 import { widgetRoutes } from './routes/widgets.routes.js';
 import { weatherRoutes } from './routes/weather.routes.js';
 import { backgroundRoutes, serveBackgroundFile } from './routes/backgrounds.routes.js';
@@ -16,6 +18,7 @@ import { settingsRoutes } from './routes/settings.routes.js';
 import { SettingsService, BG_NAME_RE, THEMES } from './services/settings.service.js';
 import { LayoutService } from './services/layout.service.js';
 import { ElementsService } from './services/elements.service.js';
+import { IconsService } from './services/icons.service.js';
 import { Store } from './services/store.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -75,6 +78,10 @@ const store = new Store(serverConfig.dataDir);
 // catalogue (usage scan / guarded delete) so both see the same live pages.
 const layoutService = new LayoutService(store);
 const elementsService = new ElementsService(store);
+const iconsService = new IconsService(store, {
+  apiBase: serverConfig.iconsApiBase,
+  timeoutMs: serverConfig.iconsTimeoutMs,
+});
 
 // Background images live in DATA_DIR/backgrounds/<uuid>.<ext>.
 const backgroundsDir = path.join(serverConfig.dataDir, 'backgrounds');
@@ -87,6 +94,8 @@ app.route(
   layoutRoutes(layoutService, { elementExists: (id) => elementsService.get(id) !== null })
 );
 app.route('/api/elements', elementsRoutes(elementsService, layoutService));
+app.route('/api/reports', reportsRoutes(elementsService, { timeoutMs: serverConfig.reportsTimeoutMs }));
+app.route('/api/icons', iconsRoutes(iconsService));
 app.route('/api/widgets', widgetRoutes);
 app.route('/api/weather', weatherRoutes);
 app.route('/api/settings', settingsRoutes(settingsService));

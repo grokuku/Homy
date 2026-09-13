@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { Store } from './store.service.js';
+import {
+  API_KEY_SENTINEL,
+  isKnownReportType,
+  normalizeBaseUrl,
+  REPORT_FIELD_MAX,
+} from './reports.service.js';
 
 /**
  * Elements service: CRUD over the GLOBAL catalogue of reusable "elements".
@@ -40,6 +46,8 @@ export const ELEMENT_URL_MAX = 2048;
 export const ELEMENT_DESCRIPTION_MAX = 300;
 export const DOCKY_AGENT_MAX = 64;
 export const DOCKY_CONTAINER_MAX = 128;
+export const REPORT_TYPE_MAX = 32;
+export const REPORT_API_KEY_MAX = 2048;
 
 /** Thrown by create()/update() on invalid input; the route maps it to HTTP 400. */
 export class ElementsValidationError extends Error {
@@ -103,7 +111,7 @@ export class ElementsService {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       throw new ElementsValidationError('Element must be an object');
     }
-    const fields = validateFields(input, { partial: false });
+    const fields = validateFields(input, { partial: false, existing: null });
     if (this.elements.length >= MAX_ELEMENTS) {
       throw new ElementsValidationError(`Too many elements (max ${MAX_ELEMENTS})`);
     }
@@ -125,7 +133,7 @@ export class ElementsService {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       throw new ElementsValidationError('Element must be an object');
     }
-    const fields = validateFields(patch, { partial: true });
+    const fields = validateFields(patch, { partial: true, existing: element });
     Object.assign(element, fields);
     element.updatedAt = new Date().toISOString();
     this._persist();
@@ -153,7 +161,7 @@ export class ElementsService {
  * fields are left untouched; false (POST): absent fields take their default.
  * Returns a plain object with ONLY the normalized fields present.
  */
-function validateFields(input, { partial }) {
+function validateFields(input, { partial, existing = null }) {
   const out = {};
   const has = (key) => input[key] !== undefined;
 
@@ -218,7 +226,72 @@ function validateFields(input, { partial }) {
     out.docky = validateDocky(input.docky);
   } else if (!partial) out.docky = null;
 
+  // report — null or { type, baseUrl, apiKey } (LOT 8). See validateReport.
+  if (has('report')) {
+    out.report = validateReport(input.report, existing?.report || null);
+  } else if (!partial) out.report = null;
+
   return out;
+}
+
+/**
+ * Validate + normalize an element's report configuration. `null`/absent → null.
+ * The stored object keeps the apiKey in clear SERVER-SIDE (single-user, private
+ * data dir); every route response goes through {@link publicElement} which
+ * strips it. `existing` is the current stored report (PATCH): the sentinel
+ * {@link API_KEY_SENTINEL} keeps the existing key without the client ever
+ * seeing/re-sending it.
+ */
+function validateReport(raw, existing) {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ElementsValidationError('report must be an object or null');
+  }
+  const type = typeof raw.type === 'string' ? raw.type.trim() : '';
+  if (!type || type.length > REPORT_TYPE_MAX) {
+    throw new ElementsValidationError(`report.type is required (max ${REPORT_TYPE_MAX} characters)`);
+  }
+  if (!isKnownReportType(type)) {
+    throw new ElementsValidationError(`Unknown report type: ${type}`);
+  }
+
+  const baseUrlRaw = typeof raw.baseUrl === 'string' ? raw.baseUrl.trim() : '';
+  if (!baseUrlRaw) throw new ElementsValidationError('report.baseUrl is required');
+  if (baseUrlRaw.length > REPORT_FIELD_MAX) {
+    throw new ElementsValidationError(`report.baseUrl must be at most ${REPORT_FIELD_MAX} characters`);
+  }
+  const baseUrl = normalizeBaseUrl(baseUrlRaw);
+  if (!baseUrl) throw new ElementsValidationError('report.baseUrl must be a valid http(s) URL');
+
+  let apiKey;
+  if (raw.apiKey === API_KEY_SENTINEL) {
+    if (!existing || typeof existing.apiKey !== 'string' || !existing.apiKey) {
+      throw new ElementsValidationError('report.apiKey is required');
+    }
+    apiKey = existing.apiKey;
+  } else if (typeof raw.apiKey === 'string' && raw.apiKey.trim()) {
+    apiKey = raw.apiKey.trim();
+    if (apiKey.length > REPORT_API_KEY_MAX) {
+      throw new ElementsValidationError(`report.apiKey must be at most ${REPORT_API_KEY_MAX} characters`);
+    }
+  } else {
+    throw new ElementsValidationError('report.apiKey is required');
+  }
+
+  return { type, baseUrl, apiKey };
+}
+
+/**
+ * Client-safe view of an element: the report `apiKey` is REPLACED by
+ * `hasApiKey` so a secret can never appear in a catalogue response body.
+ * Returns a fresh object (never mutates the stored element).
+ */
+export function publicElement(element) {
+  if (!element || typeof element !== 'object') return element;
+  const { report, ...rest } = element;
+  if (!report) return { ...rest, report: null };
+  const { apiKey, ...reportRest } = report;
+  return { ...rest, report: { ...reportRest, hasApiKey: typeof apiKey === 'string' && apiKey.length > 0 } };
 }
 
 function validateDocky(raw) {
@@ -265,6 +338,7 @@ function coerceStored(raw) {
     description: typeof raw.description === 'string' ? raw.description.trim().slice(0, ELEMENT_DESCRIPTION_MAX) : '',
     healthCheck: raw.healthCheck === true,
     docky: coerceDocky(raw.docky),
+    report: coerceReport(raw.report),
     createdAt: isIsoString(raw.createdAt) ? raw.createdAt : now,
     updatedAt: isIsoString(raw.updatedAt) ? raw.updatedAt : now,
   };
@@ -275,6 +349,17 @@ function coerceDocky(raw) {
   const agent = typeof raw.agent === 'string' ? raw.agent.trim().slice(0, DOCKY_AGENT_MAX) : '';
   const container = typeof raw.container === 'string' ? raw.container.trim().slice(0, DOCKY_CONTAINER_MAX) : '';
   return agent || container ? { agent, container } : null;
+}
+
+/** Tolerant load coercion of a stored report config (never throws). */
+function coerceReport(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const type = typeof raw.type === 'string' ? raw.type.trim().slice(0, REPORT_TYPE_MAX) : '';
+  if (!type || !isKnownReportType(type)) return null;
+  const baseUrl = normalizeBaseUrl(typeof raw.baseUrl === 'string' ? raw.baseUrl : '');
+  const apiKey = typeof raw.apiKey === 'string' ? raw.apiKey : '';
+  if (!baseUrl || !apiKey) return null;
+  return { type, baseUrl, apiKey };
 }
 
 function isIsoString(value) {

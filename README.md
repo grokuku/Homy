@@ -62,6 +62,15 @@ Protected (JWT required):
 - `POST /api/backgrounds` — multipart upload of a background image (png/jpg/jpeg/webp/avif, magic-bytes checked, max 10 MB, max 20 files)
 - `GET /api/backgrounds` — list uploaded backgrounds
 - `DELETE /api/backgrounds/:name` — delete one (409 if currently referenced by the settings)
+- `GET /api/elements` — global element catalogue (CRUD: `POST`, `GET /:id`, `PATCH /:id`, `DELETE /:id`; `GET /:id/usage`). An element may carry a `report` config (`{ type, baseUrl, hasApiKey }` — the API key is **never** returned)
+- `GET /api/reports/types` — report providers (Jellyfin implemented; Radarr/Sonarr/qBittorrent declared, not implemented)
+- `GET /api/reports/:elementId` — normalized report data for an element (404 without a report; readable degraded state when the service is down)
+- `POST /api/reports/:elementId/test` / `POST /api/reports/test` — connection test (stored config / form credentials)
+- `GET /api/icons/search?q=…[&limit=…][&all=1]` — icon search (permissive-only by default; empty `q` → 400)
+- `GET /api/icons` — installed local icons (with collection/license/author)
+- `POST /api/icons/install` `{ id }` — download + validate + store an icon (201; idempotent)
+- `DELETE /api/icons/:slug` — remove an installed icon
+- `GET /api/icons/:slug/svg` — the stored SVG (`image/svg+xml`, JWT required, inlined by the front)
 
 Public (by design):
 - `GET /backgrounds/:name` — the uploaded background images themselves. Served WITHOUT the JWT
@@ -69,7 +78,13 @@ Public (by design):
 
 ## Widgets
 
-Builtin widgets: `frame`, `shortcut`, `clock`, `iframe`, `links`, `search`, `notes`, `weather`.
+Builtin widgets: `clock`, `iframe`, `search`, `notes`, `weather`, plus the `group` container
+(`group` is a titled frame holding button tiles that reference the global element catalogue —
+see the Elements section). The legacy `frame`, `shortcut` and `links` widgets were **removed**
+(lot 6): their use is replaced by `group` + catalogue buttons. They are no longer known item
+types, so a layout still containing them loads without error — such items are simply ignored
+(one muted log) and the rest of the layout is untouched.
+
 Each widget exposes a declarative `settingsSchema` (field types: `text`, `number`, `select`,
 `url`, `icon`, `color`, `toggle`, `textarea`, `list`) that drives the generic config modal —
 no per-widget UI code. The weather widget fetches through the backend proxy to avoid CORS.
@@ -96,10 +111,13 @@ fills a 16:9 viewport exactly. Key contracts (see `public/js/grid/config.js` for
 - **Layout migration**: legacy 12-column layouts are reflowed client-side (`column(32,
   'moveScale')` — x/w rescaled, h kept, y only ever compacted up (float:false
   re-pack when the legacy layout left free space above an item), ids preserved); the editor persists `columns: 32` on
-  its next save, the viewer only re-applies the reflow at display time. Separately, existing
-  **search widgets saved at h=1 are grown to h=2 at load** (a 1-row cell cannot fit the search
-  bar; the manifest default is now 11×2) — the editor persists the corrected height on its next
-  save.
+  its next save, the viewer only re-applies the reflow at display time. Two widget-scoped
+  load-time corrections are applied through the same `normalizeItems()` path (editor **and**
+  viewer): existing **search widgets saved at h=1 are grown to h=2** (a 1-row cell cannot fit
+  the search bar; the manifest default is now 11×2), and every existing **group button tile is
+  raised to the minimum of its display variant** (`minSizeForVariant`, roadmap §A.7) — a tile
+  that cannot keep its grown footprint is relocated to the first free internal slot (no overlap,
+  stays inside the group trame). The editor persists both corrections on its next save.
 - **`float: false`** is a deliberate UX decision: items compact UPWARD into the first free row,
   so drags never leave voluntary holes in the canvas.
 - **`margin` must stay a single symmetric value**: gridstack insets each item's content box with
@@ -128,6 +146,10 @@ fills a 16:9 viewport exactly. Key contracts (see `public/js/grid/config.js` for
   `server/routes/layout.routes.js` for the rationale); `POST /api/layout/items`
   instead falls back to the widget manifest's `defaultSize`.
 - `settings.json` — dashboard settings (`{ theme, background }`, lot 3)
+- `icons.json` — installed icon INDEX (`{ version, icons: [{ slug, id, name, collection,
+  license, author, source, installedAt }] }`, lot 7) — traceability preserved
+- `icons/` — stored icon SVGs as `<slug>.svg` (`slug` derived from `prefix:name`), served
+  only through the JWT-protected `GET /api/icons/:slug/svg` (never a public URL)
 - `backgrounds/` — uploaded background images as `<uuid>.<ext>` (served publicly under `/backgrounds/`)
 - `*.bak` — previous version of each file (kept on write)
 
@@ -231,9 +253,9 @@ scripts/
 server/
   index.js                 # Hono bootstrap, static, routes, error handler
   config.js                # env + config.json loader
-  routes/                  # auth, layout, widgets, settings, backgrounds
+  routes/                  # auth, layout, widgets, settings, backgrounds, elements, icons, reports
   middleware/              # JWT guard, rate-limit
-  services/                # store (atomic JSON), auth, settings
+  services/                # store (atomic JSON), auth, settings, elements, icons, reports (providers)
   data/                    # runtime JSON storage + backgrounds/ (gitignored)
 public/
   index.html               # SPA: login view + dashboard view (+ anti-flash theme script)
@@ -249,9 +271,12 @@ public/
     ui/theme.js            # tokens aliasing (HolafTokens), dark/light switch, Holaf modal/toast themes
     ui/backgroundModal.js  # "Background" modal (type/image/procedural, upload, blur/dim)
     ui/settingsModal.js    # generic schema-driven config modal (HolafModal shell)
+    ui/iconsPicker.js      # icon library picker: online search + local install (lot 7)
+    ui/elementsModal.js    # element catalogue screen + Special reporting section (lots 3/8)
+    elements/reportTile.js # report tile renderer (normalized sessions + degraded state, lot 8)
     ui/toast.js            # toast notifications (HolafToast backend)
     widgets/registry.js    # widget type registry (+ per-widget appearance)
-    widgets/{shortcut,clock,frame,iframe,links,search,notes,weather}.js
+    widgets/{clock,iframe,search,notes,weather}.js
   vendor/gridstack/        # vendored gridstack v13 (gridstack.min.js + gridstack.min.css)
   vendor/holaf/            # vendored holaf-lib bricks (modal .0.4.0, toast 0.5.0, color 0.1.0,
                            #   tokens/ambient/icons 0.1.0) + holaf-manifest.json pinning versions
@@ -313,3 +338,54 @@ ambient /projects/Homy/public`.
   instance is reachable from the public internet, assume the images are enumerable/fetchable by
   anyone who learns a URL.
 - `data/` (auth config, layouts, settings) is never served statically — only `public/` is.
+
+### Icon library (lot 7)
+Icons can be searched online and **installed locally**, then referenced from an element's `icon`
+field as **`local:<slug>`** (alongside the existing emoji / `holaf:<name>` / http(s) URL sources).
+Installed SVGs are **inlined** into the DOM with `currentColor` preserved, so they follow the
+dark/light theme; no public icon URL is ever exposed to the page.
+
+- **Source.** The server queries the public **Iconify API** (`https://api.iconify.design`) — free,
+  no key, documented. (icons0.dev, the UI the request referenced, exposes no documented HTTP API,
+  only an MCP server for AI agents; its data *is* the Iconify dataset. The base URL is therefore
+  `ICONS_API_BASE`, defaulting to Iconify, so a mirror or a stub can be swapped in.)
+- **Allowlist.** Every outbound request is built from that configured base and an id matching
+  `^[a-z0-9-]+:[a-z0-9-]+$`; the resulting origin must equal the base origin. **No client-supplied
+  URL is ever fetched.** A timeout (`ICONS_TIMEOUT_MS`) bounds every call.
+- **Permissive only.** Search returns **permissive-licensed collections only** by default (MIT,
+  Apache-2.0, ISC, CC0-1.0, BSD-2-Clause, BSD-3-Clause, Unlicense); non-permissive ones are
+  masked. The UI's « Permissive only » switch (checked by default) can reveal the others, but
+  **installation is refused server-side (400)** for any non-permissive license.
+- **Validation.** A downloaded SVG must be well-formed, ≤ 64 KB, and free of `<script>`, `on*=`
+  handlers, `<foreignObject>`, external references and DTD/entity declarations — otherwise 400.
+- **Traceability.** Each installed icon keeps its collection, license and author in `icons.json`,
+  shown in the picker's **Installed** tab (attribution preserved).
+
+### Special reporting (lot 8)
+
+An **element** may carry an optional **report config** — a predefined service integration that
+unlocks a **dedicated report tile** (a separate tile kind inside a `group`, laid out on the group's
+internal trame with a **free size**, alongside `buttons[]`). The registry is **pluggable**: adding
+Radarr/Sonarr/qBittorrent later is a new provider, not a refactor.
+
+- **Providers.** `server/services/reports.service.js` exposes a `reportTypes` registry. **Jellyfin**
+  is implemented; **Radarr / Sonarr / qBittorrent** are **declared but not implemented**
+  (`implemented: false`) and listed as “soon” in the form (`GET /api/reports/types`).
+- **Config storage.** `elements.json` stores `report: { type, baseUrl, apiKey }`. A report requires a
+  known type, a valid `http(s)` URL and a non-empty key. On `PATCH`, sending the sentinel
+  `__KEEP__` as `apiKey` keeps the stored key without the browser ever seeing/re-sending it.
+- **Secrets stay server-side.** Every catalogue response passes through `publicElement()`, which
+  **strips `apiKey`** and returns `hasApiKey: true` instead — the key never appears in
+  `GET /api/elements`, `GET /api/elements/:id`, `POST`/`PATCH` responses **nor in the logs**.
+- **Outbound calls.** The server calls the user-configured `baseUrl` only (`/Sessions` +
+  `/System/Info` for Jellyfin), bounded by `REPORTS_TIMEOUT_MS` (default 8000 ms).
+- **Normalization.** `GET /api/reports/:elementId` returns a stable shape: `{ elementId, type,
+  status, fetchedAt, server: { name, version, sessionCount }, sessions: [{ user, media, type,
+  device, client, progress, transcoding, paused, … }], error }`. Idle Jellyfin sessions (no
+  `NowPlayingItem`) are filtered out.
+- **Degraded mode.** Unreachable host → `unreachable`, timeout → `timeout`, bad key → `unauthorized`
+  (401/403), anything else → `error`. The tile renders a readable message (never a crash) and the
+  front refreshes every 30 s with a cleanup on dispose (no orphan timer).
+- **Form.** The element form's **“Special reporting”** section (checkbox + provider select + URL/key
+  + **Test connection**) validates credentials before saving; an existing key shows a `••••••••`
+  placeholder and is preserved unless replaced.

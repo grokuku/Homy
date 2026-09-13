@@ -13,6 +13,9 @@ const env = {
   JWT_SECRET: process.env.JWT_SECRET || '',
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
   BCRYPT_ROUNDS: Number(process.env.BCRYPT_ROUNDS || 12),
+  ICONS_API_BASE: process.env.ICONS_API_BASE || 'https://api.iconify.design',
+  ICONS_TIMEOUT_MS: Number(process.env.ICONS_TIMEOUT_MS || 8000),
+  REPORTS_TIMEOUT_MS: Number(process.env.REPORTS_TIMEOUT_MS || 8000),
 };
 
 // ---- config.json persistence ----------------------------------------------
@@ -69,6 +72,12 @@ export const serverConfig = {
   jwtSecret: config.jwtSecret,
   jwtExpiresIn: config.jwtExpiresIn || env.JWT_EXPIRES_IN,
   bcryptRounds: env.BCRYPT_ROUNDS,
+  // Icon library (lot 7): the ONLY external host the server will call for
+  // icon search/install. Configurable so a mirror / test stub can be swapped in.
+  iconsApiBase: env.ICONS_API_BASE,
+  iconsTimeoutMs: env.ICONS_TIMEOUT_MS,
+  // Outbound timeout (ms) for report service calls (lot 8). Bounded server-side.
+  reportsTimeoutMs: env.REPORTS_TIMEOUT_MS,
 };
 
 export const authConfig = config;

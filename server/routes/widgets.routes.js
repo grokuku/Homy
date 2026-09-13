@@ -30,20 +30,6 @@ const APPEARANCE_FIELDS = [
 
 const WIDGET_MANIFEST = [
   {
-    id: 'frame',
-    type: 'frame',
-    name: 'Frame',
-    icon: '▭',
-    category: 'generic',
-    description: 'Empty titled container to group widgets.',
-    defaultSize: { w: 11, h: 3 } /* 4×3 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
-    settingsSchema: {
-      fields: [
-        { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Frame title' },
-      ],
-    },
-  },
-  {
     id: 'group',
     type: 'group',
     name: 'Group',
@@ -54,42 +40,6 @@ const WIDGET_MANIFEST = [
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Group title' },
-      ],
-    },
-  },
-  {
-    id: 'shortcut',
-    type: 'shortcut',
-    name: 'Shortcut',
-    icon: '🔗',
-    category: 'generic',
-    description: 'Block of icon shortcuts (label, URL, icon = emoji | URL | initials).',
-    defaultSize: { w: 5, h: 2 } /* 2×2 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
-    settingsSchema: {
-      fields: [
-        { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Shortcuts' },
-        {
-          key: 'iconSize',
-          label: 'Icon size',
-          type: 'select',
-          default: 'md',
-          options: [
-            { value: 'sm', label: 'Small' },
-            { value: 'md', label: 'Medium' },
-            { value: 'lg', label: 'Large' },
-          ],
-        },
-        {
-          key: 'shortcuts',
-          label: 'Shortcuts',
-          type: 'list',
-          itemLabel: 'shortcut',
-          fields: [
-            { key: 'label', label: 'Label', type: 'text', default: '' },
-            { key: 'url', label: 'URL', type: 'url', default: '' },
-            { key: 'icon', label: 'Icon (emoji / image URL / holaf:name)', type: 'icon', default: '' },
-          ],
-        },
       ],
     },
   },
@@ -160,30 +110,6 @@ const WIDGET_MANIFEST = [
         { key: 'url', label: 'URL', type: 'url', default: '', required: true, placeholder: 'https://…' },
         { key: 'sandbox', label: 'Sandbox (restrict content)', type: 'toggle', default: true },
         { key: 'height', label: 'Height', type: 'range', default: 400, min: 100, max: 2000, step: 10, unit: 'px' },
-      ],
-    },
-  },
-  {
-    id: 'links',
-    type: 'links',
-    name: 'Links',
-    icon: '🔖',
-    category: 'generic',
-    description: 'Simple column of text links (bookmarks).',
-    defaultSize: { w: 5, h: 3 } /* 2×3 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
-    settingsSchema: {
-      fields: [
-        { key: 'title', label: 'Title', type: 'text', default: 'Links', placeholder: 'Links' },
-        {
-          key: 'links',
-          label: 'Links',
-          type: 'list',
-          itemLabel: 'link',
-          fields: [
-            { key: 'label', label: 'Label', type: 'text', default: '' },
-            { key: 'url', label: 'URL', type: 'url', default: '' },
-          ],
-        },
       ],
     },
   },

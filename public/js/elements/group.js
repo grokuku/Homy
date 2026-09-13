@@ -1,6 +1,13 @@
 import { el, uuid } from '../util.js';
 import { catalog } from './catalog.js';
 import { normalizeButton, renderButtonTile, applyTileMetrics, minSizeForVariant } from './button.js';
+import {
+  renderReportTile,
+  applyReportMetrics,
+  normalizeReport,
+  REPORT_CELLS_MIN,
+  REPORT_CELLS_MAX,
+} from './reportTile.js';
 import { openElementPicker } from './elementPicker.js';
 import { openButtonOptions } from './buttonOptions.js';
 import { toast } from '../ui/toast.js';
@@ -46,6 +53,7 @@ import { toast } from '../ui/toast.js';
 const GLOBAL_COLUMNS = 32;
 const DEFAULT_STEP = 22.5; // px — 1440px canvas: 45px global cell / 2
 const MAX_TILE_CELLS = 4; // server-side per-button cap (internal cells)
+const DEFAULT_REPORT_SIZE = { w: 8, h: 6 }; // internal cells (free size)
 const TILE_DELETE_CONFIRM_MS = 3000;
 const ADD_DEFAULT_OPTIONS = {
   icon: true,
@@ -86,7 +94,15 @@ export const group = {
           e.stopPropagation();
           addElement();
         });
-        header.appendChild(addBtn);
+        const addReportBtn = el('button', 'group-add group-add-report', '+ Add report', {
+          type: 'button',
+          title: 'Add a report tile (element with Special reporting)',
+        });
+        addReportBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          addReport();
+        });
+        header.append(addBtn, addReportBtn);
       }
       container.appendChild(header);
     }
@@ -99,6 +115,10 @@ export const group = {
     const buttons = (Array.isArray(item?.buttons) ? item.buttons : [])
       .map(normalizeButton)
       .filter((b) => b.elementId);
+    const reports = (Array.isArray(item?.reports) ? item.reports : [])
+      .map(normalizeReport)
+      .filter((r) => r.elementId);
+    const allTiles = () => [...buttons, ...reports];
 
     // Group dimensions in INTERNAL cells (a global cell = 2 internal cells).
     const groupCols = Math.max(2, (Number(item?.w) || 1) * 2);
@@ -108,16 +128,29 @@ export const group = {
     let raf = 0;
     let dragCleanup = null; // active tile move/resize teardown (destroyed mid-drag)
     const deleteTimers = new Set(); // armed ✕ confirm timers (cleared on re-render/destroy)
+    const tileDisposers = new Set(); // report-tile refresh cleanups (no timer leaks)
 
     const clearDeleteTimers = () => {
       for (const t of deleteTimers) clearTimeout(t);
       deleteTimers.clear();
     };
 
+    const disposeTiles = () => {
+      for (const dispose of tileDisposers) {
+        try {
+          dispose();
+        } catch (err) {
+          console.error('[group] tile dispose failed:', err);
+        }
+      }
+      tileDisposers.clear();
+    };
+
     // ---- tile rendering -------------------------------------------------------
 
     const renderTiles = () => {
       clearDeleteTimers();
+      disposeTiles();
       canvas.replaceChildren();
       for (const button of buttons) {
         const element = catalog.get(button.elementId);
@@ -125,25 +158,35 @@ export const group = {
         if (editable) decorateTile(tile, button);
         canvas.appendChild(tile);
       }
+      for (const report of reports) {
+        const element = catalog.get(report.elementId);
+        const { el: tile, dispose } = renderReportTile({ report, element, step });
+        tileDisposers.add(dispose);
+        if (editable) decorateReportTile(tile, report);
+        canvas.appendChild(tile);
+      }
     };
 
     // ---- persistence ----------------------------------------------------------
 
-    // The group does not own the save path: it publishes its fresh buttons and
+    // The group does not own the save path: it publishes its fresh tiles and
     // the editor (which holds the item meta) debounces the PUT /api/layout.
     function persist() {
       window.dispatchEvent(
         new CustomEvent('homy:group-buttons', { detail: { id: item.id, buttons } })
       );
+      window.dispatchEvent(
+        new CustomEvent('homy:group-reports', { detail: { id: item.id, reports } })
+      );
     }
 
     // ---- add / remove ---------------------------------------------------------
 
-    function nextSlot(w, h, exclude = null) {
+    function nextSlot(list, w, h, exclude = null) {
       const maxCol = Math.max(0, groupCols - w);
       for (let row = 0; row < 500; row += 2) {
         for (let col = 0; col <= maxCol; col += 2) {
-          if (!overlaps(buttons, exclude, col, row, w, h)) return { col, row };
+          if (!overlaps(list, exclude, col, row, w, h)) return { col, row };
         }
       }
       return { col: 0, row: 0 };
@@ -155,7 +198,7 @@ export const group = {
         onPick: (element) => {
           if (!element?.id) return;
           const { min } = minSizeForVariant(ADD_DEFAULT_OPTIONS);
-          const slot = nextSlot(min.w, min.h);
+          const slot = nextSlot(allTiles(), min.w, min.h);
           buttons.push(
             normalizeButton({
               id: uuid(),
@@ -174,12 +217,40 @@ export const group = {
       });
     }
 
+    function addReport() {
+      openElementPicker({
+        title: 'Add report',
+        emptyText: 'No element has a report configured yet — edit an element and enable “Special reporting”.',
+        filter: (element) => !!(element?.report && element.report.type),
+        onPick: (element) => {
+          if (!element?.id) return;
+          const w = Math.min(REPORT_CELLS_MAX, Math.min(DEFAULT_REPORT_SIZE.w, groupCols));
+          const h = Math.min(REPORT_CELLS_MAX, Math.min(DEFAULT_REPORT_SIZE.h, groupRows));
+          const slot = nextSlot(allTiles(), w, h);
+          reports.push(
+            normalizeReport({ id: uuid(), elementId: element.id, col: slot.col, row: slot.row, w, h })
+          );
+          renderTiles();
+          persist();
+          toast(`Report “${element.name}” added`, 'success');
+        },
+      });
+    }
+
     function removeButton(button) {
       const index = buttons.indexOf(button);
       if (index >= 0) buttons.splice(index, 1);
       renderTiles();
       persist();
       toast('Tile removed', 'success');
+    }
+
+    function removeReport(report) {
+      const index = reports.indexOf(report);
+      if (index >= 0) reports.splice(index, 1);
+      renderTiles();
+      persist();
+      toast('Report tile removed', 'success');
     }
 
     function openOptions(button) {
@@ -199,8 +270,8 @@ export const group = {
           // 1×1 that just enabled `monitoring`): if the grown footprint would
           // collide with a neighbour, relocate to the nearest free slot so the
           // « no overlap » invariant always holds.
-          if (overlaps(buttons, button, updated.col, updated.row, button.w, button.h)) {
-            const slot = nextSlot(button.w, button.h, button);
+          if (overlaps(allTiles(), button, updated.col, updated.row, button.w, button.h)) {
+            const slot = nextSlot(allTiles(), button.w, button.h, button);
             button.col = slot.col;
             button.row = slot.row;
           } else {
@@ -261,7 +332,15 @@ export const group = {
       controls.append(optBtn, delBtn);
 
       const resize = el('div', 'tile-resize', null, { title: 'Resize', 'aria-hidden': 'true' });
-      resize.addEventListener('mousedown', (e) => startResize(e, tile, button));
+      resize.addEventListener('mousedown', (e) =>
+        startResize(e, tile, button, allTiles(), applyTileMetrics, {
+          minW: Math.max(2, minSizeForVariant(button.options).min.w),
+          minH: Math.max(2, minSizeForVariant(button.options).min.h),
+          maxW: MAX_TILE_CELLS,
+          maxH: MAX_TILE_CELLS,
+          snap: snap2,
+        })
+      );
 
       tile.append(controls, resize);
 
@@ -280,29 +359,83 @@ export const group = {
       tile.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         if (e.target.closest('button, input, select, textarea, .tile-resize, .tile-edit-controls')) return;
-        startMove(e, tile, button);
+        startMove(e, tile, button, allTiles(), applyTileMetrics);
       });
     }
 
-    function startMove(e, tile, button) {
+    function decorateReportTile(tile, report) {
+      tile.classList.add('tile-editable');
+
+      const controls = el('div', 'tile-edit-controls');
+      const delBtn = el('button', 'tile-edit-del', '✕', {
+        type: 'button',
+        title: 'Delete report tile',
+        'aria-label': 'Delete report tile',
+      });
+      delBtn.addEventListener('mousedown', stopEvent);
+      let armed = false;
+      let timer = 0;
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (armed) {
+          clearTimeout(timer);
+          removeReport(report);
+          return;
+        }
+        armed = true;
+        delBtn.textContent = '!';
+        delBtn.classList.add('confirm');
+        delBtn.title = 'Click again to delete';
+        timer = setTimeout(() => {
+          deleteTimers.delete(timer);
+          armed = false;
+          delBtn.textContent = '✕';
+          delBtn.classList.remove('confirm');
+          delBtn.title = 'Delete report tile';
+        }, TILE_DELETE_CONFIRM_MS);
+        deleteTimers.add(timer);
+      });
+      controls.appendChild(delBtn);
+
+      const resize = el('div', 'tile-resize', null, { title: 'Resize', 'aria-hidden': 'true' });
+      resize.addEventListener('mousedown', (e) =>
+        startResize(e, tile, report, allTiles(), applyReportMetrics, {
+          minW: REPORT_CELLS_MIN,
+          minH: REPORT_CELLS_MIN,
+          maxW: REPORT_CELLS_MAX,
+          maxH: REPORT_CELLS_MAX,
+          snap: snap1,
+        })
+      );
+
+      tile.append(controls, resize);
+
+      tile.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('button, input, select, textarea, .tile-resize, .tile-edit-controls')) return;
+        startMove(e, tile, report, allTiles(), applyReportMetrics);
+      });
+    }
+
+    function startMove(e, tile, obj, list, apply) {
       e.stopPropagation();
       e.preventDefault();
       const startX = e.clientX;
       const startY = e.clientY;
-      const startCol = button.col;
-      const startRow = button.row;
+      const startCol = obj.col;
+      const startRow = obj.row;
       let moved = false;
 
       const onMove = (ev) => {
         const dCol = Math.round((ev.clientX - startX) / step);
         const dRow = Math.round((ev.clientY - startY) / step);
-        const col = clampInt(startCol + dCol, 0, Math.max(0, groupCols - button.w));
+        const col = clampInt(startCol + dCol, 0, Math.max(0, groupCols - obj.w));
         const row = Math.max(0, startRow + dRow);
-        if (col === button.col && row === button.row) return;
-        if (overlaps(buttons, button, col, row, button.w, button.h)) return;
-        button.col = col;
-        button.row = row;
-        applyTileMetrics(tile, button, step);
+        if (col === obj.col && row === obj.row) return;
+        if (overlaps(list, obj, col, row, obj.w, obj.h)) return;
+        obj.col = col;
+        obj.row = row;
+        apply(tile, obj, step);
         moved = true;
       };
       const onUp = () => {
@@ -318,28 +451,25 @@ export const group = {
       document.body.classList.add('tile-dragging');
     }
 
-    function startResize(e, tile, button) {
+    function startResize(e, tile, obj, list, apply, { minW, minH, maxW, maxH, snap }) {
       e.stopPropagation();
       e.preventDefault();
       const startX = e.clientX;
       const startY = e.clientY;
-      const startW = button.w;
-      const startH = button.h;
-      const { min } = minSizeForVariant(button.options);
-      const minW = Math.max(2, min.w);
-      const minH = Math.max(2, min.h);
+      const startW = obj.w;
+      const startH = obj.h;
       let resized = false;
 
       const onMove = (ev) => {
-        const maxW = Math.max(minW, Math.min(MAX_TILE_CELLS, groupCols - button.col));
-        const maxH = Math.max(minH, Math.min(MAX_TILE_CELLS, groupRows - button.row));
-        const w = clampInt(snap2(startW + Math.round((ev.clientX - startX) / step)), minW, maxW);
-        const h = clampInt(snap2(startH + Math.round((ev.clientY - startY) / step)), minH, maxH);
-        if (w === button.w && h === button.h) return;
-        if (overlaps(buttons, button, button.col, button.row, w, h)) return;
-        button.w = w;
-        button.h = h;
-        applyTileMetrics(tile, button, step);
+        const capW = Math.max(minW, Math.min(maxW, groupCols - obj.col));
+        const capH = Math.max(minH, Math.min(maxH, groupRows - obj.row));
+        const w = clampInt(snap(startW + Math.round((ev.clientX - startX) / step)), minW, capW);
+        const h = clampInt(snap(startH + Math.round((ev.clientY - startY) / step)), minH, capH);
+        if (w === obj.w && h === obj.h) return;
+        if (overlaps(list, obj, obj.col, obj.row, w, h)) return;
+        obj.w = w;
+        obj.h = h;
+        apply(tile, obj, step);
         resized = true;
       };
       const onUp = () => {
@@ -404,6 +534,7 @@ export const group = {
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
       clearDeleteTimers();
+      disposeTiles();
       dragCleanup?.();
     };
   },
@@ -430,6 +561,11 @@ function measureStep(container, item) {
 /** Round to the nearest even internal-cell value (tile sizes are {2,4}). */
 function snap2(value) {
   return Math.round(value / 2) * 2;
+}
+
+/** Round to the nearest internal cell (free-size report tiles). */
+function snap1(value) {
+  return Math.round(value);
 }
 
 function clampInt(value, min, max) {

@@ -34,14 +34,21 @@ const GROUP_MIN_CELLS = 2;
  */
 export function initEditor(container, items, { onSave, columns = GRID_COLUMNS }) {
   const meta = new Map(); // id -> { type, config, buttons? }
-  // `buttons` is carried through for `group` items only: the editor is READ
-  // ONLY for buttons in lot 2 (no picker/panel yet) but MUST persist them
-  // unchanged, otherwise a drag would silently drop a group's whole content.
-  items.forEach((i) =>
+  // normalizeItems MUST run before the meta cache is populated: it is the load
+  // correction shared with the viewer (geometry hardening, search h:1→h:2 and
+  // the lot-6 group tile min-size raise — see config.js). Feeding the CORRECTED
+  // items to meta means the very next save persists exactly what is rendered
+  // (a raw `buttons[]` in meta would silently re-save the under-min geometry).
+  const loaded = normalizeItems(items);
+  // `buttons` is carried through for `group` items only: the editor MUST
+  // persist them unchanged on a widget drag, otherwise the group's whole
+  // content would be dropped.
+  loaded.forEach((i) =>
     meta.set(i.id, {
       type: i.type,
       config: i.config || {},
       buttons: i.type === 'group' && Array.isArray(i.buttons) ? i.buttons : undefined,
+      reports: i.type === 'group' && Array.isArray(i.reports) ? i.reports : undefined,
     })
   );
 
@@ -66,13 +73,12 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   );
 
   grid.removeAll(false);
-  // normalizeItems: geometry hardening + the deliberate search h:1→h:2 upgrade
-  // (see config.js) — applied BEFORE the load so the 12→32 column reflow only
-  // ever sees corrected geometry. The native reflow scales x/w by 32/columns
-  // (±1 rounding); y only moves when an overlap must be resolved (h is
-  // untouched) — with float:true saved rows are NEVER compacted upward
-  // (measured on gridstack v13, see the migration comment above grid.column()).
-  const loaded = normalizeItems(items);
+  // `loaded` (normalized above, before the meta cache) is used here so the
+  // 12→32 column reflow only ever sees corrected geometry. The native reflow
+  // scales x/w by 32/columns (±1 rounding); y only moves when an overlap must
+  // be resolved (h is untouched) — with float:true saved rows are NEVER
+  // compacted upward (measured on gridstack v13, see the migration comment
+  // above grid.column()).
   grid.load(
     loaded.map((item) => ({
       id: item.id,
@@ -129,9 +135,12 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   // `|| 1` guards are belt-and-braces for hand-crafted nodes.
   const serialize = () =>
     grid.engine.nodes.map((n) => {
-      const m = meta.get(n.id) || { type: 'frame', config: {} };
+      const m = meta.get(n.id) || { type: '', config: {} };
       const entry = { id: n.id, x: n.x, y: n.y, w: n.w || 1, h: n.h || 1, type: m.type, config: m.config };
-      if (m.type === 'group') entry.buttons = Array.isArray(m.buttons) ? m.buttons : [];
+      if (m.type === 'group') {
+        entry.buttons = Array.isArray(m.buttons) ? m.buttons : [];
+        entry.reports = Array.isArray(m.reports) ? m.reports : [];
+      }
       return entry;
     });
   const runSave = () => {
@@ -200,11 +209,27 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
       // See grid.load() above: content is assigned via textContent by gridstack.
       content: '',
     });
-    meta.set(id, { type, config: {}, buttons: isGroup ? [] : undefined });
+    meta.set(id, { type, config: {}, buttons: isGroup ? [] : undefined, reports: isGroup ? [] : undefined });
     const itemEl = grid.engine.nodes.find((n) => n.id === id)?.el;
     const contentEl = itemEl?.querySelector('.grid-stack-item-content');
     if (itemEl && contentEl) {
-      renderWidget(contentEl, { id, type, config: {}, buttons: isGroup ? [] : undefined }, { editable: true });
+      // Pass the REAL geometry: the group derives its internal trame from w/h,
+      // so a missing w/h here would make it clamp tiles to a 1-cell trame.
+      renderWidget(
+        contentEl,
+        {
+          id,
+          type,
+          x: 0,
+          y: 0,
+          w: size.w,
+          h: size.h,
+          config: {},
+          buttons: isGroup ? [] : undefined,
+          reports: isGroup ? [] : undefined,
+        },
+        { editable: true }
+      );
       attachControls(itemEl, id);
     }
     scheduleSave();
@@ -230,9 +255,14 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
             contentEl,
             {
               id,
+              x: node?.x || 0,
+              y: node?.y || 0,
+              w: node?.w || 1,
+              h: node?.h || 1,
               type: m.type,
               config: newConfig,
               buttons: m.type === 'group' ? m.buttons : undefined,
+              reports: m.type === 'group' ? m.reports : undefined,
             },
             { editable: true }
           );
@@ -289,6 +319,18 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
     scheduleSave();
   }
 
+  /**
+   * Replace a group's `reports[]` in the meta cache (lot 8). Fed by the
+   * `homy:group-reports` event the group widget broadcasts after any report
+   * tile mutation, through the SAME cancellable debounce as a widget drag.
+   */
+  function applyReports(id, reports) {
+    const m = meta.get(id);
+    if (!m || m.type !== 'group' || !Array.isArray(reports)) return;
+    m.reports = reports;
+    scheduleSave();
+  }
+
   function attachControls(itemEl, id) {
     const contentEl = itemEl.querySelector('.grid-stack-item-content');
     if (!contentEl) return;
@@ -327,6 +369,7 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
     addWidget,
     applyConfig,
     applyButtons,
+    applyReports,
     /** Flush a pending debounced save NOW (awaitable — see flushSave). */
     flush: flushSave,
     destroy() {

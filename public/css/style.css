@@ -990,8 +990,7 @@ body.bg-to-view #homy-bg-layer {
    sets overflow-x:hidden;overflow-y:auto — style.css loads after the vendor
    stylesheet, so this later declaration wins the cascade tie and widget
    content CLIPS instead of scrolling inside its cell. Widgets that need to
-   scroll do it on their own children (.links-list, .notes-textarea,
-   .widget-body…), which are unaffected. */
+   scroll do it on their own children (.notes-textarea…), which are unaffected. */
 .grid-stack > .grid-stack-item > .grid-stack-item-content {
   overflow: hidden;
 }
@@ -1046,51 +1045,7 @@ body[data-bg-active] .grid-stack-item-content {
 .widget-controls button:hover { border-color: var(--accent); }
 .widget-controls button.del:hover { border-color: var(--danger); color: var(--danger); }
 
-/* shortcut tiles */
-.shortcut-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
-  gap: 10px;
-  align-content: start;
-  padding: 12px;
-}
-.shortcut-grid.size-sm { grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 8px; }
-.shortcut-grid.size-lg { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 12px; }
-.shortcut-grid.size-sm .shortcut-icon { width: 34px; height: 34px; font-size: 18px; }
-.shortcut-grid.size-lg .shortcut-icon { width: 56px; height: 56px; font-size: 30px; }
-.shortcut-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 6px;
-  border-radius: 8px;
-  text-decoration: none;
-  color: var(--text);
-  transition: background 0.15s;
-}
-.shortcut-tile:hover { background: var(--bg-elev-2); }
-.shortcut-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  background: var(--bg-elev-2);
-  overflow: hidden;
-}
-.shortcut-icon img { width: 100%; height: 100%; object-fit: cover; }
-.shortcut-icon svg { width: 1.35em; height: 1.35em; } /* holaf:<name> icons (stroke = currentColor) */
-.shortcut-label {
-  font-size: 12px;
-  text-align: center;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* LOT 6: the shortcut widget was removed with its .shortcut-* styles. */
 
 /* ---------- Group container (lot 2) ----------
    A group is a titled container whose internal TRAME is 2× finer than the
@@ -1285,6 +1240,63 @@ body[data-bg-active] .grid-stack-item-content {
   .tile-label { font-size: 10px; }
 }
 
+/* ---------- Report tiles (lot 8) ----------
+   A dedicated tile kind inside a group, referencing an element that carries a
+   Special-reporting config. FREE size on the internal trame (no button-variant
+   minima). Renders the normalized provider payload (sessions + progress) or a
+   readable degraded state. */
+.report-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  overflow: hidden;
+  font-size: 12px;
+  container-type: size;
+}
+.report-tile.tile-editable { cursor: move; }
+.report-tile.tile-editable:hover { outline: 1px dashed var(--accent); outline-offset: 1px; }
+body.tile-dragging .report-tile.tile-editable { cursor: grabbing; }
+.report-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex: 0 0 auto; }
+.report-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+.report-body { flex: 1; min-height: 0; overflow: auto; margin-top: 4px; }
+.report-state { color: var(--text-muted); font-size: 12px; }
+.report-sessions { display: flex; flex-direction: column; gap: 6px; }
+.report-session { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); padding-top: 5px; }
+.report-session:first-child { border-top: 0; padding-top: 0; }
+.report-session-top { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.report-media { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-badge {
+  flex: 0 0 auto;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.report-badge-tc { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.report-badge-paused { color: var(--warning, #e0a800); }
+.report-sub { font-size: 11px; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-bar { height: 4px; margin-top: 4px; border-radius: 999px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }
+.report-bar i { display: block; height: 100%; background: var(--accent); }
+.report-meta { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
 /* ---------- Group tile editing (lot 4) ----------
    Edit-mode only affordances: header « + Add element », per-tile ⚙/✕ and a
    bottom-right resize handle. All are position:absolute so they never change
@@ -1303,6 +1315,7 @@ body[data-bg-active] .grid-stack-item-content {
   cursor: pointer;
 }
 .group-add:hover { border-color: var(--accent); color: var(--accent); }
+.group-add + .group-add { margin-left: 4px; }
 
 .group-tile.tile-editable { cursor: move; }
 .group-tile.tile-editable:hover { outline: 1px dashed var(--accent); outline-offset: 1px; }
@@ -1357,12 +1370,7 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .iframe-widget { padding: 0; }
 .iframe-widget iframe { width: 100%; height: 100%; border: 0; flex: 1; }
 
-/* links */
-.links-widget { padding: 0; }
-.links-list { list-style: none; margin: 0; padding: 8px 12px; flex: 1; overflow: auto; }
-.links-list li { padding: 4px 0; }
-.links-list a { color: var(--text); text-decoration: none; }
-.links-list a:hover { color: var(--accent); text-decoration: underline; }
+/* LOT 6: the links widget was removed with its .links-* styles. */
 
 /* search — review C1: a default search (11×2 since the C1 change) must never
    clip its bar. Budget (border-box): widget padding 2×6 + input (2×7 padding
@@ -1457,6 +1465,15 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
   font-size: 14px;
 }
 .config-form .field { margin-bottom: 14px; }
+/* « Special reporting » section of the element form (lot 8). */
+.report-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.report-section-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.report-toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.report-config { margin-top: 10px; }
+.report-test-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.report-test-result { font-size: 12px; color: var(--text-muted); }
+.report-test-result.success { color: var(--success); }
+.report-test-result.error { color: var(--danger); }
 .config-form .field-label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-muted); }
 .config-form .field-help { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
 .config-form .color-field { display: flex; gap: 8px; align-items: center; }
@@ -1660,6 +1677,7 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 }
 .badge-docky { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .badge-health { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.badge-report { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .elements-row-actions { display: flex; gap: 6px; flex: 0 0 auto; }
 .elements-row-actions .btn { padding: 5px 10px; font-size: 13px; }
 .elements-row-actions .btn.confirm { border-color: var(--danger); color: var(--danger); }
@@ -1780,3 +1798,153 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .segmented-item:disabled { opacity: 0.4; cursor: not-allowed; }
 .opt-danger { display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 12px; }
 .opt-danger .btn.confirm { border-color: var(--danger); color: var(--danger); }
+
+/* ---------- Icon library picker (lot 7) ----------
+   Search + local install screen for the icon library. All colors via theme
+   tokens so the dark/light switch is honoured; SVGs are inlined and sized by
+   these rules (currentColor follows the theme). */
+.icons-body { display: flex; flex-direction: column; gap: 12px; }
+.icons-count { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; padding-right: 6px; }
+.icons-tabs { align-self: flex-start; }
+.icons-pane { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.icons-search-row { display: flex; align-items: center; gap: 12px; }
+.icons-query {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 14px;
+}
+.icons-query:focus { outline: none; border-color: var(--accent); }
+.icons-permissive {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.icons-permissive input { margin: 0; }
+.icons-samples { display: flex; flex-wrap: wrap; gap: 6px; }
+.icons-chip {
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.icons-chip:hover { color: var(--text); border-color: var(--accent); }
+.icons-status { margin: 0; font-size: 12px; }
+
+.icons-split { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; min-height: 0; }
+@media (max-width: 640px) { .icons-split { grid-template-columns: 1fr; } }
+.icons-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+  align-content: start;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+.icons-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  color: var(--text);
+  cursor: pointer;
+  text-align: center;
+  min-width: 0;
+}
+.icons-card:hover { border-color: var(--accent); }
+.icons-card.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.icons-card.non-permissive { opacity: 0.55; }
+.icons-card-icon { width: 32px; height: 32px; color: var(--text); display: flex; align-items: center; justify-content: center; }
+.icons-card-icon svg { width: 100%; height: 100%; display: block; }
+.icons-fallback { font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.icons-card-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; width: 100%; }
+.icons-card-name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icons-card-badges { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; }
+.icons-card-badges .badge { font-size: 9px; padding: 1px 6px; }
+.badge-installed { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.badge-author { color: var(--text-muted); }
+
+.icons-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+  align-self: start;
+  min-width: 0;
+}
+.icons-preview-empty { margin: 0; font-size: 12px; }
+.icons-preview-icon {
+  width: 72px;
+  height: 72px;
+  align-self: center;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icons-preview-icon svg { width: 100%; height: 100%; display: block; }
+.icons-preview-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.icons-preview-name { font-weight: 600; overflow-wrap: anywhere; }
+.icons-preview-id { font-size: 11px; overflow-wrap: anywhere; }
+.icons-preview-meta { margin: 4px 0 0; display: flex; flex-direction: column; gap: 3px; }
+.icons-meta-row { display: flex; gap: 8px; font-size: 12px; }
+.icons-meta-row dt { color: var(--text-muted); flex: 0 0 68px; margin: 0; }
+.icons-meta-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.icons-preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.icons-preview-actions .btn { padding: 6px 12px; font-size: 13px; }
+.icons-note { font-size: 11px; color: var(--danger); }
+
+.icons-installed-list { display: flex; flex-direction: column; gap: 8px; max-height: 58vh; overflow-y: auto; }
+.icons-empty { margin: 8px 0; font-size: 13px; }
+.icons-installed-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+.icons-installed-icon {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+}
+.icons-installed-icon svg { width: 100%; height: 100%; display: block; }
+.icons-installed-main { flex: 1; min-width: 0; }
+.icons-installed-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icons-installed-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.icons-installed-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.icons-installed-actions .btn { padding: 5px 10px; font-size: 13px; }
+
+/* Local-icon holder inside a tile / preview box: fills the host box and clips
+   (exactly like the other icon nodes) so a large `local:` icon never spills. */
+.tile-icon-local { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.tile-icon-local svg { width: 100%; height: 100%; display: block; }
+.icon-browse-btn { margin-top: 8px; padding: 6px 12px; font-size: 13px; }

@@ -12,9 +12,10 @@ import { WIDGET_MANIFEST_FINAL } from '../routes/widgets.routes.js';
  *
  * v4 is an ADDITIVE change over v3: an item may now be
  *   { id, x, y, w, h, type: 'group', config, buttons: [...] }
- * Everything else is untouched — `frame`, `shortcut`, `links` and all widgets
- * stay valid item types (their removal is a later lot). v3 (and v1/v2) files
- * remain readable and are normalized to v4 IN MEMORY ONLY: unknown item types
+ * The surviving widgets (clock/iframe/search/notes/weather) and `group` are the
+ * valid item types; the legacy `frame`/`shortcut`/`links` types were REMOVED in
+ * lot 6 and are now treated like any unknown type (skipped at load, one log).
+ * v3 (and v1/v2) files remain readable and are normalized to v4 IN MEMORY ONLY: unknown item types
  * are skipped (tolerance, one log) and a `group` whose `buttons` is not an
  * array is coerced to []. The file is only rewritten on the first voluntary
  * mutation; `meta()` keeps reporting the on-disk version until then.
@@ -143,8 +144,8 @@ export class LayoutService {
    *   - an item whose type is not known is dropped (one log per load);
    *   - a `group` gets a `buttons` array (non-array → []) with each button
    *     coerced to the valid shape (ids regenerated, options completed).
-   * Non-group items are returned UNCHANGED (identity) so a v3 file with
-   * `frame`/`shortcut`/`links`/widgets is loaded without any loss.
+   * Non-group items are returned UNCHANGED (identity) so a v3 file with a
+   * surviving widget is loaded without any loss.
    */
   _coerceItems(rawItems) {
     if (!Array.isArray(rawItems)) return [];
@@ -152,12 +153,16 @@ export class LayoutService {
     const out = [];
     for (const item of rawItems) {
       if (!item || typeof item !== 'object') continue;
-      const type = String(item.type || 'frame');
+      const type = String(item.type || '');
       if (!KNOWN_ITEM_TYPES.has(type)) {
         ignored.add(type);
         continue;
       }
-      out.push(type === 'group' ? { ...item, buttons: coerceButtons(item.buttons) } : item);
+      out.push(
+        type === 'group'
+          ? { ...item, buttons: coerceButtons(item.buttons), reports: coerceReports(item.reports) }
+          : item
+      );
     }
     if (ignored.size) {
       console.warn(`[layout] ignoring unknown item type(s) on load: ${[...ignored].join(', ')}`);
@@ -235,7 +240,7 @@ export class LayoutService {
   }
 
   add(item) {
-    const type = item.type || 'frame';
+    const type = item.type || '';
     const entry = {
       id: item.id || randomUUID(),
       x: Number(item.x) || 0,
@@ -245,7 +250,10 @@ export class LayoutService {
       type,
       config: item.config || {},
     };
-    if (type === 'group') entry.buttons = Array.isArray(item.buttons) ? item.buttons : [];
+    if (type === 'group') {
+      entry.buttons = Array.isArray(item.buttons) ? item.buttons : [];
+      entry.reports = Array.isArray(item.reports) ? item.reports : [];
+    }
     this.activePage().items.push(entry);
     this._persist();
     return entry;
@@ -394,6 +402,12 @@ function coerceButtons(raw) {
 // server/routes/layout.routes.js and ICON_SIZES in public/js/elements/button.js.
 const BUTTON_ICON_SIZES = new Set(['S', 'M', 'L', 'XL', 'Fill']);
 
+// Report-tile geometry bounds (INTERNAL trame cells). Reports have a FREE size
+// (no button-variant minima): 2 cells minimum, up to a generous cap. MUST stay
+// in sync with REPORT_CELLS_MIN/MAX in server/routes/layout.routes.js and
+// public/js/elements/reportTile.js.
+const REPORT_CELLS_MIN = 2;
+const REPORT_CELLS_MAX = 64;
 /**
  * Tolerant option coercion on LOAD: unknown/missing keys are defaulted, so a
  * button stored before `iconSize`/`allowIconOverflow` existed still loads.
@@ -411,4 +425,38 @@ function normOptions(raw) {
     iconSize: BUTTON_ICON_SIZES.has(o.iconSize) ? o.iconSize : 'M',
     allowIconOverflow: bool(o.allowIconOverflow, false),
   };
+}
+
+/**
+ * Tolerant coercion of a group's `reports[]` on LOAD (never throws): non-array
+ * → [], non-object rows dropped, ids regenerated when missing, geometry
+ * floored/clamped. Report tiles have a FREE size on the internal trame (no
+ * button-variant minima) — only [REPORT_CELLS_MIN, REPORT_CELLS_MAX] is
+ * enforced here; caps are a write-time concern.
+ */
+function coerceReports(raw) {
+  if (!Array.isArray(raw)) return [];
+  const int = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.floor(n) : null;
+  };
+  const out = [];
+  for (const report of raw) {
+    if (!report || typeof report !== 'object') continue;
+    let col = int(report.col);
+    if (col === null || col < 0) col = 0;
+    let row = int(report.row);
+    if (row === null || row < 0) row = 0;
+    const w = Math.min(REPORT_CELLS_MAX, Math.max(REPORT_CELLS_MIN, int(report.w) ?? REPORT_CELLS_MIN));
+    const h = Math.min(REPORT_CELLS_MAX, Math.max(REPORT_CELLS_MIN, int(report.h) ?? REPORT_CELLS_MIN));
+    out.push({
+      id: typeof report.id === 'string' && report.id ? report.id : randomUUID(),
+      elementId: typeof report.elementId === 'string' ? report.elementId : '',
+      col,
+      row,
+      w,
+      h,
+    });
+  }
+  return out;
 }

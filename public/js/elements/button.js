@@ -1,4 +1,5 @@
 import { el, isValidHttpUrl } from '../util.js';
+import { api } from '../api.js';
 import { HolafIcons } from '../../vendor/holaf/holaf-icons.js';
 
 /**
@@ -306,24 +307,96 @@ export function buildIconNode(icon, label) {
   if (isValidHttpUrl(value)) {
     return el('img', 'tile-icon-img', null, { src: value, alt: '', loading: 'lazy' });
   }
+  if (value.startsWith('local:')) {
+    return buildLocalIcon(value.slice(6).trim(), label);
+  }
   if (value.startsWith('holaf:')) {
     const name = value.slice(6).trim();
-    try {
-      const svg = HolafIcons.get(name); // throws on unknown name
-      const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
-      const svgEl = doc.documentElement;
-      if (svgEl?.nodeName === 'svg' && !doc.querySelector('parsererror')) {
-        return document.importNode(svgEl, true);
-      }
-    } catch {
-      /* unknown icon name → plain-text fallback below */
-    }
+    const svgEl = svgElementFrom(safeHolafGet(name));
+    if (svgEl) return svgEl;
     // Unknown `holaf:<name>`: fall back to the label initials — NEVER render the
     // raw `holaf:…` reference (a long string that overflowed tiny tiles).
     return el('span', 'tile-icon-text', initialsOf(label) || '?');
   }
   if (value) return el('span', 'tile-icon-text', value);
   return el('span', 'tile-icon-text', initialsOf(label) || '?');
+}
+
+/**
+ * `local:<slug>` — an icon installed in the server-side icon library (§E). The
+ * SVG is fetched ONCE through the JWT-protected API and INLINED (no public URL,
+ * `currentColor` preserved so it follows the theme). A short-lived cache avoids
+ * repeated requests when many tiles share the same icon; while loading (or if
+ * the fetch fails) the node shows the label initials, so a tile NEVER breaks.
+ */
+function buildLocalIcon(slug, label) {
+  const holder = el('span', 'tile-icon-local');
+  holder.appendChild(el('span', 'tile-icon-text', initialsOf(label) || '?'));
+  if (!slug) return holder;
+  loadLocalIcon(slug).then((svg) => {
+    if (!svg) return;
+    const node = svgElementFrom(svg);
+    if (node) holder.replaceChildren(node);
+  });
+  return holder;
+}
+
+const LOCAL_ICON_TTL_MS = 10 * 60 * 1000;
+const localIconCache = new Map(); // slug -> { svg, expires }
+const localIconInflight = new Map(); // slug -> Promise
+
+/** Fetch (and cache) an installed icon's SVG text. Never rejects. */
+function loadLocalIcon(slug) {
+  const cached = localIconCache.get(slug);
+  if (cached && cached.expires > Date.now()) return Promise.resolve(cached.svg);
+  const inflight = localIconInflight.get(slug);
+  if (inflight) return inflight;
+  const p = api
+    .getText(`/api/icons/${encodeURIComponent(slug)}/svg`)
+    .then((svg) => {
+      if (typeof svg === 'string' && svg.trim()) {
+        localIconCache.set(slug, { svg, expires: Date.now() + LOCAL_ICON_TTL_MS });
+        return svg;
+      }
+      return null;
+    })
+    .catch((err) => {
+      console.warn('[icons] failed to load local icon:', slug, err?.message || err);
+      return null;
+    })
+    .finally(() => localIconInflight.delete(slug));
+  localIconInflight.set(slug, p);
+  return p;
+}
+
+/** Drop the local-icon cache (logout / instance switch). */
+export function clearLocalIconCache() {
+  localIconCache.clear();
+  localIconInflight.clear();
+}
+
+/** Parse SVG text into an importable <svg> node, or null when unusable. */
+function svgElementFrom(svgText) {
+  if (typeof svgText !== 'string' || !svgText.trim()) return null;
+  try {
+    const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+    const svgEl = doc.documentElement;
+    if (svgEl?.nodeName === 'svg' && !doc.querySelector('parsererror')) {
+      return document.importNode(svgEl, true);
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+/** Tolerant wrapper around the vendored HolafIcons.get (throws on unknown). */
+function safeHolafGet(name) {
+  try {
+    return HolafIcons.get(name);
+  } catch {
+    return null;
+  }
 }
 
 // Tile chrome consumed by the box model (border 1px + padding 3px, per side =

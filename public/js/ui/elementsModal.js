@@ -1,10 +1,11 @@
-import { el } from '../util.js';
+import { el, isValidHttpUrl } from '../util.js';
 import { api } from '../api.js';
 import { toast } from './toast.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
 import { catalog } from '../elements/catalog.js';
 import { buildIconNode } from '../elements/button.js';
 import { buildField, collect } from './settingsModal.js';
+import { openIconsPicker } from './iconsPicker.js';
 
 /**
  * Elements catalogue screen (LOT 3) — CRUD UI for the GLOBAL element catalogue
@@ -43,11 +44,169 @@ import { buildField, collect } from './settingsModal.js';
 const MAX_ELEMENTS = 200; // MUST mirror MAX_ELEMENTS in server/services/elements.service.js
 const CONFIRM_MS = 3000; // 2-step delete: window before the arm reverts
 
+// MUST mirror API_KEY_SENTINEL in server/services/reports.service.js. The form
+// sends this in place of `apiKey` when the user edits an element whose key is
+// already stored and does NOT want to change it (the secret is never sent back).
+const API_KEY_SENTINEL = '__KEEP__';
+
+let reportTypesPromise = null;
+
+/** Fetch the report types once per session (tolerant: never rejects). */
+function loadReportTypes() {
+  if (!reportTypesPromise) {
+    reportTypesPromise = api
+      .get('/api/reports/types')
+      .then((res) => (Array.isArray(res?.types) ? res.types : []))
+      .catch((err) => {
+        console.warn('[reports] failed to load report types:', err?.message || err);
+        return [];
+      });
+  }
+  return reportTypesPromise;
+}
+
+/**
+ * Build the « Special reporting » section of the element form. Returns
+ * `{ section, getValue, toggle }`:
+ *   - `section` is appended to the form;
+ *   - `getValue()` returns `{ ok, value: null | { type, baseUrl, apiKey } }`
+ *     (an unchanged stored key is returned as the sentinel);
+ *   - a « Test connection » button validates URL + key against the server proxy
+ *     WITHOUT ever echoing the stored key (sentinel + elementId).
+ */
+function buildReportingSection(element) {
+  const editing = !!element;
+  const existing = element?.report || null;
+
+  const section = el('div', 'report-section');
+  section.appendChild(el('div', 'report-section-title', 'Special reporting'));
+
+  const toggle = el('input', null, null, { type: 'checkbox' });
+  toggle.checked = !!existing;
+  const toggleLabel = el('label', 'report-toggle');
+  toggleLabel.append(toggle, el('span', null, 'Special reporting'));
+  section.appendChild(toggleLabel);
+  section.appendChild(
+    el(
+      'small',
+      'field-help',
+      'Dedicated report tiles (active sessions, queues…) for a predefined service. The API key is stored server-side and never sent back to the browser.'
+    )
+  );
+
+  const body = el('div', 'report-config');
+  section.appendChild(body);
+
+  const typeField = el('div', 'field');
+  typeField.appendChild(el('span', 'field-label', 'Report type'));
+  const typeSelect = el('select');
+  typeField.appendChild(typeSelect);
+  body.appendChild(typeField);
+
+  const baseField = el('div', 'field');
+  baseField.appendChild(el('span', 'field-label', 'Server URL'));
+  const baseUrlInput = el('input', null, null, { type: 'text', placeholder: 'http://jellyfin:8096' });
+  baseUrlInput.value = existing?.baseUrl || '';
+  baseField.appendChild(baseUrlInput);
+  body.appendChild(baseField);
+
+  const keyField = el('div', 'field');
+  keyField.appendChild(el('span', 'field-label', 'API key'));
+  const apiKeyInput = el('input', null, null, { type: 'password', autocomplete: 'new-password' });
+  if (existing?.hasApiKey) apiKeyInput.placeholder = '•••••••• (unchanged)';
+  keyField.appendChild(apiKeyInput);
+  body.appendChild(keyField);
+
+  let keyTouched = false;
+  apiKeyInput.addEventListener('input', () => {
+    keyTouched = true;
+  });
+
+  const testRow = el('div', 'report-test-row');
+  const testBtn = el('button', 'btn report-test-btn', 'Test connection', { type: 'button' });
+  const testResult = el('div', 'report-test-result', '');
+  testRow.append(testBtn, testResult);
+  body.appendChild(testRow);
+
+  const syncVisibility = () => body.classList.toggle('hidden', !toggle.checked);
+  toggle.addEventListener('change', syncVisibility);
+  syncVisibility();
+
+  loadReportTypes().then((types) => {
+    for (const t of types) {
+      const opt = el('option', null, t.implemented ? t.label : `${t.label} (soon)`);
+      opt.value = t.id;
+      opt.disabled = !t.implemented;
+      typeSelect.appendChild(opt);
+    }
+    const wanted =
+      existing?.type && types.some((t) => t.id === existing.type && t.implemented)
+        ? existing.type
+        : types.find((t) => t.implemented)?.id || '';
+    if (wanted) typeSelect.value = wanted;
+  });
+
+  /** Validate the current report fields → `{ payload }` or `{ error }`. */
+  function credentials() {
+    const type = typeSelect.value;
+    const baseUrl = baseUrlInput.value.trim();
+    if (!type) return { error: 'Choose a report type' };
+    if (!baseUrl) return { error: 'Server URL is required' };
+    if (!isValidHttpUrl(baseUrl)) return { error: 'Server URL must be a valid http(s) URL' };
+    let apiKey = apiKeyInput.value;
+    if (editing && existing?.hasApiKey && !keyTouched) apiKey = API_KEY_SENTINEL;
+    if (!apiKey) return { error: 'API key is required' };
+    const payload = { type, baseUrl, apiKey };
+    if (element?.id) payload.elementId = element.id;
+    return { payload };
+  }
+
+  testBtn.addEventListener('click', async () => {
+    testResult.className = 'report-test-result';
+    testResult.textContent = 'Testing…';
+    const c = credentials();
+    if (c.error) {
+      testResult.textContent = c.error;
+      testResult.classList.add('error');
+      return;
+    }
+    testBtn.disabled = true;
+    try {
+      const res = await api.post('/api/reports/test', c.payload);
+      if (res?.ok) {
+        const s = res.server;
+        const name = s?.name ? ` — ${s.name}${s.version ? ` ${s.version}` : ''}` : '';
+        testResult.textContent = `Connected${name} (${res.sessionCount} active session${
+          res.sessionCount === 1 ? '' : 's'
+        })`;
+        testResult.classList.add('success');
+      } else {
+        testResult.textContent = res?.error || `Failed (${res?.status || 'error'})`;
+        testResult.classList.add('error');
+      }
+    } catch (err) {
+      testResult.textContent = err.message || 'Connection test failed';
+      testResult.classList.add('error');
+    } finally {
+      testBtn.disabled = false;
+    }
+  });
+
+  function getValue() {
+    if (!toggle.checked) return { ok: true, value: null };
+    const c = credentials();
+    if (c.error) return { ok: false, error: c.error };
+    return { ok: true, value: c.payload };
+  }
+
+  return { section, getValue, toggle };
+}
+
 // Field schema consumed by the shared builder. Keys are flat (the builder's
 // contract); the two Docky parts are folded into `{ agent, container }` on save.
 const FORM_FIELDS = [
   { key: 'name', label: 'Name', type: 'text', required: true, placeholder: 'e.g. Jellyfin' },
-  { key: 'icon', label: 'Icon', type: 'text', placeholder: 'Emoji, holaf:<name> or https://…' },
+  { key: 'icon', label: 'Icon', type: 'text', placeholder: 'Emoji, holaf:<name>, local:<slug> or https://…', help: 'Pick a local icon from the library or type an emoji / holaf:<name> / https://… URL.' },
   { key: 'url', label: 'URL', type: 'url', placeholder: 'https://…' },
   { key: 'description', label: 'Description', type: 'textarea', rows: 2, placeholder: 'Optional' },
   { key: 'healthCheck', label: 'Health check', type: 'toggle', help: 'Delegate a health probe to Docky (wired in lot 5).' },
@@ -159,6 +318,9 @@ export function openElementsModal() {
       badges.appendChild(el('span', 'badge badge-docky', `Docky: ${target}`));
     }
     if (item.healthCheck) badges.appendChild(el('span', 'badge badge-health', 'Health'));
+    if (item.report?.type) {
+      badges.appendChild(el('span', 'badge badge-report', `Report: ${item.report.type}`));
+    }
 
     const actions = el('div', 'elements-row-actions');
     const editBtn = el('button', 'btn', 'Edit', { type: 'button', title: 'Edit element' });
@@ -273,6 +435,29 @@ export function openElementFormModal(element, onSaved) {
   controls.icon.input.addEventListener('input', renderPreview);
   controls.name.input.addEventListener('input', renderPreview);
 
+  // « Browse icons » opens the lot-7 icon library picker; picking OR installing
+  // an icon fills this field with `local:<slug>` and refreshes the preview.
+  const browseBtn = el('button', 'btn icon-browse-btn', 'Browse icons', {
+    type: 'button',
+    title: 'Search the online icon library and install locally',
+  });
+  browseBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    openIconsPicker({
+      onPick: (entry) => {
+        if (!entry?.slug) return;
+        controls.icon.input.value = `local:${entry.slug}`;
+        renderPreview();
+      },
+    });
+  });
+  controls.icon.input.closest('.field').appendChild(browseBtn);
+
+  // « Special reporting » (lot 8): optional report provider config. Appended to
+  // the form so it participates in the native submit and the same error line.
+  const reporting = buildReportingSection(element);
+  form.appendChild(reporting.section);
+
   const content = el('div', 'elements-form-body');
   content.append(form, errorEl);
 
@@ -288,6 +473,12 @@ export function openElementFormModal(element, onSaved) {
       return;
     }
     const v = result.value;
+    const reportResult = reporting.getValue();
+    if (!reportResult.ok) {
+      errorEl.textContent = reportResult.error;
+      toast(reportResult.error, 'error');
+      return;
+    }
     const docky =
       v.dockyAgent || v.dockyContainer
         ? { agent: v.dockyAgent || '', container: v.dockyContainer || '' }
@@ -299,6 +490,7 @@ export function openElementFormModal(element, onSaved) {
       description: v.description || '',
       healthCheck: !!v.healthCheck,
       docky,
+      report: reportResult.value,
     };
     const saveBtn = formCtrl?.el.querySelector('.holaf-modal-footer button[type="submit"]');
     if (saveBtn) saveBtn.disabled = true;

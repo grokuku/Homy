@@ -26,7 +26,7 @@ import { openElementFormModal } from '../ui/elementsModal.js';
 
 const CONFIRM_MS = 3000; // 2-step delete: window before the arm reverts
 
-export function openElementPicker({ title = 'Choose element', onPick } = {}) {
+export function openElementPicker({ title = 'Choose element', onPick, filter = null, emptyText = '' } = {}) {
   if (typeof onPick !== 'function') return;
   if (document.getElementById('element-picker-modal')) return; // already open
 
@@ -91,14 +91,22 @@ export function openElementPicker({ title = 'Choose element', onPick } = {}) {
   function render() {
     disarm();
     const q = search.value.trim().toLowerCase();
-    const rows = elements.filter((e) =>
-      !q ? true : [e.name, e.url, e.description].some((v) => String(v || '').toLowerCase().includes(q))
-    );
+    const rows = elements
+      .filter((e) => (typeof filter === 'function' ? filter(e) : true))
+      .filter((e) =>
+        !q ? true : [e.name, e.url, e.description].some((v) => String(v || '').toLowerCase().includes(q))
+      );
     countEl.textContent = q ? `${rows.length} / ${elements.length}` : `${elements.length}`;
     list.replaceChildren();
     if (rows.length === 0) {
       list.appendChild(
-        el('p', 'picker-empty muted', q ? 'No element matches your search.' : 'No elements yet — click “+ Create new…”.')
+        el(
+          'p',
+          'picker-empty muted',
+          q
+            ? 'No element matches your search.'
+            : emptyText || 'No elements yet — click “+ Create new…”.'
+        )
       );
       return;
     }

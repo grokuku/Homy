@@ -1,8 +1,5 @@
-import { frame } from './frame.js';
-import { shortcut } from './shortcut.js';
 import { clock } from './clock.js';
 import { iframe } from './iframe.js';
-import { links } from './links.js';
 import { search } from './search.js';
 import { notes } from './notes.js';
 import { weather } from './weather.js';
@@ -13,13 +10,14 @@ import { el } from '../util.js';
  * Widget type registry. Each entry: { name, icon, category, defaultSize,
  * settingsSchema, render }. `render(container, config, item)` renders content
  * and may return a cleanup fn. `settingsSchema` drives the generic config modal.
+ *
+ * LOT 6: the legacy `frame`/`shortcut`/`links` widgets were REMOVED (their use
+ * is replaced by `group` + catalogue buttons). They are no longer known types:
+ * a layout item with one of those types is now ignored cleanly at load.
  */
 export const registry = {
-  frame,
-  shortcut,
   clock,
   iframe,
-  links,
   search,
   notes,
   weather,

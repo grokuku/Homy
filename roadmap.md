@@ -1,8 +1,8 @@
 # Homy — Roadmap
 
-> **Statut :** document de conception. Les décisions ci-dessous sont **validées** mais la
-> refonte du modèle « éléments » **n'est pas encore implémentée** (statut et ordre des lots
-> en §I).
+> **Statut :** document de conception. Les décisions ci-dessous sont **validées** ; la refonte
+> du modèle « éléments » est **implémentée pour les lots 1→4, 6, 7 et 8** (le lot 5 attend
+> l'**implémentation côté Docky** ; le contrat de référence est rédigé — `docs/docky-integration-contract.md`, voir §D.3 et §I).
 > **Dernière mise à jour :** 2026-09-13
 > **Version courante :** `0.1.0` (source de vérité : `version.txt`)
 > **Portée :** dépôt `/projects/Homy` uniquement. Le contrat d'API Docky est **spécifié ici**
@@ -36,7 +36,7 @@
 
 ---
 
-## A. Refonte du modèle « éléments » (validée, non implémentée)
+## A. Refonte du modèle « éléments » (validée, implémentée pour les lots 1→4)
 
 ### A.1 Les quatre notions
 
@@ -188,9 +188,15 @@ Hypothèse de référence : le groupe couvre l'écran.
 
 ## C. Legacy / nettoyage
 
-- `frame` → devient **`group`** (renommage conceptuel + conteneurisation).
-- `shortcut` et `links` → **supprimés** ; leur usage est **remplacé par les éléments +
-  boutons** (§A).
+- `frame` → devenu **`group`** (renommage conceptuel + conteneurisation) — **fait**.
+- `shortcut` et `links` → **supprimés** (lot 6) ; leur usage est **remplacé par les éléments +
+  boutons** (§A). Les fichiers `public/js/widgets/{frame,shortcut,links}.js` et leurs entrées de
+  manifest (serveur + front) ont été retirés ; la **liste finale** des widgets est donc
+  `clock`, `iframe`, `search`, `notes`, `weather` **+ `group`**.
+- **Normalisation** : comme la montée `search h:1 → h:2`, chaque **tuile de bouton** existante
+  est **remontée au minimum de sa variante** (`minSizeForVariant`, §A.7) au chargement (éditeur
+  **et** viewer), avec relocalisation au premier slot libre si la nouvelle empreinte déborde ou
+  chevauche une voisine ; le résultat est persisté à la prochaine sauvegarde.
 - **Aucune migration à porter** : l'utilisateur n'a **rien de configuré** (aucun layout
   legacy peuplé à traduire).
 - **Tolérance obligatoire** : un **type inconnu** doit être **ignoré proprement** au chargement
@@ -218,6 +224,11 @@ Hypothèse de référence : le groupe couvre l'écran.
 
 ### D.3 Contrat d'API (à transmettre à Docky)
 
+> **Contrat de référence :** [`docs/docky-integration-contract.md`](docs/docky-integration-contract.md).
+> Ce document est la **spécification à transmettre** à l'équipe/agent qui développe Docky
+> (endpoints, payloads, auth Bearer, codes d'erreur, cas dégradés, points ouverts). En cas
+> d'écart entre ce résumé et le contrat, **le contrat fait foi**.
+
 L'API Docky **n'existe pas encore** : un **contrat est à transmettre** à l'équipe Docky.
 Il couvre au minimum :
 
@@ -231,6 +242,9 @@ Il couvre au minimum :
 
 > **Périmètre :** l'**implémentation côté Docky est HORS PÉRIMÈTRE de Homy**. Homy spécifie le
 > contrat, consomme le proxy (§G) et peut livrer un **stub dégradé** en attendant (§I, lot 5).
+> **État :** le **lot 5 reste EN ATTENTE de l'implémentation côté Docky** ; le contrat
+> [`docs/docky-integration-contract.md`](docs/docky-integration-contract.md) est prêt à
+> transmettre et doit être confirmé par l'équipe Docky (points ouverts §7 du contrat).
 
 ### D.4 Cas dégradés
 
@@ -287,6 +301,10 @@ Il couvre au minimum :
   interrupteur de `button` (ce n'est donc pas une des cases de la matrice §A.5).
 - Architecture **pluggable** : un **registre de types de report** ; implémentation
   **service par service**, **Jellyfin d'abord**.
+- **Implémenté (lot 8)** : `server/services/reports.service.js` (registre `reportTypes` : `jellyfin`
+  implémenté ; `radarr` / `sonarr` / `qbittorrent` **déclarés non implémentés**), routes
+  `/api/reports/{types,:elementId,test,:elementId/test}`, config `report` sur l'élément (clé API
+  **masquée** côté front), tuile de report dédiée (taille libre) dans un `group`.
 - Les **clés API des services restent côté serveur** et ne sont **jamais exposées au front**.
 
 ---
@@ -332,14 +350,14 @@ Il couvre au minimum :
 
 | Lot | Contenu | Statut | Dépend de |
 | --- | --- | --- | --- |
-| **1** | Modèle & stockage serveur (`elements.service` / routes, **layout v4**, types/bornes/buttons, montage, `check-schema-sync`) | **À FAIRE (prochain)** | — |
-| **2** | Modèle front & registry (`catalog.js`, `button.js`, `group.js`, retrait `frame`/`shortcut`/`links`, groupe conteneur, tolérance type inconnu) | **À FAIRE** | **1** |
-| **3** | Écran catalogue (UI CRUD + form) | **À FAIRE** | **2** |
-| **4** | Groupe + boutons + options (trame interne, picker, panneau d'options, matrice de variantes) | **À FAIRE** | **2** (puis 3) |
-| **5** | Proxy Docky + santé / monitoring / contrôles | **EN ATTENTE DU CONTRAT DOCKY** (livrable possible en **stub dégradé**) | contrat §D.3 + **4** |
-| **6** | Nettoyage & polish (suppression des widgets legacy, palette, libellés, README) | **À FAIRE** | **3, 4** |
-| **7** | Bibliothèque d'icônes (recherche, install locale, index + licences, picker) | **À FAIRE** | indépendant |
-| **8** | Reporting spécial (registre de plugins, Jellyfin d'abord) | **À FAIRE** | indépendant |
+| **1** | Modèle & stockage serveur (`elements.service` / routes, **layout v4**, types/bornes/buttons, montage, `check-schema-sync`) | **FAIT** | — |
+| **2** | Modèle front & registry (`catalog.js`, `button.js`, `group.js`, retrait `frame`/`shortcut`/`links`, groupe conteneur, tolérance type inconnu) | **FAIT** | **1** |
+| **3** | Écran catalogue (UI CRUD + form) | **FAIT** | **2** |
+| **4** | Groupe + boutons + options (trame interne, picker, panneau d'options, matrice de variantes) | **FAIT** | **2** (puis 3) |
+| **5** | Proxy Docky + santé / monitoring / contrôles | **EN ATTENTE DE L'IMPLÉMENTATION CÔTÉ DOCKY** (contrat de référence : [`docs/docky-integration-contract.md`](docs/docky-integration-contract.md) ; livrable possible en **stub dégradé**) | contrat §D.3 + **4** |
+| **6** | Nettoyage & polish (suppression des widgets legacy, palette, libellés, README) | **FAIT (2026-09-13)** | **3, 4** |
+| **7** | Bibliothèque d'icônes (recherche, install locale, index + licences, picker) | **FAIT (2026-09-13)** | indépendant |
+| **8** | Reporting spécial (registre de plugins, Jellyfin d'abord) | **FAIT (2026-09-13)** | indépendant |
 
 ### I.2 Ordre logique
 
@@ -347,12 +365,14 @@ Il couvre au minimum :
 1 ──▶ 2 ──▶ 3 ──▶ 4 ──▶ 6
               └──▶ 5  (dépend du contrat Docky §D.3)
 
-7 (indépendant)      8 (indépendant)
+7 (indépendant, FAIT)      8 (indépendant, FAIT)
 ```
 
 - Cœur du chantier : **1 → 2 → 3 → 4**, puis **6** (nettoyage).
-- **5** ne démarre réellement qu'avec le **contrat Docky** ; en attendant, un **stub dégradé**
-  (pastille grise / « — » / contrôles désactivés) est livrable.
+- **5** ne démarre réellement qu'avec le **contrat Docky** (rédigé :
+  [`docs/docky-integration-contract.md`](docs/docky-integration-contract.md)) **implémenté côté
+  Docky** ; en attendant, un **stub dégradé** (pastille grise / « — » / contrôles désactivés) est
+  livrable.
 - **7** et **8** sont **indépendants** et peuvent être menés en parallèle.
 
 ### I.3 Vérifications attendues par lot
@@ -379,11 +399,23 @@ Il couvre au minimum :
   variantes** (§A.5) ; contrôles en **2 temps**.
 - **Lot 5** — proxy `/api/docky/*` **allowlisté** et JWT ; cas dégradés §D.4 couverts ; aucune
   clé Docky au front.
-- **Lot 6** — plus de widget legacy actif ; palette et libellés à jour ; README cohérent.
-- **Lot 7** — filtrage permissif seul ; `source`/`license`/`author` conservés ; rendu par
-  **inlining** (`currentColor`) ; `local:<slug>` résolu côté serveur.
-- **Lot 8** — registre de types de report ; **Jellyfin** fonctionnel ; clés API services
-  strictement côté serveur.
+- **Lot 6** — **(fait)** plus de widget legacy actif (retirés des DEUX côtés : manifest serveur +
+  registre front) ; palette et libellés à jour (`clock`/`iframe`/`search`/`notes`/`weather`/
+  `group`) ; tolérance conservée (item legacy/inconnu ignoré au chargement, `POST` type inconnu
+  → 400) ; tuiles de groupe normalisées au minimum de leur variante ; README cohérent.
+- **Lot 7** — **(fait)** source par défaut : **API Iconify** publique (`ICONS_API_BASE`
+  configurable/allowlistée ; icons0.dev n'expose pas d'API HTTP documentée) ; **filtrage permissif
+  seul** (MIT / Apache-2.0 / ISC / CC0-1.0 / BSD-2/3-Clause / Unlicense) au search **et** à
+  l'install (400 sinon) ; `source`/`license`/`author` conservés dans `icons.json` et **affichés**
+  dans l'onglet Installed ; rendu par **inlining** (`currentColor`), référence `local:<slug>`
+  résolue via `GET /api/icons/:slug/svg` (JWT) ; SVG validé (≤ 64 Ko, pas de `<script>`/`on*=`/
+  `<foreignObject>`, pas de référence externe).
+- **Lot 8** — registre de types de report ; **Jellyfin** fonctionnel (sessions actives normalisées +
+  infos serveur, états dégradés `unreachable`/`timeout`/`unauthorized`) ; clés API services
+  strictement côté serveur (masquage `hasApiKey` dans TOUTES les réponses catalogue) ; tuile de
+  report dédiée (taille libre sur la trame interne) avec rafraîchissement 30 s et cleanup au
+  dispose ; formulaire « Special reporting » + test de connexion ; `radarr`/`sonarr`/`qbittorrent`
+  restent **déclarés non implémentés**.
 
 ---
 
@@ -391,8 +423,9 @@ Il couvre au minimum :
 
 - **Curseur px vs crans d'icône** — **défaut retenu : crans** S/M/L/XL/Fill (§E.1) ; le mode
   curseur en px reste une alternative à trancher.
-- **Autres types de reports** — au-delà de Jellyfin (§F), la liste des services à supporter
-  (radarr, sonarr, qbittorrent, …) reste à prioriser.
+- **Autres types de reports** — **Jellyfin implémenté (lot 8)** ; `radarr`, `sonarr` et
+  `qbittorrent` sont **déclarés dans le registre mais non implémentés** (le reste de la liste à
+  prioriser).
 - **Disque / réseau dans le monitoring** — **optionnels**, à affiner plus tard (§D.5).
 - **Confirmation modale vs 2 temps** — **défaut retenu : 2 temps** (§A.6).
 
@@ -408,6 +441,21 @@ Il couvre au minimum :
 - **Placement vertical libre** (`float`).
 - **Correctifs de sécurité / robustesse**.
 - **Migration legacy 12 → 32** colonnes.
+- **Modèle « éléments »** (lots 1→4) : catalogue global (`/api/elements`, `elementsModal.js`),
+  layout **v4** avec `group` + `buttons[]`, widget conteneur `group` (trame interne, matrice de
+  variantes, état degré dégradé), picker d'éléments + panneau d'options des tuiles.
+- **Nettoyage lot 6** : widgets legacy `frame`/`shortcut`/`links` supprimés (serveur + front),
+  normalisation des tuiles de groupe au minimum de leur variante, README/roadmap à jour.
+- **Bibliothèque d'icônes (lot 7)** : recherche en ligne via l'API Iconify (base configurable),
+  installation locale (SVG validé + index `icons.json` avec licence/auteur), filtre permissif
+  (search + install), référence `local:<slug>` résolue et **inlinée** (`currentColor`), sélecteur
+  front (`ui/iconsPicker.js`) branché sur le formulaire d'élément.
+- **Reporting spécial (lot 8)** : registre de providers (`reports.service.js`) — **Jellyfin**
+  implémenté (`/Sessions` + `/System/Info` normalisés, états dégradés), `radarr`/`sonarr`/
+  `qbittorrent` déclarés ; routes `/api/reports/*` (JWT) ; config `report` sur l'élément avec
+  **clé API masquée** (`hasApiKey`, sentinelle `__KEEP__` au PATCH) ; section « Special reporting »
+  du formulaire d'élément (test de connexion) ; **tuile de report dédiée** dans un `group`
+  (taille libre, état vide explicite, rafraîchissement 30 s nettoyé au `disposeWidget`).
 
 ---
 

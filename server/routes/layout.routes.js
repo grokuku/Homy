@@ -12,8 +12,10 @@ import { WIDGET_MANIFEST_FINAL } from './widgets.routes.js';
 const MAX_ITEMS = 100; // per PAGE (widgets are confined to their page)
 const MAX_BODY_BYTES = 256 * 1024; // 256 KB
 
-// v4 group/button bounds. `group` is a KNOWN item type (the new container);
-// `frame`/`shortcut`/`links` and every widget stay valid types for now.
+// v4 group/button bounds. `group` and the surviving widgets (clock/iframe/
+// search/notes/weather) are the KNOWN item types. The legacy `frame`/
+// `shortcut`/`links` and any other unknown type are IGNORED on write/load
+// (tolerance), never a hard failure.
 const MIN_GROUP = 2; // a group occupies at least 2×2 GLOBAL cells
 const MAX_BUTTONS_PER_GROUP = 50;
 const MAX_BUTTONS_PER_PAGE = 200; // buttons of ALL groups on a single page
@@ -24,6 +26,12 @@ const ELEMENT_ID_MAX = 128;
 // ICON_SIZES in public/js/elements/button.js.
 const BUTTON_ICON_SIZES = new Set(['S', 'M', 'L', 'XL', 'Fill']);
 const BUTTON_ICON_SIZE_DEFAULT = 'M';
+// Report-tile geometry bounds (internal trame cells). Reports have a FREE size
+// (no button-variant minima) — MUST stay in sync with layout.service.js and
+// public/js/elements/reportTile.js.
+const REPORT_CELLS_MIN = 2;
+const REPORT_CELLS_MAX = 64;
+const MAX_REPORTS_PER_GROUP = 20;
 
 // The grid canvas (must stay in sync with public/js/grid/config.js and with
 // MAX_COLUMNS in layout.service.js): 32 columns × 18 rows.
@@ -235,19 +243,19 @@ async function parseBody(c) {
 
 function isKnownType(item) {
   if (!item || typeof item !== 'object') return false;
-  return KNOWN_ITEM_TYPES.has(String(item.type || 'frame'));
+  return KNOWN_ITEM_TYPES.has(String(item.type || ''));
 }
 
 function validateType(item) {
   if (!item || typeof item !== 'object') return 'Invalid layout item';
-  const type = String(item.type || 'frame');
+  const type = String(item.type || '');
   if (!KNOWN_ITEM_TYPES.has(type)) return `Unknown widget type: ${type}`;
   return null;
 }
 
 /** Manifest defaultSize for a type (only fills fields the caller omitted). */
 function defaultSizeFor(item) {
-  const def = WIDGET_MANIFEST_FINAL.find((w) => w.type === String(item?.type || 'frame'))?.defaultSize;
+  const def = WIDGET_MANIFEST_FINAL.find((w) => w.type === String(item?.type || ''))?.defaultSize;
   const out = {};
   if (def && item?.w === undefined) out.w = def.w;
   if (def && item?.h === undefined) out.h = def.h;
@@ -289,7 +297,7 @@ function normalizePageName(raw) {
  */
 function sanitizeItem(item) {
   if (!item || typeof item !== 'object') return { error: 'Invalid layout item' };
-  const type = String(item.type || 'frame');
+  const type = String(item.type || '');
   const id = String(item.id || '');
   const isGroup = type === 'group';
   const minW = isGroup ? MIN_GROUP : 1;
@@ -338,6 +346,9 @@ function sanitizeItem(item) {
     const { error, buttons } = sanitizeButtons(item.buttons);
     if (error) return { error };
     clean.buttons = buttons;
+    const { error: reportError, reports } = sanitizeReports(item.reports);
+    if (reportError) return { error: reportError };
+    clean.reports = reports;
   }
 
   return { item: clean };
@@ -396,7 +407,60 @@ function sanitizeButtons(raw) {
 }
 
 /**
- * Button display options with their defaults (icon/label/shortcut ON).
+ * Validate/normalize a group's `reports[]` (dedicated report tiles, LOT 8).
+ * A missing batch defaults to []; `elementId` is REQUIRED but may point at an
+ * unknown catalogue id (the catalogue can evolve) — never fatal. A report tile
+ * has a FREE internal-trame size: only [REPORT_CELLS_MIN, REPORT_CELLS_MAX] is
+ * enforced (NO button-variant minima, NO overlap enforcement — tolerant).
+ */
+function sanitizeReports(raw) {
+  if (raw === undefined || raw === null) return { reports: [] };
+  if (!Array.isArray(raw)) return { error: 'reports must be an array' };
+  if (raw.length > MAX_REPORTS_PER_GROUP) {
+    return { error: `Too many reports in group (max ${MAX_REPORTS_PER_GROUP})` };
+  }
+  const reports = [];
+  for (const report of raw) {
+    if (!report || typeof report !== 'object' || Array.isArray(report)) {
+      return { error: 'Invalid report tile' };
+    }
+    const elementId = typeof report.elementId === 'string' ? report.elementId.trim() : '';
+    if (!elementId || elementId.length > ELEMENT_ID_MAX) {
+      return { error: 'report.elementId is required' };
+    }
+    const int = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.floor(n) : null;
+    };
+    let col = int(report.col);
+    if (col === null) col = 0;
+    if (col < 0) return { error: 'report.col must be an integer >= 0' };
+    let row = int(report.row);
+    if (row === null) row = 0;
+    if (row < 0) return { error: 'report.row must be an integer >= 0' };
+    let w = int(report.w);
+    if (w === null) w = REPORT_CELLS_MIN;
+    if (w < REPORT_CELLS_MIN || w > REPORT_CELLS_MAX) {
+      return { error: `report.w must be an integer between ${REPORT_CELLS_MIN} and ${REPORT_CELLS_MAX}` };
+    }
+    let h = int(report.h);
+    if (h === null) h = REPORT_CELLS_MIN;
+    if (h < REPORT_CELLS_MIN || h > REPORT_CELLS_MAX) {
+      return { error: `report.h must be an integer between ${REPORT_CELLS_MIN} and ${REPORT_CELLS_MAX}` };
+    }
+    reports.push({
+      id: typeof report.id === 'string' && report.id ? report.id : randomUUID(),
+      elementId,
+      col,
+      row,
+      w,
+      h,
+    });
+  }
+  return { reports };
+}
+
+/**
  * TOLERANT: unknown/missing keys fall back to their default — a button saved
  * before `iconSize`/`allowIconOverflow` existed keeps working untouched.
  */

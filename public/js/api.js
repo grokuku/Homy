@@ -74,4 +74,31 @@ export const api = {
   put(path, body) { return this.request('PUT', path, body); },
   patch(path, body) { return this.request('PATCH', path, body); },
   del(path) { return this.request('DELETE', path); },
+
+  /**
+   * GET returning the RAW response body as text (not JSON). Used by the icon
+   * renderer to inline a stored SVG (`GET /api/icons/:slug/svg`). Attaches the
+   * JWT and honours the same `auth:expired` contract as request().
+   */
+  async getText(path) {
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const res = await fetch(path, { method: 'GET', headers });
+    if (!res.ok) {
+      if (res.status === 401 && !this._authPath(path)) {
+        window.dispatchEvent(new CustomEvent('auth:expired'));
+      }
+      let message = `Request failed (${res.status})`;
+      try {
+        const data = await res.json();
+        if (data?.error) message = data.error;
+      } catch {
+        /* non-JSON body */
+      }
+      const err = new Error(message);
+      err.status = res.status;
+      throw err;
+    }
+    return res.text();
+  },
 };

@@ -3,6 +3,7 @@ import {
   ElementsService,
   ElementsValidationError,
   MAX_ELEMENTS,
+  publicElement,
 } from '../services/elements.service.js';
 
 const MAX_BODY_BYTES = 256 * 1024; // 256 KB
@@ -28,7 +29,11 @@ export function elementsRoutes(storeOrService, layout = null) {
   const routes = new Hono();
 
   routes.get('/', (c) =>
-    c.json({ elements: elements.list(), count: elements.count(), max: MAX_ELEMENTS })
+    c.json({
+      elements: elements.list().map(publicElement),
+      count: elements.count(),
+      max: MAX_ELEMENTS,
+    })
   );
 
   routes.get('/:id/usage', (c) => {
@@ -41,14 +46,14 @@ export function elementsRoutes(storeOrService, layout = null) {
   routes.get('/:id', (c) => {
     const element = elements.get(c.req.param('id'));
     if (!element) return c.json({ error: 'Not found' }, 404);
-    return c.json(element);
+    return c.json(publicElement(element));
   });
 
   routes.post('/', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
     try {
-      return c.json(elements.create(parsed.body), 201);
+      return c.json(publicElement(elements.create(parsed.body)), 201);
     } catch (err) {
       if (err instanceof ElementsValidationError) return c.json({ error: err.message }, 400);
       throw err;
@@ -61,7 +66,7 @@ export function elementsRoutes(storeOrService, layout = null) {
     try {
       const element = elements.update(c.req.param('id'), parsed.body);
       if (!element) return c.json({ error: 'Not found' }, 404);
-      return c.json(element);
+      return c.json(publicElement(element));
     } catch (err) {
       if (err instanceof ElementsValidationError) return c.json({ error: err.message }, 400);
       throw err;

@@ -10,6 +10,7 @@ import { openElementsModal } from './ui/elementsModal.js';
 import { initTabs, renderTabs } from './ui/tabs.js';
 import { toast } from './ui/toast.js';
 import { catalog } from './elements/catalog.js';
+import { clearLocalIconCache } from './elements/button.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -775,6 +776,7 @@ $('logout-btn').addEventListener('click', async () => {
   stopModeAnim();
   destroyGrid();
   catalog.clear(); // drop the element cache (next session re-fetches)
+  clearLocalIconCache(); // drop inlined local-icon SVGs
   setBackgroundHost(null); // back to full-viewport background (frame is gone)
   showLogin();
 });
@@ -816,6 +818,17 @@ window.addEventListener('homy:group-buttons', (e) => {
   const item = state.layout.find((i) => i.id === id);
   if (item) item.buttons = buttons;
   grid?.applyButtons?.(id, buttons);
+});
+
+// ---- Group report tile edits (lot 8) ---------------------------------------
+// Same contract as `homy:group-buttons`: the group broadcasts its fresh report
+// tiles; we keep state.layout in sync and let the editor debounce the PUT.
+window.addEventListener('homy:group-reports', (e) => {
+  const { id, reports } = e.detail || {};
+  if (!id || !Array.isArray(reports)) return;
+  const item = state.layout.find((i) => i.id === id);
+  if (item) item.reports = reports;
+  grid?.applyReports?.(id, reports);
 });
 
 // ---- Dashboard pages tab strip (multiple pages, lot C+D) --------------------
@@ -878,6 +891,7 @@ window.addEventListener('auth:expired', () => {
   stopModeAnim(); // drop any pending mode-transition timer/rAF (see logout)
   destroyGrid();
   catalog.clear(); // drop the element cache (same as an explicit logout)
+  clearLocalIconCache(); // drop inlined local-icon SVGs (same as logout)
   setBackgroundHost(null);
   showLogin();
 });

@@ -9,7 +9,7 @@ import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
  *
  * Supported field types: text | number | range | select | url | icon | color |
  * toggle | textarea | list. A `list` field carries a nested `fields` array
- * describing each row (e.g. used by shortcut/links). `range` renders a numeric
+ * describing each row (e.g. a future list-based widget). `range` renders a numeric
  * field (min/max/step, optional `unit`) as a slider with a live right-aligned
  * value badge — the mock look of the Background modal. `number` stays a plain
  * number input (retro-compatible).
