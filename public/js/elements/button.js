@@ -528,7 +528,10 @@ export function buildIconNode(icon, label) {
   if (value.startsWith('holaf:')) {
     const name = value.slice(6).trim();
     const svgEl = svgElementFrom(safeHolafGet(name));
-    if (svgEl) return svgEl;
+    if (svgEl) {
+      scheduleSvgInkFit(svgEl);
+      return svgEl;
+    }
     // Unknown `holaf:<name>`: fall back to the label initials — NEVER render the
     // raw `holaf:…` reference (a long string that overflowed tiny tiles).
     return el('span', 'tile-icon-text', initialsOf(label) || '?');
@@ -551,7 +554,10 @@ function buildLocalIcon(slug, label) {
   loadLocalIcon(slug).then((svg) => {
     if (!svg) return;
     const node = svgElementFrom(svg);
-    if (node) holder.replaceChildren(node);
+    if (node) {
+      holder.replaceChildren(node);
+      scheduleSvgInkFit(node);
+    }
   });
   return holder;
 }
@@ -641,6 +647,122 @@ function normalizeSvgNode(svg) {
   svg.setAttribute('focusable', 'false');
   svg.setAttribute('aria-hidden', 'true');
   return svg;
+}
+
+/**
+ * Schedule a post-insertion INK FIT of an inline SVG. `normalizeSvgNode`
+ * guarantees a viewBox and `preserveAspectRatio="xMidYMid meet"`, but it does
+ * NOT guarantee that the viewBox actually CONTAINS the drawing: many real
+ * icons (and any custom one) draw right up to — or slightly past — the viewBox
+ * boundary, and a stroke is always painted half OUTSIDE the path geometry. The
+ * browser clips an inline SVG's paint to its viewport (the host box), so such a
+ * glyph came out visibly truncated (typically the bottom/edges shaved) even
+ * though the source drawing was complete.
+ *
+ * The fix must be measured AFTER the node is connected (getBBox needs layout),
+ * so this defers to the next frame and never throws on a detached node.
+ */
+function scheduleSvgInkFit(svg) {
+  if (!svg) return;
+  if (typeof requestAnimationFrame !== 'function') return;
+  requestAnimationFrame(() => {
+    try {
+      fitSvgInkToViewport(svg);
+    } catch {
+      /* purely cosmetic hardening — never break a tile over it */
+    }
+  });
+}
+
+/**
+ * Expand (NEVER shrink) an inline SVG's `viewBox` so the WHOLE painted artwork
+ * sits inside the rendered viewport with a small safety margin. Only icons
+ * whose ink (including stroke) spills outside their declared viewBox are
+ * touched — a glyph that already has internal margins keeps its exact
+ * viewBox/aspect, so shipped icons do not drift.
+ *
+ *  - geometry: `getBBox()` gives the fill/geometry box in viewBox user units;
+ *  - stroke: unions a half-stroke-width margin for every stroked descendant
+ *    (a centered stroke paints w/2 outside the path);
+ *  - pad: a 2 % safety inset so a drawing that touches the boundary is never
+ *    shaved by anti-aliasing / sub-pixel rounding.
+ */
+function fitSvgInkToViewport(svg) {
+  if (!svg || !svg.isConnected) return;
+  let bb = null;
+  try {
+    bb = svg.getBBox();
+  } catch {
+    return; // not rendered yet (display:none / detached subtree)
+  }
+  if (!bb || !(bb.width > 0) || !(bb.height > 0)) return;
+
+  const stroke = maxStrokeWidth(svg) / 2;
+  const pad = Math.max(bb.width, bb.height) * SVG_INK_PAD;
+  const margin = stroke + pad;
+  const ink = {
+    x: bb.x - margin,
+    y: bb.y - margin,
+    w: bb.width + margin * 2,
+    h: bb.height + margin * 2,
+  };
+
+  const cur = readViewBox(svg);
+  if (!cur) {
+    svg.setAttribute('viewBox', `${round3(ink.x)} ${round3(ink.y)} ${round3(ink.w)} ${round3(ink.h)}`);
+    return;
+  }
+  // Union the declared viewBox with the ink box: the viewBox may only grow.
+  const x0 = Math.min(cur.x, ink.x);
+  const y0 = Math.min(cur.y, ink.y);
+  const x1 = Math.max(cur.x + cur.w, ink.x + ink.w);
+  const y1 = Math.max(cur.y + cur.h, ink.y + ink.h);
+  const next = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  const moved =
+    Math.abs(next.x - cur.x) > 1e-3 ||
+    Math.abs(next.y - cur.y) > 1e-3 ||
+    Math.abs(next.w - cur.w) > 1e-3 ||
+    Math.abs(next.h - cur.h) > 1e-3;
+  if (moved) {
+    svg.setAttribute('viewBox', `${round3(next.x)} ${round3(next.y)} ${round3(next.w)} ${round3(next.h)}`);
+  }
+}
+
+// Safety inset (fraction of the ink's larger side) added around the drawing.
+const SVG_INK_PAD = 0.02;
+
+/** Parse an SVG's `viewBox` into a positive-size box, or null when absent/bad. */
+function readViewBox(svg) {
+  const raw = svg.getAttribute('viewBox');
+  if (!raw) return null;
+  const parts = raw.trim().split(/[\s,]+/).map(Number);
+  if (parts.length !== 4 || !parts.every(Number.isFinite)) return null;
+  const [x, y, w, h] = parts;
+  if (!(w > 0) || !(h > 0)) return null;
+  return { x, y, w, h };
+}
+
+/** Largest computed `stroke-width` among an SVG's stroked descendants (0 when
+ * none). Strokes may be declared on the root and inherited, so descendants are
+ * read through `getComputedStyle` (which resolves inheritance). */
+function maxStrokeWidth(svg) {
+  let max = 0;
+  for (const node of svg.querySelectorAll('*')) {
+    let cs;
+    try {
+      cs = getComputedStyle(node);
+    } catch {
+      continue;
+    }
+    if (!cs || !cs.stroke || cs.stroke === 'none') continue;
+    const sw = parseFloat(cs.strokeWidth);
+    if (Number.isFinite(sw) && sw > max) max = sw;
+  }
+  return max;
+}
+
+function round3(n) {
+  return Math.round(n * 1000) / 1000;
 }
 
 /** Tolerant wrapper around the vendored HolafIcons.get (throws on unknown). */

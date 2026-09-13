@@ -1087,11 +1087,33 @@ body[data-bg-active] .grid-stack-item-content {
    constant physical size (the step never derives from the group's own size);
    overflow scrolls inside .group-board. */
 .group-widget { overflow: hidden; }
+/* The group title bar FLOATS over the top of the trame (absolute) so it never
+   pushes, compresses or blocks the first trame row. `.group-board` reserves
+   the bar's MEASURED height as a top padding (--group-header-h, published by
+   elements/group.js), so row 0 of the internal trame always starts BELOW the
+   title — in EDIT as well as VIEW — while the scroll area keeps the FULL group
+   height. The bar is pointer-events:none (only its buttons are interactive) so
+   it can never swallow a tile click/drag underneath it. */
+.group-widget > .widget-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  flex: 0 0 auto;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--widget-bg-color, var(--bg-elev)) var(--widget-bg-op, var(--surface-alpha)), transparent);
+  border-top-left-radius: var(--radius);
+  border-top-right-radius: var(--radius);
+}
+.group-widget > .widget-header button { pointer-events: auto; }
 .group-board {
   position: relative;
   flex: 1;
   min-height: 0;
   overflow: auto;
+  /* The floating title bar's measured height: row 0 of the trame starts here. */
+  padding-top: var(--group-header-h, 0px);
   /* slightly recessed surface so the trame reads as a container */
   background: color-mix(in srgb, var(--bg) 45%, transparent);
 }

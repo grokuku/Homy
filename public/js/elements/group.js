@@ -86,8 +86,9 @@ export const group = {
     container.classList.toggle('group-editing', editable);
 
     const title = (config?.title || '').trim();
+    let header = null;
     if (title || editable) {
-      const header = el('div', 'widget-header');
+      header = el('div', 'widget-header');
       if (title) header.appendChild(el('span', 'widget-title', title));
       if (editable) {
         const addBtn = el('button', 'group-add', '+ Add element', {
@@ -115,6 +116,29 @@ export const group = {
     const canvas = el('div', 'group-grid');
     board.appendChild(canvas);
     container.appendChild(board);
+
+    // The title bar is absolutely positioned OVER the group (see
+    // .group-widget > .widget-header in style.css) so it never pushes or blocks
+    // the trame. `.group-board` reserves its MEASURED height as a top padding:
+    // row 0 of the internal trame therefore starts BELOW the title, in EDIT as
+    // well as VIEW, and the title can never mask the first row. Re-measured on
+    // every resize (the bar's height varies with title/add-buttons/mode) and
+    // once after the first paint (fonts/layout settle).
+    const syncHeaderOffset = () => {
+      const px = header ? Math.max(0, Math.round(header.offsetHeight)) : 0;
+      const next = `${px}px`;
+      if (board.style.getPropertyValue('--group-header-h') !== next) {
+        board.style.setProperty('--group-header-h', next);
+      }
+    };
+    syncHeaderOffset();
+    let headerRaf = 0;
+    if (typeof requestAnimationFrame === 'function') {
+      headerRaf = requestAnimationFrame(() => {
+        headerRaf = 0;
+        syncHeaderOffset();
+      });
+    }
 
     const buttons = (Array.isArray(item?.buttons) ? item.buttons : [])
       .map(normalizeButton)
@@ -524,6 +548,7 @@ export const group = {
         if (raf) return;
         raf = requestAnimationFrame(() => {
           raf = 0;
+          syncHeaderOffset();
           const next = measureStep(container, item);
           if (Math.abs(next - step) > 0.25) {
             step = next;
@@ -540,6 +565,8 @@ export const group = {
       if (observer) observer.disconnect();
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
+      if (headerRaf) cancelAnimationFrame(headerRaf);
+      headerRaf = 0;
       clearDeleteTimers();
       disposeTiles();
       dragCleanup?.();
