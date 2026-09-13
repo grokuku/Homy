@@ -1,18 +1,41 @@
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
-import { LayoutService, MAX_COLUMNS, MAX_PAGES, PAGE_NAME_MAX } from '../services/layout.service.js';
+import {
+  KNOWN_ITEM_TYPES,
+  LayoutService,
+  MAX_COLUMNS,
+  MAX_PAGES,
+  PAGE_NAME_MAX,
+} from '../services/layout.service.js';
 import { WIDGET_MANIFEST_FINAL } from './widgets.routes.js';
 
 const MAX_ITEMS = 100; // per PAGE (widgets are confined to their page)
 const MAX_BODY_BYTES = 256 * 1024; // 256 KB
-const VALID_TYPES = new Set(WIDGET_MANIFEST_FINAL.map((w) => w.type));
+
+// v4 group/button bounds. `group` is a KNOWN item type (the new container);
+// `frame`/`shortcut`/`links` and every widget stay valid types for now.
+const MIN_GROUP = 2; // a group occupies at least 2×2 GLOBAL cells
+const MAX_BUTTONS_PER_GROUP = 50;
+const MAX_BUTTONS_PER_PAGE = 200; // buttons of ALL groups on a single page
+const BUTTON_CELLS_MAX = 4; // button w/h in INTERNAL cells (1..4)
+const ELEMENT_ID_MAX = 128;
+// Button icon size steps (per-button display option): fraction of the tile's
+// useful internal dimension. "Fill" = 100 %. MUST stay in sync with
+// ICON_SIZES in public/js/elements/button.js.
+const BUTTON_ICON_SIZES = new Set(['S', 'M', 'L', 'XL', 'Fill']);
+const BUTTON_ICON_SIZE_DEFAULT = 'M';
 
 // The grid canvas (must stay in sync with public/js/grid/config.js and with
 // MAX_COLUMNS in layout.service.js): 32 columns × 18 rows.
 const GRID_COLUMNS = MAX_COLUMNS;
 const GRID_ROWS = 18;
 
-export function layoutRoutes(store) {
-  const layout = new LayoutService(store);
+export function layoutRoutes(storeOrService, options = {}) {
+  const layout =
+    storeOrService instanceof LayoutService ? storeOrService : new LayoutService(storeOrService);
+  // Optional catalogue predicate — used ONLY to warn about buttons pointing at
+  // an unknown element id (best-effort signal, never a hard failure).
+  const elementExists = typeof options.elementExists === 'function' ? options.elementExists : null;
   const routes = new Hono();
 
   // Get full layout — items of the ACTIVE page + the column count they are
@@ -53,13 +76,23 @@ export function layoutRoutes(store) {
       }
     }
     const clean = [];
+    const ignored = new Set();
     for (const item of rawItems) {
-      const typeError = validateType(item);
-      if (typeError) return c.json({ error: typeError }, 400);
+      if (!isKnownType(item)) {
+        ignored.add(String(item?.type ?? 'undefined'));
+        continue; // unknown item types are IGNORED on PUT (never a hard failure)
+      }
       const { error, item: cleanItem } = sanitizeItem(item);
       if (error) return c.json({ error }, 400);
       clean.push(cleanItem);
     }
+    if (ignored.size) {
+      console.warn(`[layout] ignoring unknown item type(s) on PUT: ${[...ignored].join(', ')}`);
+    }
+    if (countButtons(clean) > MAX_BUTTONS_PER_PAGE) {
+      return c.json({ error: `Too many buttons on this page (max ${MAX_BUTTONS_PER_PAGE})` }, 400);
+    }
+    warnUnknownElements(clean, elementExists);
     const items = layout.replace(clean, columns, targetId);
     return c.json({ items, ...layout.meta(), activePageId: layout.activePageId, pages: layout.pagesSummary() });
   });
@@ -77,6 +110,10 @@ export function layoutRoutes(store) {
     const defaults = defaultSizeFor(parsed.body);
     const { error: sanitizeError, item } = sanitizeItem({ ...parsed.body, ...defaults });
     if (sanitizeError) return c.json({ error: sanitizeError }, 400);
+    if (countButtons(layout.list()) + countButtons([item]) > MAX_BUTTONS_PER_PAGE) {
+      return c.json({ error: `Too many buttons on this page (max ${MAX_BUTTONS_PER_PAGE})` }, 400);
+    }
+    warnUnknownElements([item], elementExists);
     const entry = layout.add(item);
     return c.json(entry, 201);
   });
@@ -196,10 +233,15 @@ async function parseBody(c) {
   }
 }
 
+function isKnownType(item) {
+  if (!item || typeof item !== 'object') return false;
+  return KNOWN_ITEM_TYPES.has(String(item.type || 'frame'));
+}
+
 function validateType(item) {
   if (!item || typeof item !== 'object') return 'Invalid layout item';
   const type = String(item.type || 'frame');
-  if (!VALID_TYPES.has(type)) return `Unknown widget type: ${type}`;
+  if (!KNOWN_ITEM_TYPES.has(type)) return `Unknown widget type: ${type}`;
   return null;
 }
 
@@ -240,11 +282,18 @@ function normalizePageName(raw) {
  *   - h is CLAMPED to 18 instead of rejected so a hand-edited legacy item
  *     taller than the canvas can still be saved (a rejection here would
  *     strand the whole layout: the client could never persist its edits again).
+ *
+ * v4 additions: a `group` is validated with a 2×2 GLOBAL minimum (a 1×1 group
+ * is rejected) and carries a sanitized `buttons[]`. Non-group items keep the
+ * exact previous behavior — no `buttons` field is ever attached to them.
  */
 function sanitizeItem(item) {
   if (!item || typeof item !== 'object') return { error: 'Invalid layout item' };
   const type = String(item.type || 'frame');
   const id = String(item.id || '');
+  const isGroup = type === 'group';
+  const minW = isGroup ? MIN_GROUP : 1;
+  const minH = isGroup ? MIN_GROUP : 1;
 
   const int = (v) => {
     const n = Number(v);
@@ -260,24 +309,138 @@ function sanitizeItem(item) {
   if (y < 0) return { error: 'y must be an integer >= 0' };
 
   let w = int(item.w);
-  if (w === null) w = 1;
-  if (w < 1 || w > GRID_COLUMNS) {
-    return { error: `w must be an integer between 1 and ${GRID_COLUMNS}` };
+  if (w === null) w = minW;
+  if (w < minW || w > GRID_COLUMNS) {
+    return {
+      error: isGroup
+        ? `w must be an integer between ${minW} and ${GRID_COLUMNS} for a group`
+        : `w must be an integer between 1 and ${GRID_COLUMNS}`,
+    };
   }
 
   let h = int(item.h);
-  if (h === null) h = 1;
-  if (h < 1) return { error: 'h must be an integer >= 1' };
+  if (h === null) h = minH;
+  if (h < minH) {
+    return { error: isGroup ? 'h must be an integer >= 2 for a group (min 2×2)' : 'h must be an integer >= 1' };
+  }
 
-  return {
-    item: {
-      id: id || undefined,
-      x,
-      y,
-      w,
-      h: Math.min(h, GRID_ROWS),
-      type,
-      config: item.config && typeof item.config === 'object' ? item.config : {},
-    },
+  const clean = {
+    id: id || (isGroup ? randomUUID() : undefined),
+    x,
+    y,
+    w,
+    h: Math.min(h, GRID_ROWS),
+    type,
+    config: item.config && typeof item.config === 'object' ? item.config : {},
   };
+
+  if (isGroup) {
+    const { error, buttons } = sanitizeButtons(item.buttons);
+    if (error) return { error };
+    clean.buttons = buttons;
+  }
+
+  return { item: clean };
+}
+
+/**
+ * Validate/normalize a group's `buttons`. Returns `{ buttons }` or `{ error }`.
+ * A missing batch defaults to []; `elementId` is REQUIRED but may point at an
+ * unknown catalogue id (the catalogue can evolve) — that is only logged, never
+ * fatal. Options are completed with their documented defaults.
+ */
+function sanitizeButtons(raw) {
+  if (raw === undefined || raw === null) return { buttons: [] };
+  if (!Array.isArray(raw)) return { error: 'buttons must be an array' };
+  if (raw.length > MAX_BUTTONS_PER_GROUP) {
+    return { error: `Too many buttons in group (max ${MAX_BUTTONS_PER_GROUP})` };
+  }
+  const buttons = [];
+  for (const button of raw) {
+    if (!button || typeof button !== 'object' || Array.isArray(button)) return { error: 'Invalid button' };
+    const elementId = typeof button.elementId === 'string' ? button.elementId.trim() : '';
+    if (!elementId || elementId.length > ELEMENT_ID_MAX) {
+      return { error: 'button.elementId is required' };
+    }
+    const int = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.floor(n) : null;
+    };
+    let col = int(button.col);
+    if (col === null) col = 0;
+    if (col < 0) return { error: 'button.col must be an integer >= 0' };
+    let row = int(button.row);
+    if (row === null) row = 0;
+    if (row < 0) return { error: 'button.row must be an integer >= 0' };
+    let w = int(button.w);
+    if (w === null) w = 1;
+    if (w < 1 || w > BUTTON_CELLS_MAX) {
+      return { error: `button.w must be an integer between 1 and ${BUTTON_CELLS_MAX}` };
+    }
+    let h = int(button.h);
+    if (h === null) h = 1;
+    if (h < 1 || h > BUTTON_CELLS_MAX) {
+      return { error: `button.h must be an integer between 1 and ${BUTTON_CELLS_MAX}` };
+    }
+    buttons.push({
+      id: typeof button.id === 'string' && button.id ? button.id : randomUUID(),
+      elementId,
+      col,
+      row,
+      w,
+      h,
+      options: normalizeButtonOptions(button.options),
+    });
+  }
+  return { buttons };
+}
+
+/**
+ * Button display options with their defaults (icon/label/shortcut ON).
+ * TOLERANT: unknown/missing keys fall back to their default — a button saved
+ * before `iconSize`/`allowIconOverflow` existed keeps working untouched.
+ */
+function normalizeButtonOptions(raw) {
+  const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const bool = (v, def) => (typeof v === 'boolean' ? v : def);
+  const iconSize = BUTTON_ICON_SIZES.has(o.iconSize) ? o.iconSize : BUTTON_ICON_SIZE_DEFAULT;
+  return {
+    icon: bool(o.icon, true),
+    label: bool(o.label, true),
+    shortcut: bool(o.shortcut, true),
+    health: bool(o.health, false),
+    monitoring: bool(o.monitoring, false),
+    controls: bool(o.controls, false),
+    iconSize,
+    allowIconOverflow: bool(o.allowIconOverflow, false),
+  };
+}
+
+/** Total buttons carried by a batch of (already sanitized or raw) items. */
+function countButtons(items) {
+  let total = 0;
+  for (const item of items) {
+    if (item && Array.isArray(item.buttons)) total += item.buttons.length;
+  }
+  return total;
+}
+
+/**
+ * Best-effort signal: log (once per write) the element ids referenced by a
+ * group but absent from the catalogue. Never blocks the write — references are
+ * allowed to dangle while the catalogue evolves (the DELETE guard handles the
+ * cleanup side).
+ */
+function warnUnknownElements(items, elementExists) {
+  if (!elementExists) return;
+  const unknown = new Set();
+  for (const item of items) {
+    if (!item || item.type !== 'group' || !Array.isArray(item.buttons)) continue;
+    for (const button of item.buttons) {
+      if (button && button.elementId && !elementExists(button.elementId)) unknown.add(button.elementId);
+    }
+  }
+  if (unknown.size) {
+    console.warn(`[layout] button(s) reference unknown element id(s): ${[...unknown].join(', ')}`);
+  }
 }

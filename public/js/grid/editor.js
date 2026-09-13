@@ -5,6 +5,11 @@ import { api } from '../api.js';
 import { uuid, el } from '../util.js';
 import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, normalizeItems } from './config.js';
 
+// A `group` occupies at least 2×2 GLOBAL cells (10.8 §B.2 / layout.routes.js
+// MIN_GROUP). Enforced on the gridstack resize handles so the UI can never
+// dip under the minimum the server would reject on save.
+const GROUP_MIN_CELLS = 2;
+
 /**
  * Editable grid (edit mode): interactive gridstack + per-widget controls +
  * generic config modal. Persists changes via the `onSave` callback (debounced).
@@ -28,8 +33,17 @@ import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, normalizeItems } from './config.js'
  * see config.js (review C8).
  */
 export function initEditor(container, items, { onSave, columns = GRID_COLUMNS }) {
-  const meta = new Map(); // id -> { type, config }
-  items.forEach((i) => meta.set(i.id, { type: i.type, config: i.config || {} }));
+  const meta = new Map(); // id -> { type, config, buttons? }
+  // `buttons` is carried through for `group` items only: the editor is READ
+  // ONLY for buttons in lot 2 (no picker/panel yet) but MUST persist them
+  // unchanged, otherwise a drag would silently drop a group's whole content.
+  items.forEach((i) =>
+    meta.set(i.id, {
+      type: i.type,
+      config: i.config || {},
+      buttons: i.type === 'group' && Array.isArray(i.buttons) ? i.buttons : undefined,
+    })
+  );
 
   // Class hook for the edit-mode-only grid lines (see style.css): the visual
   // grid must never appear in view mode nor on the login view.
@@ -66,6 +80,10 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
       y: item.y,
       w: item.w,
       h: item.h,
+      // A group can never be resized below its 2×2 GLOBAL minimum (the server
+      // rejects it too) — enforce it on the resize handles themselves so the
+      // UI cannot produce a layout the server would refuse to save.
+      ...(item.type === 'group' ? { minW: GROUP_MIN_CELLS, minH: GROUP_MIN_CELLS } : {}),
       // Gridstack's default renderCB assigns `content` via textContent, so any
       // markup here would surface as literal text. Widgets render themselves
       // into .grid-stack-item-content, so keep this empty.
@@ -89,7 +107,7 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
     const item = loaded.find((i) => i.id === node.id);
     const contentEl = node.el.querySelector('.grid-stack-item-content');
     if (item && contentEl) {
-      renderWidget(contentEl, item);
+      renderWidget(contentEl, item, { editable: true });
       attachControls(node.el, item.id);
     }
   }
@@ -112,7 +130,9 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   const serialize = () =>
     grid.engine.nodes.map((n) => {
       const m = meta.get(n.id) || { type: 'frame', config: {} };
-      return { id: n.id, x: n.x, y: n.y, w: n.w || 1, h: n.h || 1, type: m.type, config: m.config };
+      const entry = { id: n.id, x: n.x, y: n.y, w: n.w || 1, h: n.h || 1, type: m.type, config: m.config };
+      if (m.type === 'group') entry.buttons = Array.isArray(m.buttons) ? m.buttons : [];
+      return entry;
     });
   const runSave = () => {
     saveTimer = 0;
@@ -165,6 +185,7 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
     }
     const size = getDefaultSize(type);
     const id = uuid();
+    const isGroup = type === 'group';
     // gridstack v13 types addWidget() as `GridItemHTMLElement | undefined`:
     // it returns the item element, not a GridStackNode with `.id`/`.el`.
     // Don't depend on the return value — resolve the item element from the
@@ -175,14 +196,15 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
       y: 0,
       w: size.w,
       h: size.h,
+      ...(isGroup ? { minW: GROUP_MIN_CELLS, minH: GROUP_MIN_CELLS } : {}),
       // See grid.load() above: content is assigned via textContent by gridstack.
       content: '',
     });
-    meta.set(id, { type, config: {} });
+    meta.set(id, { type, config: {}, buttons: isGroup ? [] : undefined });
     const itemEl = grid.engine.nodes.find((n) => n.id === id)?.el;
     const contentEl = itemEl?.querySelector('.grid-stack-item-content');
     if (itemEl && contentEl) {
-      renderWidget(contentEl, { id, type, config: {} });
+      renderWidget(contentEl, { id, type, config: {}, buttons: isGroup ? [] : undefined }, { editable: true });
       attachControls(itemEl, id);
     }
     scheduleSave();
@@ -204,7 +226,16 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
         const node = grid.engine.nodes.find((n) => n.id === id);
         const contentEl = node?.el?.querySelector('.grid-stack-item-content');
         if (contentEl) {
-          renderWidget(contentEl, { id, type: m.type, config: newConfig });
+          renderWidget(
+            contentEl,
+            {
+              id,
+              type: m.type,
+              config: newConfig,
+              buttons: m.type === 'group' ? m.buttons : undefined,
+            },
+            { editable: true }
+          );
           attachControls(node.el, id);
         }
         scheduleSave();
@@ -241,6 +272,21 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
     if (m && config && typeof config === 'object') {
       m.config = { ...(m.config || {}), ...config };
     }
+  }
+
+  /**
+   * Replace a group's `buttons[]` in the meta cache (lot 4). Fed by the
+   * `homy:group-buttons` event the group widget broadcasts after any tile
+   * mutation (add / options / move / resize / delete), so the next debounced
+   * full PUT serializes the fresh tiles. Schedules a save through the SAME
+   * cancellable debounce as a widget drag — the mode-change flush (destroy)
+   * and page-switch flush therefore cover tile edits too.
+   */
+  function applyButtons(id, buttons) {
+    const m = meta.get(id);
+    if (!m || m.type !== 'group' || !Array.isArray(buttons)) return;
+    m.buttons = buttons;
+    scheduleSave();
   }
 
   function attachControls(itemEl, id) {
@@ -280,6 +326,7 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   return {
     addWidget,
     applyConfig,
+    applyButtons,
     /** Flush a pending debounced save NOW (awaitable — see flushSave). */
     flush: flushSave,
     destroy() {

@@ -2,12 +2,22 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { Store } from './store.service.js';
+import { WIDGET_MANIFEST_FINAL } from '../routes/widgets.routes.js';
 
 /**
  * Layout service: CRUD over the grid layout persisted in `layout.json`.
  *
- * Schema version 3 — MULTIPLE PAGES (tabs):
- *   { version: 3, columns: <int 1..32>, activePageId: <uuid>, pages: [{ id, name, items: [...] }] }
+ * Schema version 4 — MULTIPLE PAGES (tabs) + GROUPS:
+ *   { version: 4, columns: <int 1..32>, activePageId: <uuid>, pages: [{ id, name, items: [...] }] }
+ *
+ * v4 is an ADDITIVE change over v3: an item may now be
+ *   { id, x, y, w, h, type: 'group', config, buttons: [...] }
+ * Everything else is untouched — `frame`, `shortcut`, `links` and all widgets
+ * stay valid item types (their removal is a later lot). v3 (and v1/v2) files
+ * remain readable and are normalized to v4 IN MEMORY ONLY: unknown item types
+ * are skipped (tolerance, one log) and a `group` whose `buttons` is not an
+ * array is coerced to []. The file is only rewritten on the first voluntary
+ * mutation; `meta()` keeps reporting the on-disk version until then.
  *
  * The whole layout (all pages + which page is active) lives in ONE file so the
  * "activePageId always points to an existing page" invariant is kept in a
@@ -22,9 +32,10 @@ import { Store } from './store.service.js';
  *     wrapped into a "Home" page, `columns: 12` is KEPT so the frontend still
  *     applies its 12 → 32 migration exactly as before;
  *   - v2 ({ version: 2, columns, items }) → same wrap;
- *   - v3 → read directly (with tolerant coercion: missing page ids are
+ *   - v3/v4 → read directly (with tolerant coercion: missing page ids are
  *     regenerated, non-array items become [], unknown activePageId falls back
- *     to the first page).
+ *     to the first page, unknown item types are skipped, malformed group
+ *     `buttons` become []).
  * `meta()` keeps reporting the ORIGINAL version/columns until the first
  * `_persist()` (the schema on disk is only migrated by a voluntary mutation),
  * so an old cached frontend keeps interpreting the coordinates as before.
@@ -35,13 +46,20 @@ import { Store } from './store.service.js';
  * interpret the coordinates, and PUT /api/layout accepts it so the migrated
  * coordinates are persisted with columns: 32.
  */
-const LAYOUT_VERSION = 3;
+const LAYOUT_VERSION = 4;
 export const MIN_COLUMNS = 1;
 export const MAX_COLUMNS = 32;
 export const LEGACY_COLUMNS = 12;
 export const MAX_PAGES = 12;
 export const PAGE_NAME_MAX = 40; // 1..40 chars after trim
 const DEFAULT_PAGE_NAME = 'Home'; // page 1 is always called "Home"
+
+/**
+ * Item types the layout accepts: every widget in the manifest PLUS the new
+ * `group` container. Kept in ONE place so load-time tolerance (this service)
+ * and the PUT/POST validation (layout.routes.js) cannot drift apart.
+ */
+export const KNOWN_ITEM_TYPES = new Set([...WIDGET_MANIFEST_FINAL.map((w) => w.type), 'group']);
 
 export class LayoutService {
   constructor(store) {
@@ -63,7 +81,7 @@ export class LayoutService {
       if (existsSync(this._file())) {
         console.error(
           '[layout] layout.json is corrupt — starting from a single empty "Home" page. ' +
-            'The file is NOT rewritten automatically; it will be migrated (v3) on your first layout change.'
+            'The file is NOT rewritten automatically; it will be migrated (v4) on your first layout change.'
         );
       }
       return this._wrap([], LEGACY_COLUMNS, 1);
@@ -87,16 +105,17 @@ export class LayoutService {
     return this._wrap(items, columns, version);
   }
 
-  /** One "Home" page wrapping a flat items array (v1/v2 → v3, in memory only). */
+  /** One "Home" page wrapping a flat items array (v1/v2 → v4, in memory only). */
   _wrap(items, columns, version) {
-    const page = { id: randomUUID(), name: DEFAULT_PAGE_NAME, items };
+    const page = { id: randomUUID(), name: DEFAULT_PAGE_NAME, items: this._coerceItems(items) };
     return { pages: [page], activePageId: page.id, columns, version };
   }
 
   /**
-   * Tolerant coercion of a v3 `pages` array: missing page ids are regenerated,
-   * duplicate ids deduped, missing/blank names defaulted, non-array items → [].
-   * Returns null when `rawPages` holds no usable page (caller falls back).
+   * Tolerant coercion of a v3/v4 `pages` array: missing page ids are
+   * regenerated, duplicate ids deduped, missing/blank names defaulted,
+   * non-array items → []. Returns null when `rawPages` holds no usable page
+   * (caller falls back).
    */
   _coercePages(rawPages, fallbackItems) {
     if (!Array.isArray(rawPages)) return null;
@@ -105,7 +124,9 @@ export class LayoutService {
       .map((p, i) => ({
         id: typeof p.id === 'string' && p.id ? p.id : randomUUID(),
         name: typeof p.name === 'string' && p.name.trim() ? p.name : i === 0 ? DEFAULT_PAGE_NAME : `Page ${i + 1}`,
-        items: Array.isArray(p.items) ? p.items : Array.isArray(fallbackItems) && i === 0 ? fallbackItems : [],
+        items: this._coerceItems(
+          Array.isArray(p.items) ? p.items : Array.isArray(fallbackItems) && i === 0 ? fallbackItems : []
+        ),
       }));
     if (!pages.length) return null;
     const seen = new Set();
@@ -116,6 +137,34 @@ export class LayoutService {
     return pages;
   }
 
+  /**
+   * Tolerant per-item normalization on LOAD (never throws):
+   *   - non-object items are dropped;
+   *   - an item whose type is not known is dropped (one log per load);
+   *   - a `group` gets a `buttons` array (non-array → []) with each button
+   *     coerced to the valid shape (ids regenerated, options completed).
+   * Non-group items are returned UNCHANGED (identity) so a v3 file with
+   * `frame`/`shortcut`/`links`/widgets is loaded without any loss.
+   */
+  _coerceItems(rawItems) {
+    if (!Array.isArray(rawItems)) return [];
+    const ignored = new Set();
+    const out = [];
+    for (const item of rawItems) {
+      if (!item || typeof item !== 'object') continue;
+      const type = String(item.type || 'frame');
+      if (!KNOWN_ITEM_TYPES.has(type)) {
+        ignored.add(type);
+        continue;
+      }
+      out.push(type === 'group' ? { ...item, buttons: coerceButtons(item.buttons) } : item);
+    }
+    if (ignored.size) {
+      console.warn(`[layout] ignoring unknown item type(s) on load: ${[...ignored].join(', ')}`);
+    }
+    return out;
+  }
+
   _file() {
     return path.join(this.store.dataDir, 'layout.json');
   }
@@ -123,6 +172,26 @@ export class LayoutService {
   /** Column count + schema version alongside the items (read path). */
   meta() {
     return { columns: this.origColumns, version: this.origVersion };
+  }
+
+  /**
+   * Every `group` button referencing `elementId`, with its page + group.
+   * Used by the catalogue routes (usage endpoint + guarded delete). The id is
+   * matched exactly; an unknown id simply yields [].
+   */
+  findElementUsages(elementId) {
+    const usages = [];
+    for (const page of this.pages) {
+      for (const item of page.items) {
+        if (!item || item.type !== 'group' || !Array.isArray(item.buttons)) continue;
+        for (const button of item.buttons) {
+          if (button && button.elementId === elementId) {
+            usages.push({ pageId: page.id, name: page.name, groupId: item.id });
+          }
+        }
+      }
+    }
+    return usages;
   }
 
   // ---- Page accessors -------------------------------------------------------
@@ -166,15 +235,17 @@ export class LayoutService {
   }
 
   add(item) {
+    const type = item.type || 'frame';
     const entry = {
       id: item.id || randomUUID(),
       x: Number(item.x) || 0,
       y: Number(item.y) || 0,
       w: Number(item.w) || 11,
       h: Number(item.h) || 3,
-      type: item.type || 'frame',
+      type,
       config: item.config || {},
     };
+    if (type === 'group') entry.buttons = Array.isArray(item.buttons) ? item.buttons : [];
     this.activePage().items.push(entry);
     this._persist();
     return entry;
@@ -262,7 +333,7 @@ export class LayoutService {
   }
 
   _persist() {
-    // Single atomic write keeps the v3 invariant (activePageId ↔ pages).
+    // Single atomic write keeps the v4 invariant (activePageId ↔ pages).
     this.origVersion = LAYOUT_VERSION;
     this.origColumns = this.columns;
     this.store.write(
@@ -282,4 +353,62 @@ function clampColumns(value, fallback) {
   const n = Math.round(Number(value));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, n));
+}
+
+/**
+ * Tolerant coercion of a group's `buttons` on LOAD (never throws): non-array →
+ * [], non-object rows dropped, ids regenerated when missing, coordinates
+ * floored/clamped into the documented ranges, options completed with their
+ * defaults. The per-group/per-page CAPS are NOT enforced here — load tolerance
+ * never drops user data; caps are a write-time validation concern.
+ */
+function coerceButtons(raw) {
+  if (!Array.isArray(raw)) return [];
+  const int = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.floor(n) : null;
+  };
+  const out = [];
+  for (const button of raw) {
+    if (!button || typeof button !== 'object') continue;
+    let col = int(button.col);
+    if (col === null || col < 0) col = 0;
+    let row = int(button.row);
+    if (row === null || row < 0) row = 0;
+    const w = Math.min(4, Math.max(1, int(button.w) ?? 1));
+    const h = Math.min(4, Math.max(1, int(button.h) ?? 1));
+    out.push({
+      id: typeof button.id === 'string' && button.id ? button.id : randomUUID(),
+      elementId: typeof button.elementId === 'string' ? button.elementId : '',
+      col,
+      row,
+      w,
+      h,
+      options: normOptions(button.options),
+    });
+  }
+  return out;
+}
+
+// Button icon size steps — MUST stay in sync with BUTTON_ICON_SIZES in
+// server/routes/layout.routes.js and ICON_SIZES in public/js/elements/button.js.
+const BUTTON_ICON_SIZES = new Set(['S', 'M', 'L', 'XL', 'Fill']);
+
+/**
+ * Tolerant option coercion on LOAD: unknown/missing keys are defaulted, so a
+ * button stored before `iconSize`/`allowIconOverflow` existed still loads.
+ */
+function normOptions(raw) {
+  const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const bool = (v, def) => (typeof v === 'boolean' ? v : def);
+  return {
+    icon: bool(o.icon, true),
+    label: bool(o.label, true),
+    shortcut: bool(o.shortcut, true),
+    health: bool(o.health, false),
+    monitoring: bool(o.monitoring, false),
+    controls: bool(o.controls, false),
+    iconSize: BUTTON_ICON_SIZES.has(o.iconSize) ? o.iconSize : 'M',
+    allowIconOverflow: bool(o.allowIconOverflow, false),
+  };
 }

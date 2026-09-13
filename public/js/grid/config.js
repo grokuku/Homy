@@ -28,6 +28,8 @@
  * margins ⇒ cell height = cell width (true square); any asymmetric margin
  * would skew every cell and desync the 18-row fill from the 16:9 aspect box.
  */
+import { getWidget } from '../widgets/registry.js';
+
 export const GRID_COLUMNS = 32;
 export const GRID_ROWS = 18;
 export const LEGACY_COLUMNS = 12;
@@ -62,15 +64,32 @@ export const MAX_ITEMS = 100;
  * callers keep their original item list untouched (meta/state stay valid).
  */
 export function normalizeItems(items) {
-  return (Array.isArray(items) ? items : []).map((item) => {
+  const out = [];
+  const ignored = new Set();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || typeof item !== 'object') continue;
+    // Tolerance (v4): an UNKNOWN item type is skipped cleanly (one muted log)
+    // instead of reaching renderWidget and printing an "Unknown widget" label
+    // — an old/future type must never break the layout. Server-side load/PUT
+    // already drops unknown types; this is the matching client-side guard.
+    const type = String(item.type || 'frame');
+    if (!getWidget(type)) {
+      ignored.add(type);
+      continue;
+    }
     const w = Math.floor(Number(item.w));
     const h = Math.floor(Number(item.h));
-    const out = {
+    const next = {
       ...item,
+      type,
       w: Number.isFinite(w) && w >= 1 ? w : 1,
       h: Number.isFinite(h) && h >= 1 ? h : 1,
     };
-    if (out.type === 'search' && out.h === 1) out.h = 2;
-    return out;
-  });
+    if (next.type === 'search' && next.h === 1) next.h = 2;
+    out.push(next);
+  }
+  if (ignored.size) {
+    console.warn(`[grid] ignoring unknown item type(s): ${[...ignored].join(', ')}`);
+  }
+  return out;
 }

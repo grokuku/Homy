@@ -8,11 +8,14 @@ import { serverConfig } from './config.js';
 import { authGuard } from './middleware/auth.middleware.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { layoutRoutes } from './routes/layout.routes.js';
+import { elementsRoutes } from './routes/elements.routes.js';
 import { widgetRoutes } from './routes/widgets.routes.js';
 import { weatherRoutes } from './routes/weather.routes.js';
 import { backgroundRoutes, serveBackgroundFile } from './routes/backgrounds.routes.js';
 import { settingsRoutes } from './routes/settings.routes.js';
 import { SettingsService, BG_NAME_RE, THEMES } from './services/settings.service.js';
+import { LayoutService } from './services/layout.service.js';
+import { ElementsService } from './services/elements.service.js';
 import { Store } from './services/store.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,13 +71,22 @@ app.use('/api/*', async (c, next) => {
 
 const store = new Store(serverConfig.dataDir);
 
+// Single in-memory LayoutService shared by the layout routes AND the element
+// catalogue (usage scan / guarded delete) so both see the same live pages.
+const layoutService = new LayoutService(store);
+const elementsService = new ElementsService(store);
+
 // Background images live in DATA_DIR/backgrounds/<uuid>.<ext>.
 const backgroundsDir = path.join(serverConfig.dataDir, 'backgrounds');
 const backgroundExists = (name) => BG_NAME_RE.test(name) && existsSync(path.join(backgroundsDir, name));
 const settingsService = new SettingsService(store, backgroundExists);
 
 app.route('/api/auth', authRoutes);
-app.route('/api/layout', layoutRoutes(store));
+app.route(
+  '/api/layout',
+  layoutRoutes(layoutService, { elementExists: (id) => elementsService.get(id) !== null })
+);
+app.route('/api/elements', elementsRoutes(elementsService, layoutService));
 app.route('/api/widgets', widgetRoutes);
 app.route('/api/weather', weatherRoutes);
 app.route('/api/settings', settingsRoutes(settingsService));

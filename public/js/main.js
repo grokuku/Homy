@@ -6,8 +6,10 @@ import { GRID_COLUMNS, MAX_ITEMS } from './grid/config.js';
 import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js';
 import { applyBackground, setBackgroundHost } from './backgrounds/manager.js';
 import { openBackgroundModal } from './ui/backgroundModal.js';
+import { openElementsModal } from './ui/elementsModal.js';
 import { initTabs, renderTabs } from './ui/tabs.js';
 import { toast } from './ui/toast.js';
+import { catalog } from './elements/catalog.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -121,10 +123,14 @@ async function showDashboard() {
   applyTopbarState({ animate: false });
 
   try {
+    // Fetch the element catalogue alongside the layout so a `group` renders
+    // its tiles with the real names/icons on the FIRST paint (catalog.load is
+    // tolerant — never rejects — so it can never break the dashboard boot).
     const [layoutRes, widgetsRes, settingsRes] = await Promise.all([
       api.get('/api/layout'),
       api.get('/api/widgets'),
       api.get('/api/settings'),
+      catalog.load(),
     ]);
     state.layout = layoutRes.items || [];
     // Column count the layout was last saved with. Legacy layouts (no
@@ -768,6 +774,7 @@ $('logout-btn').addEventListener('click', async () => {
   // grid (or re-add classes) on the now-hidden dashboard after logout.
   stopModeAnim();
   destroyGrid();
+  catalog.clear(); // drop the element cache (next session re-fetches)
   setBackgroundHost(null); // back to full-viewport background (frame is gone)
   showLogin();
 });
@@ -795,6 +802,20 @@ window.addEventListener('homy:widget-config', (e) => {
   const item = state.layout.find((i) => i.id === id);
   if (item) item.config = { ...(item.config || {}), ...config };
   grid?.applyConfig?.(id, config);
+});
+
+// ---- Group tile edits outside the ⚙ modal (lot 4) --------------------------
+// The group widget owns no save path: after any tile mutation (add / options /
+// move / resize / delete) it broadcasts the fresh `buttons` here. We keep
+// state.layout in sync AND hand the batch to the editor, which debounces the
+// PUT /api/layout exactly like a widget drag (its destroy/switch flush covers
+// tile edits for free).
+window.addEventListener('homy:group-buttons', (e) => {
+  const { id, buttons } = e.detail || {};
+  if (!id || !Array.isArray(buttons)) return;
+  const item = state.layout.find((i) => i.id === id);
+  if (item) item.buttons = buttons;
+  grid?.applyButtons?.(id, buttons);
 });
 
 // ---- Dashboard pages tab strip (multiple pages, lot C+D) --------------------
@@ -844,12 +865,19 @@ $('bg-btn').addEventListener('click', () => {
   });
 });
 
+// Elements catalogue (lot 3): global CRUD screen. The modal refreshes the
+// client catalogue itself after every mutation, so groups re-render live.
+$('elements-btn').addEventListener('click', () => {
+  openElementsModal();
+});
+
 // If the token expires mid-session, return to login.
 window.addEventListener('auth:expired', () => {
   api.setToken(null);
   state.user = null;
   stopModeAnim(); // drop any pending mode-transition timer/rAF (see logout)
   destroyGrid();
+  catalog.clear(); // drop the element cache (same as an explicit logout)
   setBackgroundHost(null);
   showLogin();
 });

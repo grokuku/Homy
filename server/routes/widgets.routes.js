@@ -44,6 +44,20 @@ const WIDGET_MANIFEST = [
     },
   },
   {
+    id: 'group',
+    type: 'group',
+    name: 'Group',
+    icon: '▦',
+    category: 'generic',
+    description: 'Titled container whose buttons reference the global element catalogue (layout v4).',
+    defaultSize: { w: 8, h: 6 } /* 8×6 global cells — comfortably above the 2×2 minimum; a group resizes in global cells */,
+    settingsSchema: {
+      fields: [
+        { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Group title' },
+      ],
+    },
+  },
+  {
     id: 'shortcut',
     type: 'shortcut',
     name: 'Shortcut',

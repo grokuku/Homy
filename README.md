@@ -214,8 +214,12 @@ both builds as the `VERSION` build arg (`GIT_COMMIT` receives the short commit h
 
 ## Project structure
 
+The design roadmap (validated decisions for the upcoming elements / groups / catalog / buttons
+refactor, plus icons, reporting and the Docky integration) lives in [`roadmap.md`](./roadmap.md).
+
 ```
 Dockerfile                 # Node image: starts as root, entrypoint chowns /data then drops to uid 1000, HEALTHCHECK
+roadmap.md                 # design roadmap (FR): elements/groups/catalog/buttons, icons, Docky, reports
 docker-entrypoint.sh       # fixes data volume ownership, then su-exec → CMD as uid/gid 1000
 .dockerignore              # keeps data/, node_modules/ and .env out of the context
 docker-compose.yml         # deployment: bind mount ./data, port 3000

@@ -6,6 +6,7 @@ import { links } from './links.js';
 import { search } from './search.js';
 import { notes } from './notes.js';
 import { weather } from './weather.js';
+import { group } from '../elements/group.js';
 import { el } from '../util.js';
 
 /**
@@ -22,6 +23,11 @@ export const registry = {
   search,
   notes,
   weather,
+  // Layout v4 container: a titled frame holding button tiles that reference
+  // the global element catalogue (public/js/elements/). Registered on BOTH
+  // sides (see server/routes/widgets.routes.js) — schema/size parity is
+  // enforced by scripts/check-schema-sync.mjs.
+  group,
 };
 
 /**
@@ -110,7 +116,7 @@ export function applyAppearance(container, config) {
  */
 const cleanups = new WeakMap(); // container -> cleanup fn returned by a widget render
 
-export function renderWidget(container, item) {
+export function renderWidget(container, item, context = {}) {
   disposeWidget(container);
   // Clear the container before re-rendering: gridstack seeds
   // .grid-stack-item-content via its default renderCB (textContent = content),
@@ -124,7 +130,10 @@ export function renderWidget(container, item) {
     container.appendChild(el('p', 'muted', `Unknown widget: ${item?.type || '?'}`));
     return null;
   }
-  const cleanup = w.render(container, item?.config || {}, item);
+  // `context` (optional) lets a widget know WHERE it is rendered — lot 4 passes
+  // `{ editable: true }` from the editor so a group can expose its tile editor
+  // and stays read-only in the viewer (default {}).
+  const cleanup = w.render(container, item?.config || {}, item, context);
   if (typeof cleanup === 'function') cleanups.set(container, cleanup);
   else cleanups.delete(container);
   return cleanup;

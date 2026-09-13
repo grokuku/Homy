@@ -96,8 +96,12 @@ export function openSettingsModal({ itemId, title, schema, config, onSaved }) {
 }
 
 // ---- Field builders --------------------------------------------------------
+// Exported for reuse by other forms that share the exact same lookups/validation
+// (lot 3: the element catalogue form, public/js/ui/elementsModal.js). Same
+// `.config-form` styling + `collect()` contract.
 
-function buildField(f, value, controls) {
+/** Build one field (label + control) into a `.field` wrapper; registers it in `controls[key]`. */
+export function buildField(f, value, controls) {
   const wrap = el('div', 'field');
   const label = el('label');
   label.appendChild(el('span', null, f.label));
@@ -256,7 +260,11 @@ function buildListField(f, value, controls) {
 
 // ---- Validation / collection ----------------------------------------------
 
-function collect(fields, controls) {
+/**
+ * Validate + collect all fields into `{ ok: true, value }` or
+ * `{ ok: false, error }`. Exported for reuse (see buildField).
+ */
+export function collect(fields, controls) {
   const out = {};
   for (const f of fields) {
     const c = controls[f.key];

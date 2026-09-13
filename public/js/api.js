@@ -59,6 +59,11 @@ export const api = {
     if (!res.ok) {
       const err = new Error(data?.error || `Request failed (${res.status})`);
       err.status = res.status;
+      // Expose the parsed JSON error body so callers can act on structured
+      // failures (e.g. a 409 from DELETE /api/elements carries the `pages`
+      // usage list needed by the « force delete » flow). Never contains
+      // secrets — it IS the server's own error payload.
+      err.body = data;
       throw err;
     }
     return data;

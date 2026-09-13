@@ -1092,6 +1092,262 @@ body[data-bg-active] .grid-stack-item-content {
   white-space: nowrap;
 }
 
+/* ---------- Group container (lot 2) ----------
+   A group is a titled container whose internal TRAME is 2× finer than the
+   global grid: one internal cell = half a global cell. The internal step
+   (--group-step, set inline by elements/group.js from the LIVE global cell)
+   drives BOTH the trame lines and the tile placement, so they always line up.
+   The tiles keep a constant physical size (the step never derives from the
+   group's own size); overflow scrolls inside .group-board. */
+.group-widget { overflow: hidden; }
+.group-board {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* slightly recessed surface so the trame reads as a container */
+  background: color-mix(in srgb, var(--bg) 45%, transparent);
+}
+/* The internal canvas IS the internal grid (CSS grid slots the tiles by
+   col/row/w/h) AND carries the trame background. min-width/min-height:100%
+   keep it filling the board; content larger than the group grows it and the
+   board scrolls. */
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--group-step, 22.5px));
+  grid-auto-rows: var(--group-step, 22.5px);
+  align-content: start;
+  justify-content: start;
+  min-width: 100%;
+  min-height: 100%;
+  --group-line-minor: color-mix(in srgb, var(--text) 7%, transparent);
+  --group-line-major: color-mix(in srgb, var(--text) 15%, transparent);
+  background-image:
+    /* major lines every 4 internal cells (= 2 global cells) */
+    repeating-linear-gradient(90deg,
+      var(--group-line-major) 0 1px, transparent 1px calc(var(--group-step) * 4)),
+    repeating-linear-gradient(0deg,
+      var(--group-line-major) 0 1px, transparent 1px calc(var(--group-step) * 4)),
+    /* minor lines every internal cell */
+    repeating-linear-gradient(90deg,
+      var(--group-line-minor) 0 1px, transparent 1px var(--group-step)),
+    repeating-linear-gradient(0deg,
+      var(--group-line-minor) 0 1px, transparent 1px var(--group-step));
+}
+
+/* ---------- Button tiles (matrix of variants) ---------- */
+.group-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  overflow: hidden;
+  font-size: 12px;
+  /* The tile is its OWN size container so the compact-typography @container
+     queries below measure the TILE (not the enclosing widget/group). */
+  container-type: size;
+}
+/* Advanced option « allow icon overflow »: let the icon spill instead of clip. */
+.group-tile.allow-overflow { overflow: visible; }
+.tile-main {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 6px;
+  overflow: hidden; /* content can never escape its own main zone */
+}
+.tile-main:not(.tile-main-static):hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* Wide tile (2×1 in units of 2 internal cells = 4×2 internal): icon + label on
+   one line (roadmap §A.5). */
+.group-tile[data-size='4x2'] .tile-main { flex-direction: row; gap: 8px; }
+.tile-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tile-icon-px, 24px);
+  height: var(--tile-icon-px, 24px);
+  /* Belt-and-braces: never larger than the space actually available, even if a
+     caller sets a --tile-icon-px that does not fit (allow-overflow re-opens it). */
+  max-width: 100%;
+  max-height: 100%;
+  font-size: var(--tile-icon-px, 24px);
+  line-height: 1;
+  flex: 0 1 auto;
+  color: var(--text);
+  overflow: hidden;
+}
+.group-tile.allow-overflow .tile-icon { overflow: visible; max-width: none; max-height: none; }
+.tile-icon-img, .tile-icon svg { width: 100%; height: 100%; display: block; }
+.tile-icon svg { stroke: currentColor; }
+.tile-icon-text {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-label {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.15;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Health dot — DEGRADED state: grey (unknown), never green/red until Docky. */
+.tile-health {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #9aa1ad;
+  box-shadow: 0 0 0 2px var(--bg-elev-2);
+  flex: 0 0 auto;
+}
+/* status-only variant: a big centred dot */
+.group-tile[data-variant='health'] .tile-health {
+  position: static;
+  width: 22px;
+  height: 22px;
+  box-shadow: none;
+}
+/* monitoring — DEGRADED state: values are « — » */
+.tile-monitoring { display: flex; flex-direction: column; gap: 1px; width: 100%; font-size: 10px; color: var(--text-muted); }
+.tile-metric { display: flex; justify-content: space-between; gap: 6px; padding: 0 2px; }
+.tile-metric-value { font-variant-numeric: tabular-nums; }
+/* monitoring info alone: larger, stacked */
+.group-tile[data-variant='monitoring'] .tile-monitoring { font-size: 13px; gap: 4px; }
+.group-tile[data-variant='monitoring'] .tile-metric { flex-direction: column; align-items: center; gap: 0; }
+/* controls — DEGRADED state: inert/disabled buttons (no listener attached) */
+.tile-controls {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 2px 1px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.group-tile[data-variant='controls'] .tile-controls { flex: 1; border-top: 0; }
+.tile-control {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.tile-control:disabled { cursor: not-allowed; }
+/* explicit « nothing enabled » fallback — never an empty/broken tile */
+.tile-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 16px;
+}
+
+/* Compact typography (roadmap §A.7): in a small tile the label / monitoring /
+   controls shrink so nothing ever spills over a neighbouring tile. These
+   @container queries measure the TILE (see container-type on .group-tile). */
+@container (max-width: 64px) {
+  .tile-label { font-size: 10px; }
+  .tile-monitoring { font-size: 9px; gap: 0; }
+  .tile-controls { gap: 2px; }
+  .tile-control { min-width: 16px; height: 16px; padding: 0 3px; font-size: 10px; }
+}
+@container (max-height: 44px) {
+  .tile-label { font-size: 10px; }
+}
+
+/* ---------- Group tile editing (lot 4) ----------
+   Edit-mode only affordances: header « + Add element », per-tile ⚙/✕ and a
+   bottom-right resize handle. All are position:absolute so they never change
+   the tile's measured size (the compact-typography @container queries above
+   still see the same box). */
+.group-add {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.group-add:hover { border-color: var(--accent); color: var(--accent); }
+
+.group-tile.tile-editable { cursor: move; }
+.group-tile.tile-editable:hover { outline: 1px dashed var(--accent); outline-offset: 1px; }
+body.tile-dragging { user-select: none; -webkit-user-select: none; }
+body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
+
+.tile-edit-controls {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+}
+.tile-edit-controls button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elev-2) 92%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.tile-edit-controls button:hover { border-color: var(--accent); color: var(--accent); }
+.tile-edit-controls .tile-edit-del.confirm,
+.tile-edit-controls .tile-edit-del.confirm:hover { border-color: var(--danger); color: var(--danger); }
+
+.tile-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 10px;
+  height: 10px;
+  cursor: nwse-resize;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  border-bottom-right-radius: 7px;
+  opacity: 0.7;
+}
+.tile-resize:hover { opacity: 1; }
+
 /* clock */
 .clock-widget { align-items: center; justify-content: center; text-align: center; gap: 4px; }
 .clock-time { font-size: 2.2em; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -1184,6 +1440,13 @@ body[data-bg-active] .grid-stack-item-content {
   font-family: inherit;
 }
 .config-form input:focus, .config-form textarea:focus { outline: none; border-color: var(--accent); }
+/* Checkbox fields (toggle type): the generic full-width input box would make a
+   lone checkbox span the row; keep it inline and themed. */
+.config-form input[type='checkbox'] {
+  width: auto;
+  padding: 0;
+  accent-color: var(--accent);
+}
 .config-form select {
   width: 100%;
   padding: 9px 11px;
@@ -1336,3 +1599,184 @@ body[data-bg-active] .grid-stack-item-content {
   border-radius: 6px;
 }
 .bg-error { color: var(--danger); font-size: 13px; min-height: 18px; margin: 8px 0 0; }
+
+/* ---------- Elements catalogue modal (lot 3) ----------
+   CRUD screen for the global element catalogue. All colors via theme tokens so
+   it follows the dashboard dark/light switch. */
+.elements-body { display: flex; flex-direction: column; gap: 12px; }
+.elements-count { font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums; padding-right: 6px; }
+.elements-list { display: flex; flex-direction: column; gap: 8px; }
+.elements-empty { margin: 8px 0; font-size: 14px; }
+.elements-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+}
+/* Shared icon preview box (list row + form preview) — hosts the exact node
+   elements/button.js renders inside a tile. */
+.elements-icon-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  color: var(--text);
+  line-height: 1;
+}
+.elements-icon-box svg,
+.elements-icon-box img { width: 100%; height: 100%; display: block; }
+.elements-icon-box svg { stroke: currentColor; }
+.elements-icon-box img { object-fit: contain; }
+.elements-row-icon { width: 40px; height: 40px; font-size: 22px; }
+.elements-icon-preview { width: 56px; height: 56px; font-size: 30px; margin-top: 6px; }
+.elements-row-main { flex: 1; min-width: 0; }
+.elements-row-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.elements-row-url {
+  display: block;
+  font-size: 12px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.elements-row-url:hover { text-decoration: underline; }
+.elements-row-desc { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.elements-row-badges { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; flex: 0 0 auto; }
+.badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.badge-docky { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.badge-health { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.elements-row-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.elements-row-actions .btn { padding: 5px 10px; font-size: 13px; }
+.elements-row-actions .btn.confirm { border-color: var(--danger); color: var(--danger); }
+/* 409 conflict panel: element still referenced by group buttons. */
+.elements-notice {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  padding: 10px 12px;
+}
+.elements-notice-title { margin: 0 0 4px; font-weight: 600; color: var(--danger); }
+.elements-notice p { margin: 4px 0; font-size: 13px; }
+.elements-usages { margin: 6px 0; padding-left: 18px; font-size: 13px; }
+.elements-usages li { margin: 2px 0; }
+.elements-notice-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+.elements-form-body { display: flex; flex-direction: column; }
+
+/* ---------- Element picker (lot 4) ---------- */
+.picker-body { display: flex; flex-direction: column; gap: 10px; }
+.picker-search {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 14px;
+}
+.picker-search:focus { outline: none; border-color: var(--accent); }
+.picker-list { display: flex; flex-direction: column; gap: 6px; max-height: 52vh; overflow-y: auto; }
+.picker-empty { margin: 8px 0; font-size: 13px; }
+.picker-count { font-size: 12px; }
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  cursor: pointer;
+}
+.picker-row:hover, .picker-row:focus-visible { border-color: var(--accent); outline: none; }
+.picker-row-icon { width: 34px; height: 34px; font-size: 20px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; overflow: hidden; color: var(--text); }
+.picker-row-icon svg, .picker-row-icon img { width: 100%; height: 100%; display: block; }
+.picker-row-icon svg { stroke: currentColor; }
+.picker-row-icon img { object-fit: contain; }
+.picker-row-main { flex: 1; min-width: 0; }
+.picker-row-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-row-url { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-row-badges { display: flex; gap: 4px; flex: 0 0 auto; }
+.picker-row-del {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.picker-row-del:hover { border-color: var(--danger); color: var(--danger); }
+.picker-row-del.confirm { border-color: var(--danger); color: var(--danger); font-size: 10px; }
+
+/* ---------- Button options panel (lot 4) ---------- */
+.opt-panel-body { padding: 0; }
+.opt-panel { display: flex; flex-direction: column; gap: 14px; }
+.opt-element {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+.opt-element-icon { width: 36px; height: 36px; font-size: 20px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; overflow: hidden; color: var(--text); }
+.opt-element-icon svg, .opt-element-icon img { width: 100%; height: 100%; display: block; }
+.opt-element-icon svg { stroke: currentColor; }
+.opt-element-main { flex: 1; min-width: 0; }
+.opt-element-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt-element-url { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt-group { display: flex; flex-direction: column; gap: 6px; }
+.opt-group-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.opt-min-hint { font-weight: 500; text-transform: none; letter-spacing: 0; }
+.opt-switch { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; cursor: pointer; }
+.opt-switch.disabled { opacity: 0.5; cursor: not-allowed; }
+.opt-switch input { margin-top: 2px; flex: 0 0 auto; }
+.opt-switch-main { display: flex; flex-direction: column; min-width: 0; }
+.opt-switch-label { font-size: 13px; }
+.opt-switch-help { color: var(--text-muted); font-size: 11px; }
+.segmented { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; width: fit-content; }
+.segmented-item {
+  padding: 5px 12px;
+  font-size: 12px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.segmented-item:last-child { border-right: 0; }
+.segmented-item:hover:not(:disabled) { color: var(--text); }
+.segmented-item.active { background: var(--accent); color: #fff; }
+.segmented-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.opt-danger { display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 12px; }
+.opt-danger .btn.confirm { border-color: var(--danger); color: var(--danger); }
