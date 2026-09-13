@@ -20,6 +20,13 @@
   --shadow: var(--holaf-shadow, 0 8px 24px rgba(0, 0, 0, 0.35));
   --overlay: var(--holaf-overlay, rgba(0, 0, 0, 0.55));
   --btn-hover: var(--holaf-btn-hover, #262b36);
+  /* VIEW<->EDIT transition timing. Declared on :root (not on #dashboard-view)
+     because the background layers live on <body>, OUTSIDE the dashboard
+     subtree: their frame clip must use the SAME duration/easing as the frame
+     dezoom (main.js reads --mode-dur from #dashboard-view, which inherits it
+     from here — a single source of truth, no duplicated literal). */
+  --mode-dur: 480ms;
+  --mode-ease: cubic-bezier(0.4, 0, 0.2, 1);
   --success: #2e9e5b;
   --warning: #e0a030;
   /* Edit-mode grid lines (32×18 canvas). Homy-level tokens — NOT part of the
@@ -381,15 +388,14 @@ body { background: transparent; transition: background 0.2s; }
      compute the adaptive dezoom; keep it in sync with the docked .palette
      rule above (they are a contract, not a coincidence). */
   --palette-dock-w: 228px;
-  /* Lot 4 — VIEW↔EDIT transition timing (main.js toggles .mode-anim). All the
-     animated properties are VISUAL only (transform/opacity and the registered
-     --guide-op): none of them feeds gridstack's clientWidth, so the grid
-     geometry stays final from the first frame (the topbar-instant lesson).
+  /* VIEW↔EDIT transition timing lives on :root (see above) so the body-level
+     background layers share it. All the animated properties here are VISUAL
+     only (transform/opacity and the registered --guide-op): none of them
+     feeds gridstack's clientWidth, so the grid geometry stays final from the
+     first frame (the topbar-instant lesson).
      480ms = 2 × the original 240ms; the easing is a standard ease-in-out so
      the motion RAMP UP instead of the old exponential ease-out which reached
      its target in the first ~10% of the timeline (that was the « pop »). */
-  --mode-dur: 480ms;
-  --mode-ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 #dashboard-view .topbar { flex: none; }
 
@@ -499,9 +505,10 @@ body { background: transparent; transition: background 0.2s; }
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
-/* Host for the themed background clipped inside the frame: the background
-   manager re-parents its 3 layers here in edit-preview mode (lot 2). Sits
-   behind the grid (first child, same stacking context). */
+/* Geometry anchor for the themed background clip (lot 2, reworked): in
+   edit-preview mode the manager measures this element's inner rect and clips
+   the body-level background wrapper to it (the layers are NOT re-parented).
+   Sits behind the grid (first child) — it paints nothing itself. */
 #dashboard-view.preview-active #grid-preview-bg {
   position: absolute;
   inset: 0;
@@ -847,7 +854,6 @@ body { background: transparent; transition: background 0.2s; }
      reduced-motion (no .mode-anim is ever added), but the transitions must
      never run either — zero the topbar beats too. */
   #dashboard-view {
-    --mode-dur: 0ms;
     --d-bar: 0ms;
     --d-cluster: 0ms;
     --d-admin: 0ms;
@@ -857,6 +863,9 @@ body { background: transparent; transition: background 0.2s; }
     --delay-admin: 0ms;
     --delay-tabs: 0ms;
   }
+  /* :root too: the background frame clip consumes --mode-dur on <body> (and no
+     .bg-anim class is ever added under reduced-motion anyway). */
+  :root { --mode-dur: 0ms; }
   #dashboard-view.mode-anim.preview-active #grid-preview,
   #dashboard-view.mode-anim.preview-active .palette,
   #dashboard-view.mode-anim.preview-active .widget-controls,
@@ -885,31 +894,53 @@ body { background: transparent; transition: background 0.2s; }
 }
 
 /* ---------- Background layers (lot 3) ---------- */
+/* ONE fixed full-viewport wrapper hosts every layer: keeping the layers at
+   VIEWPORT geometry in BOTH modes is what makes the VIEW↔EDIT transition
+   pop-free. Previously the layers were re-parented into #grid-preview-bg in
+   edit mode, which (a) re-resolved background-size:cover for the 16:9 frame
+   (different aspect than the viewport → a visible crop/scale jump), (b) made
+   the brick's ResizeObserver re-back the procedural canvas at the frame size,
+   and (c) jumped the layer rect from the viewport to the view-canvas rect on
+   the first transition frame. Now the wrapper is merely CLIPPED to the frame
+   (clip-path, animated with the same --mode-dur/--mode-ease as the frame
+   dezoom): the image crop and the canvas backing store never change, so there
+   is nothing left to pop. A wrapper (rather than clipping each layer) keeps
+   the clip immune to the image's blur overscale transform(1.08). */
+#homy-bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -3;
+  pointer-events: none;
+}
 #homy-bg-image,
 #homy-bg-dim,
 #homy-bg-canvas {
-  position: fixed;
+  position: absolute;
   inset: 0;
   pointer-events: none;
 }
 
-/* Scoped host (lot 2): in the framed edit preview the layers are re-parented
-   into #grid-preview-bg and switched from fixed full-viewport to absolute, so
-   they fill — and are CLIPPED by — the 16:9 frame (overflow:hidden on
-   #grid-preview). The containing block is #grid-preview (position:relative). */
-#homy-bg-image.bg-scoped,
-#homy-bg-dim.bg-scoped,
-#homy-bg-canvas.bg-scoped {
-  position: absolute;
-  inset: 0;
+/* Frame clip (edit mode). --bg-clip-* are measured by manager.js from the
+   #grid-preview-bg inner rect (the frame padding box): insets in viewport px
+   + the inner corner radius. Expressed as a single inset() shape round() so
+   clip-path interpolates smoothly between the frame rect and the full
+   viewport (no shape-structure mismatch → no snap). */
+body.bg-frame #homy-bg-layer {
+  clip-path: inset(var(--bg-clip-t, 0px) var(--bg-clip-r, 0px) var(--bg-clip-b, 0px) var(--bg-clip-l, 0px)
+    round var(--bg-clip-radius, 0px));
 }
-#homy-bg-image.bg-scoped {
-  /* Scoped mode always covers the frame; the page-scroll option is
-     neutralized (manager.js drops .homy-bg-scroll; the height clamp here is
-     belt-and-braces against a stale inline scroll height). */
-  background-size: cover;
-  height: 100% !important;
+body.bg-anim #homy-bg-layer {
+  transition: clip-path var(--mode-dur, 480ms) var(--mode-ease, cubic-bezier(0.4, 0, 0.2, 1));
+  will-change: clip-path;
 }
+/* Start/end of a mode swap: the wrapper covers the WHOLE viewport (the VIEW
+   look) so the clip glides between full-bleed and the frame rect. Declared
+   AFTER the body.bg-frame rule on purpose (equal specificity → wins). */
+body.bg-from-view #homy-bg-layer,
+body.bg-to-view #homy-bg-layer {
+  clip-path: inset(0 0 0 0 round 0px);
+}
+
 #homy-bg-image {
   z-index: -3; /* image layer, below the procedural canvas */
   background-size: cover;

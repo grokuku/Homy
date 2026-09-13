@@ -117,8 +117,10 @@
         <main id="grid-wrap" class="grid-wrap">
           <!-- Framed dezoomed preview (edit mode only): the wrapper is a
                no-op in view mode (display:contents) and becomes the 16:9
-               frame in edit mode. #grid-preview-bg is the host for the
-               themed background clipped inside the frame (lot 2). -->
+               frame in edit mode. #grid-preview-bg is only an ANCHOR the
+               background manager measures in edit mode: the themed layers
+               stay on <body> and are clipped to this rect via clip-path
+               (lot 2, reworked — no re-parenting, no crop/backing re-flow). -->
           <div id="grid-preview" class="grid-preview">
             <div id="grid-preview-bg"></div>
             <div id="grid-container" class="grid-stack"></div>

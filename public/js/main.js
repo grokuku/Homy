@@ -339,14 +339,27 @@ function setViewOriginTransform() {
 
 /**
  * Clip (or un-clip) the live background to the framed edit preview (lot 2).
- * The layers follow #grid-preview-bg while the frame is active and <body>
- * otherwise (view mode, logout, small-screen fallback). Always called right
- * after updatePreviewScale() so a resize crossing the fallback threshold keeps
- * the background host in sync with the frame.
+ * The layers stay on <body> at full-viewport geometry; manager.setBackgroundHost
+ * only re-measures the frame's inner rect and toggles the body.bg-frame clip.
+ * Always called right after updatePreviewScale() so a resize crossing the
+ * fallback threshold keeps the background clip in sync with the frame.
  */
 function syncBackgroundScope() {
+  const view = $('dashboard-view');
+  // Never re-measure while a mode swap is running: the frame is TRANSFORMED,
+  // so getBoundingClientRect() on it would return the mid-flight (view-canvas)
+  // rect instead of the resting edit rect. The target published by setMode()
+  // is already final, and the swap animates the clip (not the geometry), so
+  // the ResizeObserver firing on the entering layout must not clobber it.
+  if (
+    view.classList.contains('mode-anim') ||
+    view.classList.contains('anim-from-view') ||
+    view.classList.contains('anim-to-view')
+  ) {
+    return;
+  }
   const scoped =
-    state.mode === 'edit' && $('dashboard-view').classList.contains('preview-active');
+    state.mode === 'edit' && view.classList.contains('preview-active');
   setBackgroundHost(scoped ? $('grid-preview-bg') : null);
 }
 
@@ -427,6 +440,10 @@ function stopModeAnim() {
     modeAnimRaf = 0;
   }
   $('dashboard-view').classList.remove('mode-anim', 'anim-from-view', 'anim-to-view');
+  // Mirror the transition classes on <body> for the background frame clip:
+  // the background layers live OUTSIDE #dashboard-view, but their clip must
+  // share the exact same choreography (and the same fast-toggle invalidation).
+  document.body.classList.remove('bg-anim', 'bg-from-view', 'bg-to-view');
 }
 
 /**
@@ -451,6 +468,9 @@ function playEnterEdit() {
   // (display:none→flex), which must be painted once before a transition can
   // start from it.
   view.classList.add('anim-from-view');
+  // Background: snap its clip to the VIEW look (full viewport) WITHOUT a
+  // transition — body.bg-anim is only added in phase 2.
+  document.body.classList.add('bg-from-view');
   modeAnimRaf = requestAnimationFrame(() => {
     modeAnimRaf = requestAnimationFrame(() => {
       modeAnimRaf = 0;
@@ -460,10 +480,13 @@ function playEnterEdit() {
       // is the target.
       view.classList.add('mode-anim');
       view.classList.remove('anim-from-view');
+      document.body.classList.add('bg-anim');
+      document.body.classList.remove('bg-from-view');
       modeAnimTimer = setTimeout(() => {
         modeAnimTimer = 0;
         if (id !== modeAnimId) return;
         view.classList.remove('mode-anim'); // done: no residual transition class
+        document.body.classList.remove('bg-anim');
       }, modeDurMs() + 60);
     });
   });
@@ -484,6 +507,9 @@ function playExitEdit() {
   const id = modeAnimId;
   setViewOriginTransform();
   view.classList.add('mode-anim');
+  // Background: enable the clip transition now (the resting edit clip is the
+  // start value; body.bg-to-view is added after the double rAF as the target).
+  document.body.classList.add('bg-anim');
   // Double rAF for the same reason as playEnterEdit: the « to view » state must
   // be painted once before it becomes the transition target (the edit DOM here
   // is already rendered, but this keeps both directions on the same footing).
@@ -492,10 +518,12 @@ function playExitEdit() {
       modeAnimRaf = 0;
       if (id !== modeAnimId) return;
       view.classList.add('anim-to-view'); // → animate toward VIEW
+      document.body.classList.add('bg-to-view'); // → clip toward full viewport
       modeAnimTimer = setTimeout(() => {
         modeAnimTimer = 0;
         if (id !== modeAnimId) return;
         view.classList.remove('mode-anim', 'anim-to-view');
+        document.body.classList.remove('bg-anim', 'bg-to-view');
         setMode('view'); // instant, clean rebuild → final VIEW geometry
       }, modeDurMs() + 60);
     });
@@ -736,6 +764,9 @@ $('logout-btn').addEventListener('click', async () => {
   }
   api.setToken(null);
   state.user = null;
+  // Cancel any in-flight VIEW↔EDIT transition: its timer must never rebuild a
+  // grid (or re-add classes) on the now-hidden dashboard after logout.
+  stopModeAnim();
   destroyGrid();
   setBackgroundHost(null); // back to full-viewport background (frame is gone)
   showLogin();
@@ -817,6 +848,7 @@ $('bg-btn').addEventListener('click', () => {
 window.addEventListener('auth:expired', () => {
   api.setToken(null);
   state.user = null;
+  stopModeAnim(); // drop any pending mode-transition timer/rAF (see logout)
   destroyGrid();
   setBackgroundHost(null);
   showLogin();

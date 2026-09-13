@@ -14,16 +14,20 @@ import { HolafAmbient } from '../../vendor/holaf/holaf-ambient.js';
  * keys on it to (a) relax the widget surface opacity to var(--surface-alpha)
  * and (b) enable backdrop-filter on widgets.
  *
- * HOSTING (lot 2) — setBackgroundHost(container | null):
- * The three layers normally live on <body> (position:fixed, full viewport).
- * In the framed edit preview they are re-parented into `#grid-preview-bg` and
- * tagged `.bg-scoped`, which switches them to position:absolute; inset:0 so
- * they are CLIPPED by the frame (the 16:9 box has overflow:hidden). Outside
- * the frame (view mode, logout, small-screen fallback) the host is null and
- * the layers go back to <body> as full-viewport fixed layers. The SINGLE
- * HolafAmbient instance is reused throughout: moving its <canvas> makes its
- * internal ResizeObserver fire and re-back the drawing at the new (smaller)
- * size — no second rAF loop is ever created.
+ * HOSTING (lot 2, reworked for the pop-free transition):
+ * The three layers live on <body>, inside ONE fixed full-viewport wrapper
+ * (#homy-bg-layer), in EVERY mode — the wrapper keeps the viewport geometry.
+ * In the framed edit preview setBackgroundHost(#grid-preview-bg) merely CLIPS
+ * that wrapper to the frame (clip-path, measured from the frame's inner rect)
+ * and tags <body> with `.bg-frame`; outside (view mode, logout, small-screen
+ * fallback) setBackgroundHost(null) drops the class → full-bleed again. The
+ * layers are NEVER re-parented, so background-size:cover is resolved ONCE for
+ * the viewport and the brick's ResizeObserver never re-backs the canvas on a
+ * mode change: the image crop/canvas backing store are stable throughout the
+ * 480 ms swap and only the clip animates (`.bg-anim`, driven by main.js with
+ * the same --mode-dur/--mode-ease as the frame dezoom). The SINGLE
+ * HolafAmbient instance is reused for the whole session — no second rAF loop
+ * is ever created.
  *
  * PERFORMANCE CONTRACT (holaf-ambient provides the lifecycle):
  *   - devicePixelRatio-aware sizing via its internal ResizeObserver (no
@@ -39,9 +43,10 @@ let ambient = null; // HolafAmbient instance
 let imageEl = null;
 let dimEl = null;
 let canvasEl = null;
+let layerEl = null; // fixed full-viewport wrapper hosting the three layers
 let imgResizeSync = null; // window resize listener for scroll-mode image height
-let lastImage = null; // last applied image descriptor (scroll re-apply on un-scope)
-let host = null; // scoped host element, or null → document.body
+let lastImage = null; // last applied image descriptor (scroll re-apply per host)
+let host = null; // framed preview host (#grid-preview-bg), or null → full viewport
 
 /** Apply a (server-validated) background descriptor. */
 export function applyBackground(bg) {
@@ -78,6 +83,10 @@ export function disposeBackground() {
     canvasEl.remove();
     canvasEl = null;
   }
+  if (layerEl) {
+    layerEl.remove();
+    layerEl = null;
+  }
   if (imgResizeSync) {
     window.removeEventListener('resize', imgResizeSync);
     imgResizeSync = null;
@@ -85,45 +94,92 @@ export function disposeBackground() {
   lastImage = null;
 }
 
-// ---- host / scoping (lot 2) -------------------------------------------------
+// ---- host / frame clipping (lot 2) -----------------------------------------
 
-/** Target the live layers must be parented to (frame host or <body>). */
+/** The fixed wrapper the layers are parented to (created on demand). */
+function ensureLayer() {
+  if (!layerEl) {
+    layerEl = document.createElement('div');
+    layerEl.id = 'homy-bg-layer';
+    document.body.appendChild(layerEl);
+  }
+  return layerEl;
+}
+
+/** Target the live layers must be parented to (always the wrapper). */
 function currentHost() {
-  return host || document.body;
+  return ensureLayer();
 }
 
 /**
- * Place a layer in the current host and tag it `.bg-scoped` when hosted by the
- * frame (absolute + clipped) instead of <body> (fixed full-viewport). Moving a
- * node already in the right place is skipped so a repeated call never re-inserts
- * the canvas (which would be a pointless DOM move on every resize).
+ * Place a layer in the fixed wrapper. Kept idempotent (a node already in the
+ * wrapper is left untouched) so a repeated call never re-inserts the canvas —
+ * a pointless DOM move that would re-trigger the brick's ResizeObserver.
  */
 function adopt(el) {
   if (!el) return;
-  el.classList.toggle('bg-scoped', !!host);
   const target = currentHost();
   if (el.parentNode !== target) target.appendChild(el);
 }
 
 /**
- * Point the background at `container` (the framed preview host) or back at
- * <body> when null. Re-homes any live layers immediately; layers created later
- * (applyBackground after this call) adopt the current host in render*().
+ * Point the background at `container` (the framed preview host) or back at the
+ * full viewport when null. The layers stay on <body>; only the wrapper's
+ * clip-path geometry changes:
+ *   - framed  → measure the frame's inner rect (container = #grid-preview-bg,
+ *               position:absolute inset:0 inside the bordered frame) and publish
+ *               it as --bg-clip-* (viewport px insets + inner corner radius),
+ *               then tag <body> with `.bg-frame`;
+ *   - null    → drop `.bg-frame` (+ the stale vars) → full-bleed viewport.
+ * The measurement runs on the frame at its FINAL identity layout (main.js
+ * calls this before the mode animation starts / at its very end), so the
+ * stored target is the resting edit rect, not a transformed one.
  */
 export function setBackgroundHost(container) {
-  host = container && container.nodeType === 1 ? container : null;
-  adopt(imageEl);
-  adopt(dimEl);
-  adopt(canvasEl);
+  const framed = container && container.nodeType === 1 ? container : null;
+  host = framed;
+  if (!framed) {
+    document.body.classList.remove('bg-frame');
+    for (const k of ['--bg-clip-t', '--bg-clip-r', '--bg-clip-b', '--bg-clip-l', '--bg-clip-radius']) {
+      document.body.style.removeProperty(k);
+    }
+    applyScrollMode();
+    return;
+  }
+  applyFrameClip(framed);
+  document.body.classList.add('bg-frame');
   // The 'scroll with the page' option is meaningless inside a fixed-size
-  // frame: re-evaluate it (removes the class + inline height while scoped,
-  // restores them on the way back to <body>).
+  // frame: re-evaluate it (removes the class + inline height while framed,
+  // restores them on the way back to the full viewport).
   applyScrollMode();
 }
 
 /**
+ * Publish the frame's inner rect as clip insets (viewport px) + corner radius.
+ * Uses the live <body>-relative rects so it also works if the frame is not
+ * flush with the viewport. `container` is #grid-preview-bg (the frame's inner
+ * padding box); its parent is the bordered #grid-preview the radius comes from.
+ */
+function applyFrameClip(container) {
+  const base = (layerEl || imageEl || dimEl || canvasEl)?.getBoundingClientRect();
+  const r = container.getBoundingClientRect();
+  if (!base || !(r.width > 0) || !(r.height > 0)) return;
+  const frame = container.parentElement;
+  const fcs = frame ? getComputedStyle(frame) : null;
+  const outer = fcs ? parseFloat(fcs.borderTopLeftRadius) || 0 : 0;
+  const border = fcs ? parseFloat(fcs.borderTopWidth) || 0 : 0;
+  const radius = Math.max(0, Math.round(outer - border));
+  const s = document.body.style;
+  s.setProperty('--bg-clip-t', `${Math.max(0, Math.round(r.top - base.top))}px`);
+  s.setProperty('--bg-clip-r', `${Math.max(0, Math.round(base.right - r.right))}px`);
+  s.setProperty('--bg-clip-b', `${Math.max(0, Math.round(base.bottom - r.bottom))}px`);
+  s.setProperty('--bg-clip-l', `${Math.max(0, Math.round(r.left - base.left))}px`);
+  s.setProperty('--bg-clip-radius', `${radius}px`);
+}
+
+/**
  * (Re)apply the image 'scroll' (not fixed) behavior for the CURRENT host.
- * Scoped mode always forces cover + no scroll, so the option is neutralized.
+ * Framed mode always forces cover + no scroll, so the option is neutralized.
  */
 function applyScrollMode() {
   if (!imageEl) return;
@@ -143,7 +199,7 @@ function applyScrollMode() {
     imgResizeSync = syncHeight;
     window.addEventListener('resize', imgResizeSync);
   } else {
-    // Drop the stale scroll height so the scoped layer fills its host.
+    // Drop the stale scroll height so the layer fills the viewport again.
     imageEl.style.removeProperty('height');
   }
 }
