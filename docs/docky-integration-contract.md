@@ -16,6 +16,79 @@ français.
 
 ---
 
+## 0. L'essentiel (TL;DR)
+
+> Résumé synthétique du contrat. Les **chemins, méthodes HTTP, payloads et formes de réponse
+> font foi en §4** ci-dessous (surface attendue par Homy) ; l'**Annexe A** donne la
+> correspondance avec les endpoints Docky existants. **Lire la suite du document** pour les cas
+> détaillés. Restent ouverts et à confirmer par Docky (§7) : le préfixe/versionnage de la surface
+> d'intégration (Q1), la réponse des actions `200` synchrone vs `202` asynchrone (Q3) et le
+> **batch stats optionnel** (Q5).
+
+### 0.1 Les endpoints (5 unitaires + 2 batch)
+
+| # | Endpoint (§4) | Rôle | Réponse attendue |
+| --- | --- | --- | --- |
+| 1 | `GET /api/agents` | Lister les serveurs | `{ agents: [{ name, url, status, version, lastCheck }] }` |
+| 2 | `GET /api/agents/{agent}/containers` | Lister les containers d'un agent | `{ agent, containers: [{ id, name, image, state, health, stack, service }] }` |
+| 3 | `GET /api/agents/{agent}/containers/{container}` | État + santé d'un container | `{ agent, container, id, name, state, health, checkedAt }` |
+| 4 | `POST /api/containers/health` | **État + santé en BATCH — requis** | `{ checkedAt, results: [{ agent, container, found, id, name, state, health, error }] }` |
+| 5 | `GET /api/agents/{agent}/containers/{container}/stats` | Ressources d'un container | `{ agent, container, state, health, cpu_percent, mem_usage, mem_limit, mem_percent, network_rx, network_tx, disk_*, checkedAt }` |
+| 6 | `POST /api/containers/stats` | Stats en batch *(optionnel, voir §4.6)* | `{ checkedAt, results: [{ …stats…, error }] }` |
+| 7 | `POST /api/agents/{agent}/containers/{container}/{start\|stop\|restart}` | **Actions** | `200 { success, agent, container, action, state, health }` ; `202 { success, action, state }` (Q3) |
+
+> `{container}` accepte le **nom ou l'`id`** (cf. §2.2). Les batches (§4.4, §4.6) prennent un
+> corps `{ "targets": [{ "agent": …, "container": … }] }` (`POST`), borné à 100 cibles.
+
+> **Le batch santé (n°4) est le point le plus important** : Homy affiche plusieurs tuiles avec
+> santé/monitoring et ne peut pas faire 1 requête par container toutes les 30 s.
+
+### 0.2 Vocabulaire normalisé
+
+- **`state`** ∈ `running` · `exited` · `paused` · `restarting` · `created` · `dead` · `unknown`.
+- **`health`** ∈ `healthy` · `unhealthy` · `starting` · `none`.
+- **Auth** : `Authorization: Bearer <token>` (clé dédiée) ; erreurs `401` / `403`.
+- Toute valeur hors liste est absorbée comme **`unknown`** (jamais de crash d'UI).
+
+### 0.3 Codes d'erreur & comportement
+
+| Statut | Cas | Comportement Homy |
+| --- | --- | --- |
+| `200` / `202` | Succès (synchrone / asynchrone) | État mis à jour (ou « en cours… » si `202`). |
+| `400` | Paramètre / action invalide | Toast d'erreur. |
+| `401` / `403` | Clé absente/invalide ou IP refusée | « Docky : non autorisé ». |
+| `404` | Agent / container inconnu | Santé `unknown` ; action → toast. |
+| `409` | Conflit d'état | Toast explicite. |
+| `502` | Agent injoignable | État dégradé + toast. |
+| `503` | Docky non configuré | Pastille grise, contrôles désactivés. |
+| `504` | Timeout agent | État dégradé. |
+| `429` | Rate limit | Respecter le `Retry-After`. |
+
+### 0.4 Contraintes de robustesse
+
+- **Timeout par appel** et **réponses rapides** : ne jamais bloquer l'UI de Homy.
+- **Actions idempotentes** renvoyant l'**état résultant**.
+- **Aucun secret** dans les réponses ni les logs ; pas de dépendance à une URL arbitraire.
+- **Cadence Homy ≈ 30 s** avec **cache côté Homy**.
+
+### 0.5 Les 10 points à trancher (Q1 → Q10)
+
+- **Q1 —** Surface d'intégration : orchestrateur agrégé vs endpoints par agent ; clé dédiée vs
+  clé MCP existante (`security.mcp_api_key`).
+- **Q2 —** Noms/valeurs exacts : `state` vs `status`, `removing`, `health: null` → `none`,
+  `id` vs `name`.
+- **Q3 —** Réponse des actions : `200` synchrone ou `202` asynchrone.
+- **Q4 —** Granularité des stats : `cpu_percent` normalisé hôte (0–100) ou multi-cœurs
+  (0–N×100) ?
+- **Q5 —** Forme et plafond du batch santé ; batch stats fourni ou non.
+- **Q6 —** Disque / réseau prévus et à quelle échéance.
+- **Q7 —** Format d'erreur `{error, code}` et statut d'un agent injoignable **dans un batch**.
+- **Q8 —** Versionnage / stabilité de l'API d'intégration.
+- **Q9 —** Stabilité de l'identifiant container à la recréation.
+- **Q10 —** Rate limiting (`429`, en-têtes de quota).
+
+---
+
 ## 1. Objet & périmètre
 
 ### 1.1 Ce que Homy attend de Docky
