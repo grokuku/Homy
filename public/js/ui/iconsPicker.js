@@ -1,6 +1,7 @@
 import { el } from '../util.js';
 import { api } from '../api.js';
 import { toast } from './toast.js';
+import { svgElementFrom } from '../elements/button.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
 
 /**
@@ -98,17 +99,10 @@ export function openIconsPicker({ onPick } = {}) {
   // ---- svg helpers ----------------------------------------------------------
 
   function svgNode(svgText) {
-    if (typeof svgText !== 'string' || !svgText.trim()) return null;
-    try {
-      const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
-      const svgEl = doc.documentElement;
-      if (svgEl?.nodeName === 'svg' && !doc.querySelector('parsererror')) {
-        return document.importNode(svgEl, true);
-      }
-    } catch {
-      /* fall through */
-    }
-    return null;
+    // Shared normalizer (elements/button.js): strips the source's intrinsic
+    // `1em` sizing, guarantees viewBox + preserveAspectRatio, so a preview
+    // thumbnail can never be cropped by a font-dependent viewport.
+    return svgElementFrom(svgText);
   }
 
   function iconBox(svgText, label, cls) {

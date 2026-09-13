@@ -21,11 +21,15 @@ import { GRID_COLUMNS, GRID_ROWS, normalizeItems } from './config.js';
  * Note: unlike the editor, no `editing-grid` class is added → the visual grid
  * lines stay edit-mode-only.
  */
-export function renderViewer(container, items, { columns = GRID_COLUMNS } = {}) {
+export function renderViewer(container, items, { columns = GRID_COLUMNS, cellHeight = 'auto' } = {}) {
   const grid = window.GridStack.init(
     {
       staticGrid: true,
-      cellHeight: 'auto', // square cells (same canvas as the editor)
+      // 'auto' = square cells; a positive NUMBER = the pinned row pitch (px)
+      // computed by main.js for the fill/letterbox canvas (see grid/config.js
+      // computeCanvasFit). Either way the inline container height
+      // (18 × cellHeight) matches the pinned --canvas-h box exactly.
+      cellHeight: Number.isFinite(cellHeight) && cellHeight > 0 ? cellHeight : 'auto',
       margin: 8,
       column: columns, // saved column count (12 for legacy) — migrated below if ≠ 32
       minRow: GRID_ROWS, // fixed 18-row canvas (same as the editor)

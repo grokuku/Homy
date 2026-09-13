@@ -80,6 +80,10 @@ export const group = {
   render(container, config, item, context = {}) {
     container.classList.add('group-widget');
     const editable = !!context?.editable;
+    // The internal trame (½-global-cell guides) is an EDIT-ONLY affordance: it
+    // is drawn only while `editable`, so VIEW mode shows the tiles alone. The
+    // class is the single hook (see .group-widget.group-editing in style.css).
+    container.classList.toggle('group-editing', editable);
 
     const title = (config?.title || '').trim();
     if (title || editable) {
@@ -496,6 +500,8 @@ export const group = {
     // ---- initial paint + live step -------------------------------------------
 
     const applyStep = () => {
+      // The single square unit (half a global COLUMN, width-derived) — see
+      // measureStep. Tiles span integer multiples of it in BOTH axes.
       const next = measureStep(container, item);
       step = next;
       canvas.style.setProperty('--group-step', `${next}px`);
@@ -542,9 +548,22 @@ export const group = {
 };
 
 /**
- * Internal cell size in px = half of the GLOBAL grid cell. Read from the live
- * grid container (gridstack publishes --gs-columns), with a geometry fallback
- * when the grid is not measurable yet (the ResizeObserver re-runs this later).
+ * Internal cell size in px — the ONE square unit the whole group trame is
+ * built on. It is ALWAYS half the GLOBAL grid COLUMN width:
+ *
+ *   step = gridEl.clientWidth / columns / 2
+ *
+ * and NEVER derived from the (possibly stretched) cell HEIGHT. The same value
+ * feeds `.group-grid`'s `grid-template-columns` AND `grid-auto-rows` (see
+ * style.css), and every tile is placed with integer col/row/w/h spans, so a
+ * 2×2 tile is always a perfect square and no child (health circle, SVG icon,
+ * gauge) can be ovalized — even when the PARENT canvas is stretched by the
+ * fill fit (the parent cell may be up to ±20 % anisotropic, the group content
+ * stays strictly 1:1).
+ *
+ * Read from the live grid container (gridstack publishes --gs-columns and the
+ * container width is the pinned canvas width), with a geometry fallback when
+ * the grid is not measurable yet (the ResizeObserver re-runs this later).
  */
 function measureStep(container, item) {
   const gridEl = container?.closest ? container.closest('.grid-stack') : null;

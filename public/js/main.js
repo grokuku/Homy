@@ -2,7 +2,7 @@ import { api } from './api.js';
 import { state } from './state.js';
 import { renderViewer } from './grid/viewer.js';
 import { initEditor, renderPalette } from './grid/editor.js';
-import { GRID_COLUMNS, MAX_ITEMS } from './grid/config.js';
+import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, CANVAS_ASPECT, CELL_ASPECT_TOLERANCE, computeCanvasFit } from './grid/config.js';
 import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js';
 import { applyBackground, setBackgroundHost } from './backgrounds/manager.js';
 import { openBackgroundModal } from './ui/backgroundModal.js';
@@ -209,10 +209,10 @@ const PREVIEW_CELL_MIN = 20; // px — rendered cell-width floor
 const PREVIEW_MIN_SCALE = 0.3; // hard floor on the adaptive scale f
 const PREVIEW_BORDER = 2; // px — #grid-preview border width (style.css)
 
-// ---- Canvas width pinning (lot E) ------------------------------------------
+// ---- Canvas geometry pinning (lot E + fill-with-tolerance) -----------------
 /**
- * Pin the 16:9 canvas width to a FRESH JavaScript measurement (CSS var
- * --canvas-w on #grid-wrap, consumed by #grid-container's width in CSS).
+ * Pin the canvas box to a FRESH JavaScript measurement (CSS vars --canvas-w /
+ * --canvas-h on #grid-wrap, consumed by #grid-container's width/height in CSS).
  *
  * WHY (lot E, empty-page scrollbar in view mode): the CSS width used pure
  * container-query units (min(100cqw, 100cqh·16/9)). Those units resolve
@@ -227,47 +227,121 @@ const PREVIEW_BORDER = 2; // px — #grid-preview border width (style.css)
  * clientWidth force a synchronous layout with the transition already snapped
  * to its final value by applyTopbarState({animate:false}) in setMode().
  *
- * The measured width is floored to an INTEGER pixel: gridstack derives the
- * square cell height from the container's clientWidth (integer), so an
- * integer width makes the gridstack inline height (18 × clientWidth/32)
- * agree EXACTLY with the CSS aspect-ratio box — no sub-pixel overflow, no
- * scrollbar, by construction, at every instant (≤1px narrower than the
- * theoretical cq value: imperceptible).
+ * FILL (user decision): instead of a strict 16:9 fit, the 32×18 canvas now
+ * STRETCHES to fill the available box (the 18 rows take the full height, the
+ * 32 columns the full width), cells being deformed by at most
+ * --cell-aspect-tolerance (±20 % by default). When the required deformation
+ * would exceed that bound the fit reverts to the centered 16:9 letterbox (see
+ * computeCanvasFit in grid/config.js). The fit is purely a function of the
+ * measured box → identical at every call site (view, resize, animation).
+ *
+ * The measured width/height are floored to INTEGER pixels: gridstack derives
+ * item widths from the container's clientWidth (percentage column units) and
+ * the row pitch from the cellHeight passed alongside (h/18), so integer pins
+ * make gridstack's inline height agree EXACTLY with the pinned CSS box — no
+ * sub-pixel overflow, no scrollbar, by construction (≤1px narrower than the
+ * theoretical fit: imperceptible).
  */
-function updateCanvasWidth() {
+
+// Row pitch (px) of the pinned VIEW canvas. 0 → gridstack keeps its 'auto'
+// square-cell behavior (before the first JS measurement).
+let viewCellHeight = 0;
+// Row pitch (px) of the EDIT logical canvas (the view-sized canvas behind the
+// dezoom). Always >= viewCellHeight once updatePreviewScale ran.
+let editCellHeight = 0;
+
+/**
+ * Live cell-aspect tolerance: the CSS variable --cell-aspect-tolerance on
+ * #dashboard-view is the single tunable knob; the JS constant
+ * CELL_ASPECT_TOLERANCE (grid/config.js) is the documented fallback. Reading
+ * the CSS value lets a theme/design tweak the bound without touching JS.
+ */
+function cellAspectTolerance() {
+  const raw = getComputedStyle($('dashboard-view'))
+    .getPropertyValue('--cell-aspect-tolerance')
+    .trim();
+  const n = parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 ? n : CELL_ASPECT_TOLERANCE;
+}
+
+/** Measured content box of #grid-wrap (padding removed), in CSS px. */
+function wrapContentBox() {
   const wrap = $('grid-wrap');
   const cs = getComputedStyle(wrap);
   const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
   const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
   // clientWidth: integer, EXCLUDES a classic scrollbar (pan case stays sane);
   // rect.height: fractional, exact — no rounding slack on the vertical fit.
-  const contentW = wrap.clientWidth - padX;
-  const contentH = wrap.getBoundingClientRect().height - padY;
-  // −0.5 shave: clientWidth rounds to integer, the shave absorbs a round-up
-  // so the width can never exceed the true visible content either.
-  const w = Math.floor(Math.min(contentW, (contentH * 16) / 9) - 0.5);
-  if (w > 0) wrap.style.setProperty('--canvas-w', `${w}px`);
+  return {
+    width: wrap.clientWidth - padX,
+    height: wrap.getBoundingClientRect().height - padY,
+  };
 }
 
 /**
- * Compute (and apply) `--preview-scale` so the whole 16:9 frame fits the area
- * left of the docked palette. Formula (all in CSS px):
- *   availH  = grid-wrap content height
- *   fullW   = body width − wrap padding  → view-mode canvas width
- *   natural = min(fullW, availH·16/9)    → WYSIWYG logical width (view size)
- *   frame   = min(bodyW − padX − dockW, availH·16/9) → framed content width
- *   f       = (frame − 2·border) / natural, then apply the floors above.
- * `natural` already fits the height, so f is essentially the width ratio
- * between the framed area and the full view area (f = 1 when nothing is
- * docked and the window is wide enough). Idempotent: safe on every resize.
+ * Turn a computeCanvasFit() result into pinned INTEGER pixels. A « fill » fit
+ * floors both axes; a « letterbox » fit floors the width and derives the
+ * height from the design aspect so its cells stay exactly square. Returns
+ * `{ w, h, mode }` or null when the fit is not measurable.
+ */
+function fitToPixels(fit) {
+  if (!fit) return null;
+  const w = Math.max(1, Math.floor(fit.width - 0.5));
+  if (fit.mode === 'fill') {
+    return { w, h: Math.max(1, Math.floor(fit.height - 0.5)), mode: fit.mode };
+  }
+  return { w, h: w / CANVAS_ASPECT, mode: fit.mode };
+}
+
+/**
+ * Compute + pin the canvas box for the current wrap measurement. Also caches
+ * the VIEW row pitch (h/18) used both by the viewer gridstack and as the
+ * logical geometry of the edit preview. Idempotent: safe on every resize.
+ */
+function updateCanvasGeometry() {
+  const box = wrapContentBox();
+  const fit = fitToPixels(computeCanvasFit(box.width, box.height, cellAspectTolerance()));
+  if (!fit) return null;
+  const wrap = $('grid-wrap');
+  wrap.style.setProperty('--canvas-w', `${fit.w}px`);
+  wrap.style.setProperty('--canvas-h', `${fit.h}px`);
+  viewCellHeight = fit.h / GRID_ROWS;
+  return fit;
+}
+
+// Push the pinned row pitch into gridstack. The viewer exposes the real
+// instance (cellHeight method); the editor handle exposes setCellHeight,
+// because main.js never sees the raw editor gridstack instance.
+function applyGridCellHeight(h) {
+  if (!grid || !(h > 0)) return;
+  if (typeof grid.setCellHeight === 'function') grid.setCellHeight(h);
+  else if (typeof grid.cellHeight === 'function') grid.cellHeight(h);
+}
+
+/**
+ * Compute (and apply) `--preview-scale` so the whole 16:9 EDIT frame fits the
+ * area left of the docked palette, and pin the LOGICAL (16:9) canvas box for
+ * the dezoom. All in CSS px:
+ *   target  = 16:9 edit canvas for the current viewport (computeEditTarget)
+ *   frameW  = min(bodyW − padX − dockW, availH·16/9) → framed content width
+ *   f       = (frameW − 2·border) / target.w, then apply the floors above.
+ * The frame is FIXED 16:9 (user decision) and `target` is 16:9 too, so the
+ * dezoom `scale(f)` is always UNIFORM → the editor's cells stay square and no
+ * element is ever distorted. Idempotent: safe on every resize. On the
+ * small-screen fallback the frame is dropped entirely (floating palette + pan),
+ * the legacy behavior.
  */
 function updatePreviewScale() {
   const view = $('dashboard-view');
   const preview = $('grid-preview');
-  if (state.mode !== 'edit') {
+  const clear = () => {
     view.classList.remove('preview-active');
-    preview.style.removeProperty('--preview-scale');
-    preview.style.removeProperty('--view-canvas-w');
+    for (const p of ['--preview-scale', '--view-canvas-w', '--view-canvas-h']) {
+      preview.style.removeProperty(p);
+    }
+  };
+  if (state.mode !== 'edit') {
+    clear();
     return;
   }
   const wrap = $('grid-wrap');
@@ -277,43 +351,47 @@ function updatePreviewScale() {
   const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
   const availH = wrap.clientHeight - padY;
   const dockW = parseFloat(getComputedStyle(view).getPropertyValue('--palette-dock-w')) || 0;
-  const frameW = Math.min(body.clientWidth - padX - dockW, (availH * 16) / 9);
+  // The logical canvas is a 16:9 box (design aspect): the editor always lays
+  // out square cells irrespective of the (possibly stretched) VIEW canvas. The
+  // scale is the ratio between the framed content and that logical box — NOT
+  // the framed area and its own natural fit (those are ~equal, which made f ≈ 1
+  // and turned the « dezoom » into a plain size pop).
+  const target = computeEditTarget();
+  const aspect = CANVAS_ASPECT; // EDIT frame is fixed 16:9
+  const frameW = Math.min(body.clientWidth - padX - dockW, availH * aspect);
   const frameContentW = frameW - 2 * PREVIEW_BORDER;
-  // The logical canvas keeps the VIEW-mode size (true WYSIWYG). The scale is
-  // the ratio between the framed content and the REAL view canvas — NOT the
-  // framed area and its own natural fit (those are ~equal, which made f ≈ 1
-  // and turned the « dezoom » into a plain size pop). computeViewTarget()
-  // reproduces the view-mode fit (collapsed/visible topbar aware).
-  const naturalW = computeViewTarget().w;
-  const scale = naturalW > 0 && frameContentW > 0 ? frameContentW / naturalW : 0;
+  const frameContentH = frameContentW / aspect;
+  const scale = target.w > 0 && frameContentW > 0 ? frameContentW / target.w : 0;
   const ok =
-    naturalW > 0 &&
+    target.w > 0 &&
     frameContentW / GRID_COLUMNS >= PREVIEW_CELL_MIN &&
+    frameContentH / GRID_ROWS >= PREVIEW_CELL_MIN &&
     scale >= PREVIEW_MIN_SCALE;
   if (!ok) {
-    // Fallback: no frame, no scale — today's behavior (pan inside .grid-wrap).
-    view.classList.remove('preview-active');
-    preview.style.removeProperty('--preview-scale');
-    preview.style.removeProperty('--view-canvas-w');
+    // Fallback: no frame, no scale — the legacy behavior (pan inside .grid-wrap).
+    // The edit grid then uses the plain VIEW-cell-height pinned above.
+    clear();
+    editCellHeight = viewCellHeight;
     return;
   }
   view.classList.add('preview-active');
   preview.style.setProperty('--preview-scale', String(scale));
-  // Pin the LOGICAL canvas width to the view width (constant px, read by CSS as
-  // #grid-container's width). gridstack derives cellHeight from clientWidth, so
-  // this keeps every cell/item stable while the frame box animates — the
-  // container never sees a mid-transition size.
-  preview.style.setProperty('--view-canvas-w', `${naturalW}px`);
+  // Pin the LOGICAL 16:9 canvas box (constant px, read by CSS as
+  // #grid-container's width/height). gridstack derives item widths from
+  // clientWidth and rows from the cellHeight we set, so this keeps every
+  // cell/item stable while the frame box animates — the container never sees a
+  // mid-transition size.
+  preview.style.setProperty('--view-canvas-w', `${target.w}px`);
+  preview.style.setProperty('--view-canvas-h', `${target.h}px`);
+  editCellHeight = target.h / GRID_ROWS;
 }
 
 /**
- * The geometry the canvas has in VIEW mode for the CURRENT viewport and
- * topbar visibility ({ w, cx, cy } = width + center). Mirrors the view-mode
- * fit of updateCanvasWidth() (collapsed bar: full height; right-click-visible
- * bar: minus its measured height), and is used both as the logical canvas
- * width and as the origin/destination rect of the animated dezoom.
+ * Measured fit box of the dashboard view for the current viewport + topbar
+ * state. Shared by computeViewTarget (VIEW geometry, fill aware) and
+ * computeEditTarget (EDIT geometry, forced 16:9).
  */
-function computeViewTarget() {
+function viewFitBox() {
   const view = $('dashboard-view');
   const wrap = $('grid-wrap');
   const cs = getComputedStyle(wrap);
@@ -322,18 +400,75 @@ function computeViewTarget() {
   const viewportW = view.clientWidth;
   const viewportH = view.clientHeight;
   const barH = viewTopbarVisible ? lastViewTopbarH : 0;
-  const availH = Math.max(0, viewportH - barH - padY);
-  let w = Math.floor(Math.min(viewportW - padX, (availH * 16) / 9) - 0.5);
-  if (!(w > 0)) w = Math.floor(viewportW - padX);
-  return { w, cx: viewportW / 2, cy: barH + (viewportH - barH) / 2 };
+  return {
+    viewportW,
+    viewportH,
+    barH,
+    availW: viewportW - padX,
+    availH: Math.max(0, viewportH - barH - padY),
+    cx: viewportW / 2,
+    cy: barH + (viewportH - barH) / 2,
+  };
 }
 
 /**
- * Measure the exact transform that maps the framed preview (identity, final
- * layout) onto the view canvas rect, and publish it as --from-* custom props
- * consumed by the .anim-from-view/.anim-to-view styles. This is what makes
- * the swap a single glide: the first edit frame renders EXACTLY where the view
- * canvas was (same size + center), then dezooms into the frame.
+ * The geometry the canvas has in VIEW mode for the CURRENT viewport and
+ * topbar visibility ({ w, h, cx, cy } = width/height + center). Mirrors the
+ * view-mode fit of updateCanvasGeometry() (collapsed bar: full height;
+ * right-click-visible bar: minus its measured height), and is used as the
+ * target rect of the animated dezoom when the VIEW/EDIT aspects match.
+ */
+function computeViewTarget() {
+  const b = viewFitBox();
+  const fit = fitToPixels(computeCanvasFit(b.availW, b.availH, cellAspectTolerance()));
+  const geo = fit || { w: Math.max(1, Math.floor(b.availW - 0.5)), h: 0 };
+  const h = geo.h > 0 ? geo.h : geo.w / CANVAS_ASPECT;
+  return { w: geo.w, h, cx: b.cx, cy: b.cy };
+}
+
+/**
+ * The geometry the EDIT canvas has for the current viewport: the centered 16:9
+ * letterbox of the dashboard area ({ w, h, cx, cy }). Forcing the tolerance to
+ * 0 makes computeCanvasFit return the 16:9 letterbox everywhere except a box
+ * that is already exactly 16:9 (then the fill and the letterbox coincide). This
+ * is the EDIT frame's fixed aspect by user decision.
+ */
+function computeEditTarget() {
+  const b = viewFitBox();
+  const fit = fitToPixels(computeCanvasFit(b.availW, b.availH, 0));
+  const geo = fit || { w: Math.max(1, Math.floor(b.availW - 0.5)), h: 0 };
+  const h = geo.h > 0 ? geo.h : geo.w / CANVAS_ASPECT;
+  return { w: geo.w, h, cx: b.cx, cy: b.cy };
+}
+
+/**
+ * Aspect gap beyond which the VIEW canvas and the fixed 16:9 EDIT frame can no
+ * longer be overlaid EXACTLY without a non-uniform (distorting) scale. Within
+ * ±ε we keep the seam-free glide onto the view rect; beyond it we switch to the
+ * self-dezoom + cross-fade (see setViewOriginTransform). 2 % ≈ 2.6 px of cell
+ * anisotropy on a 960-px-tall canvas — below the visible threshold, so the
+ * glide stays un-distorted there too.
+ */
+const TRANSITION_ASPECT_EPSILON = 0.02;
+/** Small UNIFORM overshoot of the self-dezoom start/end (aspect-mismatch case). */
+const TRANSITION_SELF_DEZOOM = 1.06;
+
+/**
+ * Measure the transform that maps the framed preview (identity, final layout)
+ * onto the view canvas rect, and publish it as --from-* custom props consumed
+ * by the .anim-from-view/.anim-to-view styles.
+ *
+ * TWO cases, chosen from the VIEW/EDIT aspect gap:
+ *  • aspects match (±TRANSITION_ASPECT_EPSILON) — the common 16:9 monitor case:
+ *    the first edit frame renders EXACTLY where the view canvas was (same size
+ *    + centre) and dezooms into the frame → a single seam-free glide, no fade.
+ *  • aspects differ (VIEW stretched by the bounded fill fit, EDIT fixed 16:9):
+ *    an exact overlay would require a NON-uniform scale, which would visibly
+ *    deform cells/guides during the anim — refused. Instead the frame does a
+ *    small UNIFORM dezoom about its OWN centre (tx/ty = 0) and cross-fades
+ *    (--from-opacity: 0 → 1), so the geometry change is masked. No distortion,
+ *    no abrupt geometry jump, no scrollbar (the dashboard stays overflow:clip
+ *    while .mode-anim is on).
  */
 function setViewOriginTransform() {
   const preview = $('grid-preview');
@@ -341,9 +476,22 @@ function setViewOriginTransform() {
   const r = preview.getBoundingClientRect(); // identity (no anim class yet)
   const frameContentW = r.width - 2 * PREVIEW_BORDER;
   if (!(r.width > 0 && frameContentW > 0 && target.w > 0)) return;
-  preview.style.setProperty('--from-scale', String(target.w / frameContentW));
-  preview.style.setProperty('--from-tx', `${target.cx - (r.left + r.width / 2)}px`);
-  preview.style.setProperty('--from-ty', `${target.cy - (r.top + r.height / 2)}px`);
+  const viewAspect = target.h > 0 ? target.w / target.h : CANVAS_ASPECT;
+  const aspectDelta = Math.abs(viewAspect - CANVAS_ASPECT) / CANVAS_ASPECT;
+  if (aspectDelta <= TRANSITION_ASPECT_EPSILON) {
+    // Exact glide: the uniform scale target.w/frameContentW maps the frame onto
+    // the view canvas width AND height (aspects match) → no fade needed.
+    preview.style.setProperty('--from-scale', String(target.w / frameContentW));
+    preview.style.setProperty('--from-tx', `${target.cx - (r.left + r.width / 2)}px`);
+    preview.style.setProperty('--from-ty', `${target.cy - (r.top + r.height / 2)}px`);
+    preview.style.removeProperty('--from-opacity');
+    return;
+  }
+  // Aspects differ: uniform self-dezoom about the frame's own centre + fade.
+  preview.style.setProperty('--from-scale', String(TRANSITION_SELF_DEZOOM));
+  preview.style.setProperty('--from-tx', '0px');
+  preview.style.setProperty('--from-ty', '0px');
+  preview.style.setProperty('--from-opacity', '0');
 }
 
 /**
@@ -590,15 +738,14 @@ function setMode(mode, { animate = false } = {}) {
   // and gridstack can never initialize from a mid-animation size.
   applyTopbarState({ animate: false });
 
-  // Pin the canvas width from a FRESH measurement (see updateCanvasWidth):
-  // must run BEFORE initEditor/renderViewer, whose gridstack reads the
-  // container's clientWidth to derive the square cell height.
-  updateCanvasWidth();
+  // Pin the canvas box from a FRESH measurement (see updateCanvasGeometry):
+  // must run BEFORE initEditor/renderViewer, whose gridstack derives item
+  // widths from the container clientWidth and rows from the cellHeight we pass.
+  updateCanvasGeometry();
   destroyGrid();
-  // Frame + scale must be applied BEFORE initEditor: gridstack reads the
-  // container's clientWidth at init to derive the square cell height, and the
-  // logical width (`100% / --preview-scale`) is what makes the zoomed-in
-  // canvas still compute view-mode-sized cells.
+  // Frame + scale must be applied BEFORE initEditor: it pins the LOGICAL
+  // (view-sized) canvas box and the frame aspect, and its cellHeight is what
+  // makes the zoomed-in editor compute view-mode-sized cells.
   updatePreviewScale();
   // The frame may have been switched on/off by updatePreviewScale: host the
   // background inside it (clipped) or back on <body>.
@@ -607,8 +754,12 @@ function setMode(mode, { animate = false } = {}) {
   // themselves when needed. The viewer never persists: state.layout keeps its
   // original coordinates until the editor actually saves.
   const columns = state.layoutColumns || GRID_COLUMNS;
+  // Row pitch of the pinned canvas (edit → logical view-sized box). Passed so
+  // gridstack deforms the cells exactly like the pinned CSS box instead of
+  // deriving a square cell height from clientWidth.
+  const cellHeight = mode === 'edit' ? editCellHeight : viewCellHeight;
   if (mode === 'edit') {
-    grid = initEditor($('grid-container'), state.layout, { onSave: saveLayout, columns });
+    grid = initEditor($('grid-container'), state.layout, { onSave: saveLayout, columns, cellHeight });
     renderPalette($('palette-list'), state.widgets, (type) => {
       // Client-side cap (review C3): mirrors server MAX_ITEMS — adding to a
       // full layout must fail with a visible message HERE, not silently at
@@ -620,8 +771,11 @@ function setMode(mode, { animate = false } = {}) {
       grid.addWidget(type);
     });
   } else {
-    grid = renderViewer($('grid-container'), state.layout, { columns });
+    grid = renderViewer($('grid-container'), state.layout, { columns, cellHeight });
   }
+  // gridstack v13 wrote the initial cell height from the option above; re-apply
+  // the exact pinned pitch once (idempotent, keeps inline height == --canvas-h).
+  applyGridCellHeight(cellHeight);
 
   // Lot 4 — user-driven VIEW → EDIT swap plays the enter animation now that
   // the edit grid exists at its final geometry. Reduced-motion and every
@@ -921,10 +1075,15 @@ if (typeof ResizeObserver !== 'undefined') {
     // Re-measure the choreography inputs too (cluster/admin widths, bar grow).
     measureTopbarGroups();
     updateBarGrow();
-    // Re-pin the canvas width (the wrap resizes with the body — topbar
+    // Re-pin the canvas box (the wrap resizes with the body — topbar
     // animation, window resize, palette docking) BEFORE the dezoom math.
-    updateCanvasWidth();
+    updateCanvasGeometry();
     updatePreviewScale();
+    // Push the freshly computed row pitch into gridstack: with an explicit
+    // cellHeight it no longer derives it from clientWidth (its own
+    // ResizeObserver only does that for the 'auto' mode), so a window resize
+    // would otherwise keep the stale inline container height.
+    applyGridCellHeight(state.mode === 'edit' ? editCellHeight : viewCellHeight);
     syncBackgroundScope();
   }).observe($('dashboard-body'));
 }

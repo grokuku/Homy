@@ -388,6 +388,13 @@ body { background: transparent; transition: background 0.2s; }
      compute the adaptive dezoom; keep it in sync with the docked .palette
      rule above (they are a contract, not a coincidence). */
   --palette-dock-w: 228px;
+  /* Maximum cell ANISOTROPY allowed when the 32×18 canvas stretches to fill
+     the viewport (fill fit): a cell may be at most (1 ± tol) wider than tall.
+     0.2 = ±20 %. main.js READS this value (falling back to
+     CELL_ASPECT_TOLERANCE in grid/config.js) — tune the bound here. Beyond it
+     the canvas falls back to a centered 16:9 letterbox instead of deforming
+     further. */
+  --cell-aspect-tolerance: 0.2;
   /* VIEW↔EDIT transition timing lives on :root (see above) so the body-level
      background layers share it. All the animated properties here are VISUAL
      only (transform/opacity and the registered --guide-op): none of them
@@ -439,24 +446,28 @@ body { background: transparent; transition: background 0.2s; }
 #grid-preview { display: contents; }
 
 #grid-container {
-  /* 32×18 square-cell canvas (32/18 = 16/9). The box keeps a 16:9 aspect and
-     never exceeds the visible area: width-limited on wide windows, height-
-     limited (then horizontally centered) on tall ones. With cellHeight:'auto'
-     gridstack computes the square cell height as cellWidth − mr − ml + mt + mb
-     (see grid/config.js for the margin-symmetry contract, review C8) and sets
-     an INLINE container height of 18 rows × cell height; that inline height
-     and the CSS aspect-ratio box agree exactly as long as the cells are
-     square. No min-height here: gridstack only reads the computed min-height
-     when no minRow is configured (we always set minRow:18), so the 18-row
-     exact fill is enforced by minRow/maxRow alone. */
+  /* 32×18 canvas. The box is pinned by main.js to measured integer pixels
+     (--canvas-w / --canvas-h): the canvas FILLS the available area when the
+     resulting cell anisotropy stays within --cell-aspect-tolerance (±20 %),
+     otherwise it is the centered 16:9 letterbox. gridstack derives item widths
+     from clientWidth (percentage column units) and the row pitch from the
+     cellHeight main.js passes (h/18), and sets an INLINE container height of
+     18 rows × cell height: that inline height agrees with the pinned box by
+     construction, so there is no sub-pixel overflow and no scrollbar. The cq /
+     16:9 fallbacks below cover the first paint before main.js runs. No
+     min-height here: gridstack only reads the computed min-height when no
+     minRow is configured (we always set minRow:18). */
   width: var(--canvas-w, min(100cqw, calc(100cqh * 16 / 9)));
-  /* --canvas-w (main.js updateCanvasWidth): the SAME fit formula measured in
-     JS and pinned as an integer pixel value — a source of truth shared with
-     gridstack, so the inline height (18 × clientWidth/32) always agrees with
-     this box even when the grid is (re)built while the topbar transition is
-     mid-flight (stale container-query units would otherwise freeze an
-     oversized canvas and show a phantom scrollbar — lot E). The cq fallback
-     covers the first paint before main.js runs. */
+  /* Pinned height (may exceed a 16:9 box on a stretched/« fill » canvas).
+     gridstack's inline height overrides this once the grid is built; keeping
+     it here makes the CSS box correct even before the first grid init. */
+  height: var(--canvas-h, auto);
+  /* --canvas-w (main.js updateCanvasGeometry): the fit measured in JS and pinned
+     as an integer pixel value — a source of truth shared with gridstack, so
+     the inline height always agrees with this box even when the grid is
+     (re)built while the topbar transition is mid-flight (stale container-query
+     units would otherwise freeze an oversized canvas and show a phantom
+     scrollbar — lot E). */
   /* Review C2 — cell floor: never let a cell shrink below a readable 20px.
      640px = 20px × 32 cells: on viewports narrower than ~680px (or short
      landscape phones where 100cqh × 16/9 would win) the canvas is clamped to
@@ -484,15 +495,22 @@ body { background: transparent; transition: background 0.2s; }
    no-clamp before main.js pins --canvas-w. overflow:clip (not hidden) also
    never creates a scroll container. */
 #dashboard-view:not(.preview-active) #grid-container {
-  max-height: calc(max(var(--canvas-w, 100000px), 640px) * 9 / 16);
+  max-height: var(--canvas-h, calc(max(var(--canvas-w, 100000px), 640px) * 9 / 16));
   overflow: clip;
 }
 
-/* The 16:9 frame that hosts the whole canvas in edit-preview mode. Its width
+/* The canvas frame that hosts the whole canvas in edit-preview mode. Its width
    is the largest 16:9 box that fits the grid area (now narrowed by the docked
-   palette); it is centered in the area. `overflow: hidden` + `isolation`
-   clip and isolate the scaled canvas (grid lines, and the drag helper, which
-   is the item element itself and therefore lives inside this tree). */
+   palette); it is centered in the area.
+   DECISION (user): the EDIT frame is FIXED 16:9 — independent of the VIEW
+   canvas aspect. The VIEW canvas may be stretched (bounded fill fit, cells up
+   to ±20 % anisotropic) but EDIT keeps square cells in a 16:9 box, so the
+   dezoom is always a UNIFORM scale (never a distorting non-uniform one). The
+   VIEW↔EDIT aspect gap is handled by the transition itself (see main.js
+   setViewOriginTransform + style.css .anim-from-view below).
+   `overflow: hidden` + `isolation` clip and isolate the scaled canvas (grid
+   lines, and the drag helper, which is the item element itself and therefore
+   lives inside this tree). */
 #dashboard-view.preview-active #grid-preview {
   display: block;
   position: relative;
@@ -520,14 +538,14 @@ body { background: transparent; transition: background 0.2s; }
    internal layout stays at its natural (view-mode) size. min-width/auto and
    aspect-ratio are neutralized so the logical box can exceed the frame. */
 #dashboard-view.preview-active #grid-container {
-  /* --view-canvas-w: the LOGICAL canvas width, pinned to the real VIEW canvas
-     width by main.js. Keeping it a constant px value decouples gridstack from
-     the animating frame box (topbar reveal, dezoom transform): the container
-     clientWidth never changes during a transition, so cellHeight — and every
-     item geometry — stays final from the first frame. Fallback keeps the old
-     proportional behaviour before the var is set. */
+  /* --view-canvas-w / --view-canvas-h: the LOGICAL canvas box, pinned to a
+     16:9 size by main.js (computeEditTarget). Keeping them constant px values
+     decouples gridstack from the animating frame box (topbar reveal, dezoom
+     transform): the container clientWidth never changes during a transition,
+     so item geometry stays final from the first frame. Fallbacks keep the old
+     proportional behaviour before the vars are set. */
   width: var(--view-canvas-w, calc(100% / var(--preview-scale, 1)));
-  height: calc(100% / var(--preview-scale, 1));
+  height: var(--view-canvas-h, calc(100% / var(--preview-scale, 1)));
   min-width: 0;
   aspect-ratio: auto;
   margin: 0;
@@ -786,6 +804,7 @@ body { background: transparent; transition: background 0.2s; }
    var(...,1) → scale(1): zero visual change. */
 #dashboard-view.mode-anim.preview-active #grid-preview {
   transition: transform var(--mode-dur) var(--mode-ease),
+              opacity var(--mode-dur) var(--mode-ease),
               border-color var(--mode-dur) var(--mode-ease),
               box-shadow var(--mode-dur) var(--mode-ease);
 }
@@ -815,15 +834,24 @@ body { background: transparent; transition: background 0.2s; }
 #dashboard-view.anim-from-view .grid-wrap,
 #dashboard-view.anim-to-view .grid-wrap { overflow: visible; }
 
-/* Start/end state, both directions. The frame grows back to the REAL view
-   canvas rect: --from-scale/--from-tx/--from-ty are measured by main.js from
-   the live view geometry (not the old edit-area ratio which was ≈1 and made
-   the dezoom invisible). translate comes FIRST so its offset is not scaled by
-   the following scale(); the fallback keeps a sane value if unset. */
+/* Start/end state, both directions. TWO cases (chosen by main.js
+   setViewOriginTransform from the VIEW/EDIT aspect gap):
+     • aspects match (±ε, the common 16:9 monitor case): the frame glides onto
+       the REAL view canvas rect — --from-scale/--from-tx/--from-ty map it
+       exactly, --from-opacity stays 1 → seam-free, no fade.
+     • aspects differ (VIEW stretched, EDIT fixed 16:9): an exact overlay would
+       need a NON-uniform scale, which would visibly deform cells/guides during
+       the anim. Instead main.js pins a small UNIFORM self-dezoom about the
+       frame's own centre (--from-tx/--from-ty = 0) and --from-opacity = 0, so
+       the geometry change is masked by a short cross-fade — no distortion, no
+       abrupt geometry jump.
+   translate comes FIRST so its offset is not scaled by the following scale();
+   the fallbacks keep a sane value if unset. */
 #dashboard-view.anim-from-view.preview-active #grid-preview,
 #dashboard-view.anim-to-view.preview-active #grid-preview {
   transform: translate(var(--from-tx, calc(var(--palette-dock-w, 0px) / -2)), var(--from-ty, 0px))
              scale(var(--from-scale, calc(1 / var(--preview-scale, 1))));
+  opacity: var(--from-opacity, 1);
   border-color: transparent;
   box-shadow: none;
 }
@@ -1050,10 +1078,14 @@ body[data-bg-active] .grid-stack-item-content {
 /* ---------- Group container (lot 2) ----------
    A group is a titled container whose internal TRAME is 2× finer than the
    global grid: one internal cell = half a global cell. The internal step
-   (--group-step, set inline by elements/group.js from the LIVE global cell)
-   drives BOTH the trame lines and the tile placement, so they always line up.
-   The tiles keep a constant physical size (the step never derives from the
-   group's own size); overflow scrolls inside .group-board. */
+   (--group-step, set inline by elements/group.js from the LIVE global COLUMN
+   width — never from the cell height) drives BOTH the trame lines AND the tile
+   placement in BOTH axes, so they always line up AND stay perfectly square:
+   even when the parent canvas is stretched by the fill fit (cells up to ±20 %
+   anisotropic), the group content keeps 1:1 pixels (a 2×2 tile is a square, a
+   health dot is a circle, an SVG icon is not deformed). The tiles keep a
+   constant physical size (the step never derives from the group's own size);
+   overflow scrolls inside .group-board. */
 .group-widget { overflow: hidden; }
 .group-board {
   position: relative;
@@ -1077,6 +1109,13 @@ body[data-bg-active] .grid-stack-item-content {
   min-height: 100%;
   --group-line-minor: color-mix(in srgb, var(--text) 7%, transparent);
   --group-line-major: color-mix(in srgb, var(--text) 15%, transparent);
+}
+/* The trame (repere lines) is drawn ONLY in edit mode: group.js sets
+   .group-editing from the render context (editable) on the group container, so
+   VIEW mode renders the tiles alone (no guides). The step (--group-step) still
+   drives the tile placement in both modes — only the background layers are
+   gated. */
+.group-widget.group-editing .group-grid {
   background-image:
     /* major lines every 4 internal cells (= 2 global cells) */
     repeating-linear-gradient(90deg,
@@ -1146,9 +1185,17 @@ body[data-bg-active] .grid-stack-item-content {
   color: var(--text);
   overflow: hidden;
 }
+/* Advanced option « allow icon overflow »: let the icon spill instead of clip.
+   BOTH the icon box AND the main zone must stop clipping — the main zone used
+   to keep `overflow: hidden`, which cropped the spilling glyph and made the
+   option a no-op for anything wider than the tile. */
+.group-tile.allow-overflow,
+.group-tile.allow-overflow .tile-main { overflow: visible; }
 .group-tile.allow-overflow .tile-icon { overflow: visible; max-width: none; max-height: none; }
-.tile-icon-img, .tile-icon svg { width: 100%; height: 100%; display: block; }
-.tile-icon svg { stroke: currentColor; }
+.tile-icon-img, .tile-icon svg { width: 100%; height: 100%; max-width: 100%; max-height: 100%; display: block; }
+/* The inline SVG must never be shrunk by a parent flex line: it is sized by
+   100% of its host box only (see also .tile-icon-local svg below). */
+.tile-icon svg { stroke: currentColor; flex: 0 0 auto; }
 .tile-icon-text {
   display: block;
   max-width: 100%;
@@ -1974,9 +2021,23 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .icons-installed-actions .btn { padding: 5px 10px; font-size: 13px; }
 
 /* Local-icon holder inside a tile / preview box: fills the host box and clips
-   (exactly like the other icon nodes) so a large `local:` icon never spills. */
-.tile-icon-local { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
-.tile-icon-local svg { width: 100%; height: 100%; display: block; }
+   (exactly like the other icon nodes) so a large `local:` icon never spills.
+   The SVG is INLINE (no URL) and its `width`/`height` attributes are stripped
+   on import (see normalizeSvgNode in elements/button.js), so this holder + the
+   `width/height:100%` below are the ONLY sizing rules — the glyph can never be
+   cropped by a font-dependent `1em` viewport. */
+.tile-icon-local {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+}
+.tile-icon-local svg { width: 100%; height: 100%; max-width: 100%; max-height: 100%; display: block; flex: 0 0 auto; }
 .icon-browse-btn { margin-top: 8px; padding: 6px 12px; font-size: 13px; }
 
 /* ---------- Docky target picker + config (lot 5) ----------

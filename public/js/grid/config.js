@@ -35,6 +35,49 @@ export const GRID_COLUMNS = 32;
 export const GRID_ROWS = 18;
 export const LEGACY_COLUMNS = 12;
 
+/** Design aspect of the canvas (32 columns / 18 rows = 16/9). */
+export const CANVAS_ASPECT = GRID_COLUMNS / GRID_ROWS;
+
+/**
+ * Maximum allowed cell ANISOTROPY when the canvas stretches to fill the
+ * viewport (lot « fill »). 0.2 = ±20 %: a cell may never be more than 1.2×
+ * wider than tall (nor 1.2× taller than wide). Beyond this bound the fit falls
+ * back to a CENTERED 16:9 letterboxed canvas instead of distorting further.
+ *
+ * MUST mirror the `--cell-aspect-tolerance` CSS variable declared on
+ * `#dashboard-view` in style.css: main.js reads THAT value when present (so a
+ * single CSS knob tunes the behavior live) and falls back to this constant
+ * when the variable is missing/invalid.
+ */
+export const CELL_ASPECT_TOLERANCE = 0.2;
+
+/**
+ * Fit the 32×18 canvas into an available content box (CSS px).
+ *
+ *   cellAspect = (availW / 32) / (availH / 18)   // 1 = square cell
+ *
+ * When `cellAspect` is inside [1/(1+tol), 1+tol] the canvas FILLS the box
+ * (mode « fill »): the 32 columns span the available width and the 18 rows the
+ * available height, so cells are deformed by at most the tolerance. Otherwise
+ * the fit falls back to a centered 16:9 canvas (mode « letterbox ») whose cells
+ * stay square — the pre-fill behavior.
+ *
+ * Returns `{ mode, width, height, cellAspect }` or null for a non-measurable
+ * box. Pure: callers decide how (and whether) to pin the result.
+ */
+export function computeCanvasFit(availW, availH, tolerance = CELL_ASPECT_TOLERANCE) {
+  const w = Number(availW);
+  const h = Number(availH);
+  if (!(w > 0) || !(h > 0)) return null;
+  const tol = Number.isFinite(tolerance) && tolerance >= 0 ? tolerance : CELL_ASPECT_TOLERANCE;
+  const cellAspect = w / GRID_COLUMNS / (h / GRID_ROWS);
+  if (cellAspect >= 1 / (1 + tol) && cellAspect <= 1 + tol) {
+    return { mode: 'fill', width: w, height: h, cellAspect };
+  }
+  const width = Math.min(w, h * CANVAS_ASPECT);
+  return { mode: 'letterbox', width, height: width / CANVAS_ASPECT, cellAspect: 1 };
+}
+
 /**
  * Hard cap on the number of layout items. MUST stay equal to MAX_ITEMS in
  * server/routes/layout.routes.js: the server rejects PUT bodies with more

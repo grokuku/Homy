@@ -590,19 +590,57 @@ export function clearLocalIconCache() {
   localIconInflight.clear();
 }
 
-/** Parse SVG text into an importable <svg> node, or null when unusable. */
-function svgElementFrom(svgText) {
+/** Parse SVG text into an importable, host-box-fit <svg> node, or null when
+ * unusable. Exported so the icon-library previews (ui/iconsPicker.js) inline
+ * the SAME normalized node a tile renders. */
+export function svgElementFrom(svgText) {
   if (typeof svgText !== 'string' || !svgText.trim()) return null;
   try {
     const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
     const svgEl = doc.documentElement;
     if (svgEl?.nodeName === 'svg' && !doc.querySelector('parsererror')) {
-      return document.importNode(svgEl, true);
+      return normalizeSvgNode(document.importNode(svgEl, true));
     }
   } catch {
     /* fall through */
   }
   return null;
+}
+
+/**
+ * Make an imported SVG render EXACTLY inside its host box, whatever the
+ * source's intrinsic sizing:
+ *   - drop the `width`/`height` presentation attributes. Iconify ships
+ *     `width="1em" height="1em"`, which resolves against the HOST element's
+ *     font-size — a fragile, font-dependent viewport we do not control. With
+ *     the attributes gone the CSS (`width/height:100%` on `.tile-icon svg` /
+ *     `.tile-icon-local svg`) is the single sizing authority.
+ *   - guarantee a `viewBox` (derived from a numeric width/height when absent)
+ *     so the drawing scales instead of being drawn 1:1 and cropped.
+ *   - force an explicit `preserveAspectRatio="xMidYMid meet"` so a glyph whose
+ *     design box differs from the host box is letterboxed, never stretched nor
+ *     cropped.
+ *   - mark it `aria-hidden`/`focusable="false"` (purely decorative icon).
+ * Idempotent; never throws (a missing attribute is simply skipped).
+ */
+function normalizeSvgNode(svg) {
+  const w = svg.getAttribute('width');
+  const h = svg.getAttribute('height');
+  if (!svg.getAttribute('viewBox') && w && h) {
+    const nw = parseFloat(w);
+    const nh = parseFloat(h);
+    if (Number.isFinite(nw) && nw > 0 && Number.isFinite(nh) && nh > 0) {
+      svg.setAttribute('viewBox', `0 0 ${nw} ${nh}`);
+    }
+  }
+  svg.removeAttribute('width');
+  svg.removeAttribute('height');
+  if (!svg.getAttribute('preserveAspectRatio')) {
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  }
+  svg.setAttribute('focusable', 'false');
+  svg.setAttribute('aria-hidden', 'true');
+  return svg;
 }
 
 /** Tolerant wrapper around the vendored HolafIcons.get (throws on unknown). */
@@ -614,9 +652,15 @@ function safeHolafGet(name) {
   }
 }
 
-// Tile chrome consumed by the box model (border 1px + padding 3px, per side =
-// 8px total — MUST mirror .group-tile in style.css).
-const TILE_CHROME = 8;
+// Tile chrome consumed by the box model. MUST mirror style.css (per side):
+//   .group-tile  border 1px + padding 3px
+//   .tile-main   padding 2px
+// = 12px total. The icon is sized from the tile's TRUE content box, so the
+// computed size always matches the box the glyph is painted into — without
+// relying on `.tile-icon`'s max-width/height clamp (which used to hide the
+// 4px of `.tile-main` padding and left the Fill crank 4px too big, clipped as
+// soon as `allowIconOverflow` lifted that clamp).
+const TILE_CHROME = 12;
 // Space (px) reserved for a sibling block so the icon never crowds it out of
 // the tile — the compact-typography guard of roadmap §A.7.
 const LABEL_RESERVE = 15;

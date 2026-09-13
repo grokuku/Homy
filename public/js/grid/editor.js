@@ -32,7 +32,7 @@ const GROUP_MIN_CELLS = 2;
  * push). margin must stay a single symmetric value (square-cell contract),
  * see config.js (review C8).
  */
-export function initEditor(container, items, { onSave, columns = GRID_COLUMNS }) {
+export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, cellHeight = 'auto' } = {}) {
   const meta = new Map(); // id -> { type, config, buttons? }
   // normalizeItems MUST run before the meta cache is populated: it is the load
   // correction shared with the viewer (geometry hardening, search h:1→h:2 and
@@ -59,7 +59,11 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
   const grid = window.GridStack.init(
     {
       staticGrid: false,
-      cellHeight: 'auto', // square cells: height tracks cellWidth (= containerWidth/32)
+      // 'auto' = square cells; a positive NUMBER = the pinned row pitch (px)
+      // computed by main.js so the editor's logical (view-sized) canvas keeps
+      // the exact VIEW geometry even when the view canvas is stretched (see
+      // grid/config.js computeCanvasFit).
+      cellHeight: Number.isFinite(cellHeight) && cellHeight > 0 ? cellHeight : 'auto',
       margin: 8, // INSIDE the cell: items snap to multiples of the cell width,
       // so the CSS grid lines (also at multiples) align with item edges.
       column: columns, // saved column count (12 for legacy) — migrated below if ≠ 32
@@ -370,6 +374,15 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS })
     applyConfig,
     applyButtons,
     applyReports,
+    /**
+     * Update the pinned row pitch (px) from main.js after a resize / geometry
+     * change. With an explicit cellHeight gridstack no longer tracks
+     * clientWidth (its auto ResizeObserver path is off), so the owner must
+     * push the fresh value — keeps the inline container height == --canvas-h.
+     */
+    setCellHeight(h) {
+      if (Number.isFinite(h) && h > 0) grid.cellHeight(h);
+    },
     /** Flush a pending debounced save NOW (awaitable — see flushSave). */
     flush: flushSave,
     destroy() {
