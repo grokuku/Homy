@@ -134,7 +134,11 @@ function buildReportingSection(element) {
   toggle.addEventListener('change', syncVisibility);
   syncVisibility();
 
-  loadReportTypes().then((types) => {
+  // The type list arrives asynchronously (cached per session). Keep the test
+  // button disabled until it lands so a fast click can never hit the empty
+  // select and surface a spurious « Choose a report type ».
+  testBtn.disabled = true;
+  const typesReady = loadReportTypes().then((types) => {
     for (const t of types) {
       const opt = el('option', null, t.implemented ? t.label : `${t.label} (soon)`);
       opt.value = t.id;
@@ -146,6 +150,8 @@ function buildReportingSection(element) {
         ? existing.type
         : types.find((t) => t.implemented)?.id || '';
     if (wanted) typeSelect.value = wanted;
+    testBtn.disabled = false;
+    return types;
   });
 
   /** Validate the current report fields → `{ payload }` or `{ error }`. */
@@ -166,6 +172,7 @@ function buildReportingSection(element) {
   testBtn.addEventListener('click', async () => {
     testResult.className = 'report-test-result';
     testResult.textContent = 'Testing…';
+    await typesReady; // ensure the type select is populated before validating
     const c = credentials();
     if (c.error) {
       testResult.textContent = c.error;

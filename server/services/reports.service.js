@@ -162,26 +162,62 @@ export async function fetchReport(typeId, credentials, { timeoutMs = DEFAULT_TIM
 
 // ---- Jellyfin provider ------------------------------------------------------
 
+/**
+ * Jellyfin authentication headers.
+ *
+ * HISTORY (LOT 8 fix): the original implementation authenticated with the
+ * legacy `?api_key=<key>` QUERY parameter. Modern Jellyfin (10.9+/12.x)
+ * REMOVED query-string key support and answers `HTTP 401` for it — verified
+ * against a real Jellyfin 12.0.0 server where the SAME valid key returns 200
+ * via the `MediaBrowser` Authorization scheme. `X-Emby-Token` is likewise
+ * rejected by that build. The canonical, version-agnostic mechanism is:
+ *
+ *   Authorization: MediaBrowser Token="<apiKey>"
+ *
+ * Using a header also keeps the secret OUT of the URL, so it can never land in
+ * reverse-proxy / access logs upstream.
+ *
+ * Returns `null` when the key is empty or contains characters that would break
+ * (or inject into) the header value — never expected for a real key.
+ */
+export function jellyfinAuthHeaders(apiKey) {
+  const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+  if (!key) return null;
+  // Reject CR/LF/control chars and quotes: guarantees a well-formed header.
+  if (/[\u0000-\u001f\u007f"]/.test(key)) return null;
+  return { authorization: `MediaBrowser Token="${key}"` };
+}
+
 async function fetchJellyfin(credentials, timeoutMs) {
   const baseUrl = normalizeBaseUrl(credentials?.baseUrl);
   const apiKey = typeof credentials?.apiKey === 'string' ? credentials.apiKey : '';
   if (!baseUrl) return degraded('error', 'Invalid server URL');
   if (!apiKey) return degraded('unauthorized', 'Missing API key');
 
+  const authHeaders = jellyfinAuthHeaders(apiKey);
+  if (!authHeaders) return degraded('unauthorized', 'Invalid API key format');
+
   const sessionsUrl = buildUrl(baseUrl, '/Sessions');
-  if (sessionsUrl) sessionsUrl.searchParams.set('api_key', apiKey);
+  if (!sessionsUrl) return degraded('error', 'Invalid server URL');
+  const headers = { accept: 'application/json', ...authHeaders };
+
+  // Best-effort server info: launched CONCURRENTLY and fully isolated so a slow
+  // / absent / 401 /System/Info can neither delay nor degrade the sessions
+  // report. Its rejection is swallowed immediately (never an unhandled
+  // rejection) and it never carries the key into the URL.
+  const infoPromise = fetchJellyfinServerInfo(baseUrl, headers, timeoutMs);
 
   let res;
   try {
     res = await fetch(sessionsUrl, {
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { accept: 'application/json' },
+      headers,
     });
   } catch (err) {
     return degraded(...mapFetchError(err));
   }
   if (res.status === 401 || res.status === 403) {
-    return degraded('unauthorized', 'Invalid API key or access denied');
+    return degraded('unauthorized', `Invalid API key or access denied (HTTP ${res.status})`);
   }
   if (!res.ok) {
     return degraded('error', `Jellyfin responded with HTTP ${res.status}`);
@@ -194,37 +230,84 @@ async function fetchJellyfin(credentials, timeoutMs) {
   }
   const sessions = normalizeSessions(raw).slice(0, MAX_SESSIONS);
 
-  // Best-effort server info (independent, bounded; a failure never degrades
-  // the sessions we already have).
-  let server = null;
-  try {
-    const infoUrl = buildUrl(baseUrl, '/System/Info');
-    if (infoUrl) infoUrl.searchParams.set('api_key', apiKey);
-    const infoRes = await fetch(infoUrl, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { accept: 'application/json' },
-    });
-    if (infoRes.ok) {
-      const info = await infoRes.json();
-      server = normalizeServerInfo(info, sessions.length);
-    }
-  } catch {
-    /* server info is optional */
-  }
-  if (server === null) server = { name: '', version: '', sessionCount: sessions.length };
+  const info = (await infoPromise) || { name: '', version: '' };
+  const server = { name: info.name, version: info.version, sessionCount: sessions.length };
 
   return { status: 'ok', server, sessions, error: null };
+}
+
+/**
+ * OPTIONAL `/System/Info` lookup (server name/version). NEVER throws and NEVER
+ * blocks the report: any failure resolves to `null`.
+ */
+async function fetchJellyfinServerInfo(baseUrl, headers, timeoutMs) {
+  try {
+    const infoUrl = buildUrl(baseUrl, '/System/Info');
+    if (!infoUrl) return null;
+    const res = await fetch(infoUrl, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers,
+    });
+    if (!res.ok) return null;
+    const info = await res.json();
+    return normalizeServerInfo(info);
+  } catch {
+    return null;
+  }
 }
 
 function degraded(status, error) {
   return { status, server: null, sessions: [], error };
 }
 
+/**
+ * Map a thrown fetch error to a DIAGNOSABLE degraded state. The status stays
+ * within the known set (`timeout` / `unreachable` / `error`); the message names
+ * the underlying network cause (DNS, refused connection, TLS…) WITHOUT ever
+ * echoing the API key or the full request URL.
+ */
 function mapFetchError(err) {
   if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
     return ['timeout', 'Jellyfin did not respond in time'];
   }
-  return ['unreachable', 'Jellyfin is unreachable'];
+  const code = deepestErrorCode(err);
+  switch (code) {
+    case 'ENOTFOUND':
+    case 'EAI_AGAIN':
+      return ['unreachable', 'Jellyfin host not found — check the server URL / DNS'];
+    case 'ECONNREFUSED':
+      return ['unreachable', 'Jellyfin refused the connection — check the server URL / port'];
+    case 'ECONNRESET':
+      return ['unreachable', 'Jellyfin closed the connection unexpectedly'];
+    case 'ETIMEDOUT':
+    case 'UND_ERR_CONNECT_TIMEOUT':
+    case 'UND_ERR_HEADERS_TIMEOUT':
+    case 'UND_ERR_BODY_TIMEOUT':
+      return ['timeout', 'Jellyfin did not respond in time'];
+    case 'CERT_HAS_EXPIRED':
+    case 'DEPTH_ZERO_SELF_SIGNED_CERT':
+    case 'SELF_SIGNED_CERT_IN_CHAIN':
+    case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
+    case 'ERR_TLS_CERT_ALTNAME_INVALID':
+      return ['error', `TLS certificate error (${code})`];
+    case 'ERR_INVALID_URL':
+      return ['error', 'Invalid server URL'];
+    default:
+      return ['unreachable', 'Jellyfin is unreachable'];
+  }
+}
+
+/** Walk the `cause` chain (undici wraps Node errors) for the deepest `code`. */
+function deepestErrorCode(err) {
+  let current = err;
+  let code = '';
+  let depth = 0;
+  while (current && depth < 6) {
+    if (typeof current.code === 'string' && current.code) code = current.code;
+    current = current.cause;
+    depth++;
+  }
+  return code;
 }
 
 /** Tolerant `user.name.mediaLabel` normalization of /Sessions. */
@@ -276,12 +359,11 @@ function mediaLabel(item) {
   return `${series} ·${code} ${name}`.replace(/\s+/g, ' ').trim();
 }
 
-function normalizeServerInfo(info, sessionCount) {
+function normalizeServerInfo(info) {
   const obj = info && typeof info === 'object' ? info : {};
   return {
     name: str(obj.ServerName),
     version: str(obj.Version),
-    sessionCount,
   };
 }
 
