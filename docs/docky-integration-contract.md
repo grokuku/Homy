@@ -1,18 +1,56 @@
 # Contrat d'intégration Docky ↔ Homy
 
-> **Version du contrat :** 1.0 (brouillon à valider)
+> **Version du contrat :** 1.0 (**accepté et implémenté par Docky le 2026-09-13**)
 > **Date :** 2026-09-13
 > **Émetteur :** Homy (dashboard self-hosted, dépôt `/projects/Homy`)
 > **Destinataire :** équipe/agent qui développe **Docky** (orchestrateur Docker + agents)
-> **Statut :** **à implémenter côté Docky** — l'API décrite n'existe pas encore telle quelle.
+> **Statut :** ✅ **accepté et implémenté côté Docky (lots A+B)**. Homy a branché son proxy,
+> ses tuiles et ses contrôles sur cette surface (lot 5) — voir l'encadré ci-dessous.
 > **Document de référence :** `roadmap.md` §D « Docky (monitoring / santé / contrôles) ».
-> **Rappel de périmètre :** l'**implémentation côté Docky est HORS PÉRIMÈTRE de Homy**.
-> Homy spécifie le contrat et consomme l'API ; Docky l'implémente.
 
-Ce document est une **spécification exploitable** : chaque endpoint est décrit avec sa méthode,
-son chemin, ses paramètres, son corps, sa réponse JSON et ses erreurs. Les identifiants et les
-payloads sont en **anglais** (comme le reste de l'écosystème Docky/Homy) ; la prose est en
-français.
+---
+
+## Réponse de Docky : contrat accepté et implémenté le 2026-09-13
+
+Docky a **accepté le contrat v1.0** et l'a **implémenté** (lots A+B côté Docky). Les points
+ouverts §7 ont été tranchés ; voici les **écarts retenus** que Homy applique (lot 5) :
+
+- **Préfixe dédié et versionné** : la surface d'intégration est exposée sous
+  **`https://<docky>/api/integration/v1`** (`/api/*` reste réservé à l'UI navigateur de Docky).
+  Homy stocke **une seule base URL** configurable ; si l'utilisateur ne saisit que l'hôte, le
+  suffixe `/api/integration/v1` est ajouté automatiquement.
+- **Clé dédiée** : header `Authorization: Bearer <clé d'intégration>` sur **chaque** requête.
+  La clé est **différente de la clé MCP**, gérée dans l'UI Docky (Settings → API d'intégration :
+  afficher/copier/régénérer). Côté Homy elle est **côté serveur uniquement** (jamais renvoyée au
+  front, jamais journalisée).
+- **Vocabulaire normalisé** : `state` ∈ running|exited|paused|restarting|created|dead|unknown ;
+  `health` ∈ healthy|unhealthy|starting|none (`null` → `none`). Toute valeur hors liste est
+  absorbée comme `unknown`/`none` (jamais de crash d'UI). `{container}` accepte **nom OU id**.
+- **`cpu_percent` normalisé hôte 0–100** (`cpu_percent_raw` multi-cœurs + `cpu_count` en plus) ;
+  `mem_usage`/`mem_limit`/`mem_percent` en octets/% ; **`mem_usage` exclut DÉJÀ le cache** (ne
+  pas re-soustraire `mem_cache`) ; `network_rx`/`network_tx` en **octets cumulés**.
+- **`disk_*` toujours `null`** (non mesuré) : Homy affiche « — », jamais une erreur.
+- **Batch** : `POST /containers/health` et `POST /containers/stats` (≤ **100 cibles**, corps ≤
+  256 Kio, **toujours `200`**) renvoient `{checkedAt, results:[…]}` **dans l'ordre des targets**.
+  Un agent injoignable **n'est pas un `502` global** : l'échec est **par cible**
+  (`results[i].error = {code, message}`), les champs de la cible en échec restant présents mais
+  remis à zéro. Homy découpe lui-même en lots ≤100 et ré-indexe les résultats.
+- **`409 conflict` sur une action = succès idempotent** : Homy renvoie l'état cible et affiche
+  « déjà dans cet état » plutôt qu'une erreur bloquante.
+- **Clé stable** : l'`id` d'un conteneur **change à la recréation** → Homy stocke le **`name`**
+  (couple `agent` + `name`) comme identifiant logique.
+- **Erreurs** : corps **toujours** `{error, code}` ; `401 unauthorized` (header absent/clé
+  invalide), `403 forbidden` (scheme ≠ Bearer), `404 not_found`/`agent_not_found`,
+  `409 conflict`, `400 invalid_request` (>100 cibles, corps >256 Kio),
+  `502 agent_unreachable`/`action_failed`, `503 agent_offline`/`not_configured`/`no_agents`,
+  `504 timeout` (stats 15 s, action 20 s). Homy mappe ces codes sur ses propres états/erreurs.
+- **Pas de rate limiting** pour l'instant ; un futur `429` + `Retry-After` est prévu (géré sans en
+  dépendre).
+- **Non couvert** : action `update-image`, webhooks (intégration *pull*), stats disque.
+
+> Côté Homy (lot 5, FAIT) : client `server/services/docky.service.js`, proxy JWT
+> `/api/docky/*`, cache mémoire TTL ~30 s, tuiles santé/monitoring réelles, contrôles
+> start/stop/restart avec confirmation 2 temps, sélecteur de cible filtrable et mode dégradé.
 
 ---
 
@@ -21,9 +59,9 @@ français.
 > Résumé synthétique du contrat. Les **chemins, méthodes HTTP, payloads et formes de réponse
 > font foi en §4** ci-dessous (surface attendue par Homy) ; l'**Annexe A** donne la
 > correspondance avec les endpoints Docky existants. **Lire la suite du document** pour les cas
-> détaillés. Restent ouverts et à confirmer par Docky (§7) : le préfixe/versionnage de la surface
-> d'intégration (Q1), la réponse des actions `200` synchrone vs `202` asynchrone (Q3) et le
-> **batch stats optionnel** (Q5).
+> détaillés. Les anciens points ouverts (§7 : préfixe/versionnage, réponses des actions, batch
+> stats) ont été **tranchés par Docky** — voir l'encadré « Réponse de Docky » en tête de
+> document.
 
 ### 0.1 Les endpoints (5 unitaires + 2 batch)
 
@@ -628,7 +666,12 @@ considère l'état cible comme déjà atteint et **ne montre pas d'erreur bloqua
 
 ---
 
-## 7. Points ouverts (à confirmer par l'équipe Docky)
+## 7. Points ouverts (tranchés par Docky — conservés pour mémoire)
+
+> **Tous les points ci-dessous ont reçu une réponse de Docky le 2026-09-13** (voir l'encadré
+> « Réponse de Docky » en tête de document) : préfixe dédié `/api/integration/v1`, clé
+> d'intégration dédiée, vocabulaire normalisé, `cpu_percent` 0–100, clé stable = `name`,
+> `409` idempotent, `disk_*` null, batches ≤100 cibles. Tableau conservé à titre de traçabilité.
 
 | # | Question | Impact |
 | --- | --- | --- |

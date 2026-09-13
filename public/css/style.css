@@ -1217,6 +1217,36 @@ body[data-bg-active] .grid-stack-item-content {
   opacity: 0.55;
 }
 .tile-control:disabled { cursor: not-allowed; }
+.tile-control:not(:disabled) { cursor: pointer; opacity: 1; color: var(--text); }
+.tile-control:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+.tile-control.armed,
+.tile-control.armed:hover {
+  cursor: pointer;
+  opacity: 1;
+  border-color: var(--warning, #e0a800);
+  color: var(--warning, #e0a800);
+}
+/* live health colours (data-state set by the Docky refresh) */
+.tile-health[data-state='healthy'] { background: var(--success, #3fb950); }
+.tile-health[data-state='unhealthy'] { background: var(--danger, #f85149); }
+.tile-health[data-state='starting'] { background: var(--warning, #e0a800); animation: tile-health-pulse 1s ease-in-out infinite; }
+@keyframes tile-health-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+/* « Docky offline » marker shown over a degraded tile */
+.tile-docky-note {
+  position: absolute;
+  left: 3px;
+  bottom: 2px;
+  z-index: 2;
+  font-size: 8px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--warning, #e0a800);
+  background: color-mix(in srgb, var(--bg-elev-2) 84%, transparent);
+  padding: 1px 3px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+}
 /* explicit « nothing enabled » fallback — never an empty/broken tile */
 .tile-empty {
   flex: 1;
@@ -1948,3 +1978,57 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .tile-icon-local { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
 .tile-icon-local svg { width: 100%; height: 100%; display: block; }
 .icon-browse-btn { margin-top: 8px; padding: 6px 12px; font-size: 13px; }
+
+/* ---------- Docky target picker + config (lot 5) ----------
+   Used by the element form (filterable agent/container combos with state/health
+   badges) and the Docky config modal (URL + write-only key). Kept in the same
+   visual language as the rest of the forms. */
+.docky-target-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.docky-target-title { font-weight: 600; margin-bottom: 4px; }
+.docky-target-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.docky-target-status { font-size: 12px; margin-top: 6px; min-height: 16px; }
+.docky-target-status.success { color: var(--success, #3fb950); }
+.docky-target-status.error { color: var(--danger); }
+.docky-target-status.warn { color: var(--warning, #e0a800); }
+
+.docky-combo { position: relative; }
+.docky-combo input { width: 100%; }
+.docky-combo-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+}
+.docky-combo-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.docky-combo-row:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.docky-combo-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docky-combo-sub { font-size: 11px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docky-combo-empty { padding: 8px; font-size: 12px; }
+.badge-docky-status.ok { color: var(--success, #3fb950); border-color: color-mix(in srgb, var(--success, #3fb950) 45%, var(--border)); }
+.badge-docky-status.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.badge-docky-state.ok { color: var(--success, #3fb950); border-color: color-mix(in srgb, var(--success, #3fb950) 45%, var(--border)); }
+.badge-docky-state.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.badge-docky-health.ok { color: var(--success, #3fb950); }
+.badge-docky-health.bad { color: var(--danger); }
+.badge-docky-health.warn { color: var(--warning, #e0a800); }
+
+.docky-config-form .field { margin-bottom: 10px; }
+.docky-test-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.docky-config-status { font-size: 12px; }
+.docky-config-status.success { color: var(--success, #3fb950); }
+.docky-config-status.error { color: var(--danger); }
+.docky-config-status.warn { color: var(--warning, #e0a800); }

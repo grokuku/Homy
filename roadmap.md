@@ -1,8 +1,9 @@
 # Homy — Roadmap
 
 > **Statut :** document de conception. Les décisions ci-dessous sont **validées** ; la refonte
-> du modèle « éléments » est **implémentée pour les lots 1→4, 6, 7 et 8** (le lot 5 attend
-> l'**implémentation côté Docky** ; le contrat de référence est rédigé — `docs/docky-integration-contract.md`, voir §D.3 et §I).
+> du modèle « éléments » est **implémentée pour les lots 1→8** (le lot 5 est **FAIT le
+> 2026-09-13**, après acceptation/implémentation du contrat par Docky — voir
+> `docs/docky-integration-contract.md`, §D.3 et §I).
 > **Dernière mise à jour :** 2026-09-13
 > **Version courante :** `0.1.0` (source de vérité : `version.txt`)
 > **Portée :** dépôt `/projects/Homy` uniquement. Le contrat d'API Docky est **spécifié ici**
@@ -242,9 +243,11 @@ Il couvre au minimum :
 
 > **Périmètre :** l'**implémentation côté Docky est HORS PÉRIMÈTRE de Homy**. Homy spécifie le
 > contrat, consomme le proxy (§G) et peut livrer un **stub dégradé** en attendant (§I, lot 5).
-> **État :** le **lot 5 reste EN ATTENTE de l'implémentation côté Docky** ; le contrat
-> [`docs/docky-integration-contract.md`](docs/docky-integration-contract.md) est prêt à
-> transmettre et doit être confirmé par l'équipe Docky (points ouverts §7 du contrat).
+> **État :** le **lot 5 est FAIT (2026-09-13)** — Docky a **accepté et implémenté le contrat v1.0**
+> (lots A+B) et Homy est branché dessus (client `docky.service.js`, proxy `/api/docky/*`, tuiles
+> santé/monitoring réelles, contrôles start/stop/restart, sélecteur de cible, mode dégradé). Voir
+> l'encadré « Réponse de Docky » de
+> [`docs/docky-integration-contract.md`](docs/docky-integration-contract.md).
 
 ### D.4 Cas dégradés
 
@@ -354,7 +357,7 @@ Il couvre au minimum :
 | **2** | Modèle front & registry (`catalog.js`, `button.js`, `group.js`, retrait `frame`/`shortcut`/`links`, groupe conteneur, tolérance type inconnu) | **FAIT** | **1** |
 | **3** | Écran catalogue (UI CRUD + form) | **FAIT** | **2** |
 | **4** | Groupe + boutons + options (trame interne, picker, panneau d'options, matrice de variantes) | **FAIT** | **2** (puis 3) |
-| **5** | Proxy Docky + santé / monitoring / contrôles | **EN ATTENTE DE L'IMPLÉMENTATION CÔTÉ DOCKY** (contrat de référence : [`docs/docky-integration-contract.md`](docs/docky-integration-contract.md) ; livrable possible en **stub dégradé**) | contrat §D.3 + **4** |
+| **5** | Proxy Docky + santé / monitoring / contrôles | **FAIT (2026-09-13)** — contrat v1.0 **accepté et implémenté par Docky** ([`docs/docky-integration-contract.md`](docs/docky-integration-contract.md)) ; client serveur + proxy `/api/docky/*` + cache + mapping d'erreurs + tuiles réelles + contrôles 2 temps + sélecteur de cible + mode dégradé | **4** |
 | **6** | Nettoyage & polish (suppression des widgets legacy, palette, libellés, README) | **FAIT (2026-09-13)** | **3, 4** |
 | **7** | Bibliothèque d'icônes (recherche, install locale, index + licences, picker) | **FAIT (2026-09-13)** | indépendant |
 | **8** | Reporting spécial (registre de plugins, Jellyfin d'abord) | **FAIT (2026-09-13)** | indépendant |
@@ -363,16 +366,15 @@ Il couvre au minimum :
 
 ```
 1 ──▶ 2 ──▶ 3 ──▶ 4 ──▶ 6
-              └──▶ 5  (dépend du contrat Docky §D.3)
+              └──▶ 5  (FAIT — contrat Docky §D.3 accepté/implémenté)
 
 7 (indépendant, FAIT)      8 (indépendant, FAIT)
 ```
 
-- Cœur du chantier : **1 → 2 → 3 → 4**, puis **6** (nettoyage).
-- **5** ne démarre réellement qu'avec le **contrat Docky** (rédigé :
-  [`docs/docky-integration-contract.md`](docs/docky-integration-contract.md)) **implémenté côté
-  Docky** ; en attendant, un **stub dégradé** (pastille grise / « — » / contrôles désactivés) est
-  livrable.
+- Cœur du chantier : **1 → 2 → 3 → 4**, puis **6**.
+- **5** est **FAIT (2026-09-13)** : le contrat Docky ([`docs/docky-integration-contract.md`](docs/docky-integration-contract.md))
+  a été **accepté et implémenté côté Docky** ; Homy consomme la surface versionnée
+  `/api/integration/v1` via un proxy JWT allowlisté, avec un mode dégradé complet.
 - **7** et **8** sont **indépendants** et peuvent être menés en parallèle.
 
 ### I.3 Vérifications attendues par lot
@@ -397,8 +399,11 @@ Il couvre au minimum :
 - **Lot 4** — trame interne (demi-cran) exacte ; groupe mini 2×2 globales ; contenu à taille
   physique constante ; **scroll interne** au débordement ; recette de la **matrice de
   variantes** (§A.5) ; contrôles en **2 temps**.
-- **Lot 5** — proxy `/api/docky/*` **allowlisté** et JWT ; cas dégradés §D.4 couverts ; aucune
-  clé Docky au front.
+- **Lot 5** — **(fait)** proxy `/api/docky/*` **allowlisté** et JWT ; client `docky.service.js`
+  (Bearer côté serveur uniquement, timeouts bornés, cache TTL ~30 s, découpage batch ≤100 et
+  ré-indexation, `409` idempotent, mapping d'erreurs) ; cas dégradés §D.4 couverts ; tuiles
+  santé/monitoring réelles ; contrôles en **2 temps** ; sélecteur de cible filtrable (repli
+  saisie libre) ; **aucune** clé Docky au front ni dans les logs.
 - **Lot 6** — **(fait)** plus de widget legacy actif (retirés des DEUX côtés : manifest serveur +
   registre front) ; palette et libellés à jour (`clock`/`iframe`/`search`/`notes`/`weather`/
   `group`) ; tolérance conservée (item legacy/inconnu ignoré au chargement, `POST` type inconnu

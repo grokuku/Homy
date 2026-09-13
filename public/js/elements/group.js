@@ -154,7 +154,8 @@ export const group = {
       canvas.replaceChildren();
       for (const button of buttons) {
         const element = catalog.get(button.elementId);
-        const tile = renderButtonTile({ button, element, step });
+        const { el: tile, dispose } = renderButtonTile({ button, element, step });
+        tileDisposers.add(dispose);
         if (editable) decorateTile(tile, button);
         canvas.appendChild(tile);
       }

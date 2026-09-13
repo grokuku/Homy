@@ -6,6 +6,7 @@ import { catalog } from '../elements/catalog.js';
 import { buildIconNode } from '../elements/button.js';
 import { buildField, collect } from './settingsModal.js';
 import { openIconsPicker } from './iconsPicker.js';
+import { buildDockyTargetField } from './dockyTarget.js';
 
 /**
  * Elements catalogue screen (LOT 3) — CRUD UI for the GLOBAL element catalogue
@@ -24,8 +25,9 @@ import { openIconsPicker } from './iconsPicker.js';
  *   The element form reuses the project's field builder (buildField/collect from
  *   ui/settingsModal.js): Name (required, 1..60 server-side), Icon (emoji /
  *   holaf:<name> / http(s) URL + a LIVE preview), URL, Description, Health check
- *   (toggle), and the raw Docky agent/container targets (the Docky-fed picker
- *   lands in lot 5). The footer Save is bound to the form through the HTML
+ *   (toggle), and a live Docky target picker (filterable agent/container
+ *   dropdowns with state/health badges, free-text fallback when Docky is
+ *   unavailable — lot 5). The footer Save is bound to the form through the HTML
  *   `form=` attribute — a real native submit (lot-2 lesson).
  *
  * DELETE
@@ -203,15 +205,14 @@ function buildReportingSection(element) {
 }
 
 // Field schema consumed by the shared builder. Keys are flat (the builder's
-// contract); the two Docky parts are folded into `{ agent, container }` on save.
+// contract); the Docky target is a dedicated picker section (buildDockyTargetField)
+// appended below, folded into `{ agent, container }` on save.
 const FORM_FIELDS = [
   { key: 'name', label: 'Name', type: 'text', required: true, placeholder: 'e.g. Jellyfin' },
   { key: 'icon', label: 'Icon', type: 'text', placeholder: 'Emoji, holaf:<name>, local:<slug> or https://…', help: 'Pick a local icon from the library or type an emoji / holaf:<name> / https://… URL.' },
   { key: 'url', label: 'URL', type: 'url', placeholder: 'https://…' },
   { key: 'description', label: 'Description', type: 'textarea', rows: 2, placeholder: 'Optional' },
-  { key: 'healthCheck', label: 'Health check', type: 'toggle', help: 'Delegate a health probe to Docky (wired in lot 5).' },
-  { key: 'dockyAgent', label: 'Docky agent', type: 'text', placeholder: 'agent name', help: 'Target server — free text until the Docky picker lands (lot 5).' },
-  { key: 'dockyContainer', label: 'Docky container', type: 'text', placeholder: 'container name', help: 'Target container — free text until the Docky picker lands (lot 5).' },
+  { key: 'healthCheck', label: 'Health check', type: 'toggle', help: 'Delegate a health probe to Docky (via the Docky target below).' },
 ];
 
 let formSeq = 0; // unique <form> ids when several forms are alive
@@ -458,6 +459,11 @@ export function openElementFormModal(element, onSaved) {
   const reporting = buildReportingSection(element);
   form.appendChild(reporting.section);
 
+  // Docky target (lot 5): filterable agent/container picker with a free-text
+  // fallback when Docky is unavailable. Persists agent + container NAME only.
+  const dockyField = buildDockyTargetField({ element });
+  form.appendChild(dockyField.section);
+
   const content = el('div', 'elements-form-body');
   content.append(form, errorEl);
 
@@ -479,10 +485,7 @@ export function openElementFormModal(element, onSaved) {
       toast(reportResult.error, 'error');
       return;
     }
-    const docky =
-      v.dockyAgent || v.dockyContainer
-        ? { agent: v.dockyAgent || '', container: v.dockyContainer || '' }
-        : null;
+    const docky = dockyField.getValue();
     const payload = {
       name: v.name,
       icon: v.icon || '',
@@ -515,6 +518,7 @@ export function openElementFormModal(element, onSaved) {
     title: editing ? 'Edit element' : 'New element',
     size: 'md',
     content,
+    onClose: () => dockyField.dispose(),
     actions: [
       { label: 'Cancel', type: 'cancel' },
       { label: editing ? 'Save' : 'Create', type: 'primary', form: formId },
@@ -537,10 +541,6 @@ function initialValue(key, element) {
       return element.description || '';
     case 'healthCheck':
       return !!element.healthCheck;
-    case 'dockyAgent':
-      return element.docky?.agent || '';
-    case 'dockyContainer':
-      return element.docky?.container || '';
     default:
       return undefined;
   }

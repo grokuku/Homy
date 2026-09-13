@@ -1,5 +1,7 @@
 import { el, isValidHttpUrl } from '../util.js';
 import { api } from '../api.js';
+import { toast } from '../ui/toast.js';
+import { dockyApi, dockyPoller } from '../docky/docky.js';
 import { HolafIcons } from '../../vendor/holaf/holaf-icons.js';
 
 /**
@@ -20,14 +22,20 @@ import { HolafIcons } from '../../vendor/holaf/holaf-icons.js';
  *   - label             → the element name;
  *   - shortcut          → the tile's MAIN zone opens the element url (a real
  *                         <a href> when a valid http(s) url exists, inert otherwise);
- *   - health            → a status dot (DEGRADED: grey — Docky is not wired yet);
- *   - monitoring        → CPU / RAM rows (DEGRADED: « — » — Docky not wired yet);
- *   - controls          → a SECOND clickable zone (start/stop/restart) — DEGRADED:
- *                         every control is DISABLED/inert (no action, no request);
+ *   - health            → a live status dot (Docky: healthy/unhealthy/starting/none);
+ *   - monitoring        → live CPU / RAM rows (Docky health+stats batch);
+ *   - controls          → a live start/stop/restart zone with a 2-step
+ *                         confirmation (Docky actions; a 409 is an idempotent
+ *                         success);
  *   - iconSize          → S | M | L | XL | Fill = 40/55/70/85/100 % of the tile's
  *                         useful internal dimension (min side), see ICON_FRACTION;
  *   - allowIconOverflow → advanced, default OFF: lets the icon spill outside the
  *                         tile box instead of being clipped.
+ *
+ * LIVE DATA: when the element carries a Docky target, the tile subscribes to
+ * `dockyPoller` (page-level health+stats batch, ~30 s) and unsubscribes in its
+ * `dispose`. Without a target — or while Docky is offline — the tile degrades
+ * to a grey dot / « — » / disabled controls, never a crash.
  *
  * TILE SIZES: the tile footprint is `w × step` by `h × step` internal px, where
  * `step` is the group's internal cell size (half a global cell). The matrix's
@@ -166,6 +174,38 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
   applyTileMetrics(root, b, stepPx);
   if (o.allowIconOverflow) root.classList.add('allow-overflow');
 
+  const target = dockyTargetOf(def);
+  let healthEl = null;
+  let monitoring = null;
+  let controls = null;
+
+  /** Apply a resolved action result to the tile (optimistic update). */
+  const applyActionResult = (res) => {
+    if (!res) return;
+    if (healthEl) {
+      healthEl.dataset.state = res.health || 'unknown';
+      healthEl.title = healthTitle(res.health, res.state, null);
+    }
+    controls?.update(res.state, { disabled: !res.state || res.state === 'unknown' });
+  };
+
+  const runTileAction = async (action) => {
+    if (!target) return;
+    controls?.setBusy(true);
+    try {
+      const res = await dockyApi.action(target.agent, target.container, action);
+      const label = action.charAt(0).toUpperCase() + action.slice(1);
+      if (res?.already) toast(`${label}: container is already in this state`, 'info');
+      else toast(`${label}: ok`, 'success');
+      applyActionResult(res);
+      dockyPoller.refreshNow();
+    } catch (err) {
+      toast(err?.message || `${action} failed`, 'error');
+    } finally {
+      controls?.setBusy(false);
+    }
+  };
+
   // ---- main zone (the `shortcut` clickable area wraps the visible content) ---
   if (hasContent) {
     const clickable = o.shortcut && url;
@@ -180,8 +220,14 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
       main.appendChild(iconBox);
     }
     if (hasLabel) main.appendChild(el('span', 'tile-label', name));
-    if (hasMonitoring) main.appendChild(buildMonitoring());
-    if (hasHealth) main.appendChild(buildHealth());
+    if (hasMonitoring) {
+      monitoring = buildMonitoring();
+      main.appendChild(monitoring.el);
+    }
+    if (hasHealth) {
+      healthEl = buildHealth();
+      main.appendChild(healthEl);
+    }
 
     root.appendChild(main);
   } else if (o.shortcut && url) {
@@ -196,13 +242,52 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
     );
   }
 
-  // ---- controls zone (second clickable area — DEGRADED: inert buttons) ------
-  if (hasControls) root.appendChild(buildControls());
+  // ---- controls zone (second clickable area — live start/stop/restart) ------
+  if (hasControls) {
+    controls = buildControls({ onAction: runTileAction });
+    root.appendChild(controls.el);
+  }
 
   // ---- explicit "nothing enabled" fallback ---------------------------------
   if (!hasContent && !hasControls) root.appendChild(el('div', 'tile-empty', '—'));
 
-  return root;
+  // ---- live Docky data wiring ----------------------------------------------
+  // A small note is shown over degraded tiles (« Docky offline »), so the
+  // degraded state is explicit even on a health-only tile.
+  const offlineNote = el('span', 'tile-docky-note hidden', 'Docky offline');
+  if (target) root.appendChild(offlineNote);
+
+  let dispose = () => {};
+  if (target && (hasHealth || hasMonitoring || hasControls)) {
+    root.dataset.docky = 'pending';
+    const apply = (data) => {
+      const degraded = data?.degraded === true;
+      const hres = data?.health || null;
+      const sres = data?.stats || null;
+      const failed = degraded || !!(hres?.error) || !!(sres?.error);
+      const state = failed ? 'unknown' : hres?.state || 'unknown';
+      const health = failed ? 'unknown' : hres?.health || 'unknown';
+      root.dataset.docky = degraded
+        ? 'offline'
+        : failed
+          ? 'error'
+          : 'ok';
+      offlineNote.classList.toggle('hidden', !degraded);
+      if (healthEl) {
+        healthEl.dataset.state = health;
+        healthEl.title = healthTitle(health, state, hres);
+      }
+      if (monitoring) monitoring.update(failed ? null : sres, { degraded, error: hres?.error || sres?.error });
+      if (controls) controls.update(state, { disabled: failed });
+    };
+    dispose = dockyPoller.register(target, apply);
+  } else {
+    root.dataset.docky = 'none';
+    if (monitoring) monitoring.update(null, {});
+    if (healthEl) healthEl.dataset.state = 'unknown';
+  }
+
+  return { el: root, dispose };
 }
 
 /**
@@ -239,59 +324,189 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5) {
 
 // ---- pieces -----------------------------------------------------------------
 
+/** Read a usable `{ agent, container }` target off a catalogue element. */
+function dockyTargetOf(element) {
+  const agent = element?.docky?.agent ? String(element.docky.agent).trim() : '';
+  const container = element?.docky?.container ? String(element.docky.container).trim() : '';
+  return agent && container ? { agent, container } : null;
+}
+
 /**
- * Health dot. DEGRADED state: Docky is not connected yet, so the state is
- * UNKNOWN — rendered as a grey, non-animated dot (never green/red).
+ * Live health dot. `data-state` drives the colour (healthy/unhealthy/starting/
+ * none/unknown); a title explains the current state and any per-target error.
  */
 function buildHealth() {
   const dot = el('span', 'tile-health', null, {
-    title: 'Health unavailable (Docky not connected)',
+    title: 'Health unknown',
     'aria-label': 'Health unknown',
   });
   dot.dataset.state = 'unknown';
   return dot;
 }
 
-/** CPU / RAM rows. DEGRADED state: values are « — » until Docky is wired. */
-function buildMonitoring() {
-  const wrap = el('div', 'tile-monitoring', null, {
-    title: 'Monitoring unavailable (Docky not connected)',
-  });
-  wrap.dataset.state = 'unknown';
-  wrap.appendChild(metricRow('CPU'));
-  wrap.appendChild(metricRow('RAM'));
-  return wrap;
-}
-
-function metricRow(label) {
-  const row = el('div', 'tile-metric');
-  row.appendChild(el('span', 'tile-metric-label', label));
-  row.appendChild(el('span', 'tile-metric-value', '—'));
-  return row;
+function healthTitle(health, state, result) {
+  const label =
+    { healthy: 'Healthy', unhealthy: 'Unhealthy', starting: 'Starting', none: 'No healthcheck', unknown: 'Unknown' }[
+      health
+    ] || 'Unknown';
+  const statePart = state && state !== 'unknown' ? ` · ${state}` : '';
+  const err = result?.error?.message ? ` — ${result.error.message}` : '';
+  return `${label}${statePart}${err}`;
 }
 
 /**
- * start / stop / restart. DEGRADED: every control is DISABLED — no listener is
- * attached, so no action can ever fire (the real 2-time confirmation lands in
- * lot 5 with the Docky proxy).
+ * CPU / RAM rows fed by the batched Docky stats. Without data (offline / no
+ * target) every value reads « — ». Returns `{ el, update(stats, meta) }`.
  */
-function buildControls() {
+function buildMonitoring() {
+  const wrap = el('div', 'tile-monitoring', null, { title: 'Monitoring' });
+  wrap.dataset.state = 'unknown';
+  const cpuValue = el('span', 'tile-metric-value', '—');
+  const ramValue = el('span', 'tile-metric-value', '—');
+  wrap.appendChild(metricRow('CPU', cpuValue));
+  wrap.appendChild(metricRow('RAM', ramValue));
+
+  const update = (stats, meta = {}) => {
+    if (!stats) {
+      cpuValue.textContent = '—';
+      ramValue.textContent = '—';
+      cpuValue.title = '';
+      ramValue.title = '';
+      wrap.dataset.state = 'unknown';
+      wrap.title = meta.degraded
+        ? 'Monitoring unavailable — Docky offline'
+        : meta.error?.message
+          ? `Monitoring unavailable — ${meta.error.message}`
+          : 'Monitoring unavailable';
+      return;
+    }
+    wrap.dataset.state = stats.state || 'unknown';
+    cpuValue.textContent = stats.cpu_percent === null ? '—' : `${stats.cpu_percent.toFixed(1)}%`;
+    ramValue.textContent = stats.mem_percent === null ? '—' : `${Math.round(stats.mem_percent)}%`;
+    cpuValue.title = stats.cpu_count ? `${stats.cpu_count} CPUs` : '';
+    ramValue.title =
+      stats.mem_usage !== null
+        ? `${formatBytes(stats.mem_usage)}${stats.mem_limit !== null ? ` / ${formatBytes(stats.mem_limit)}` : ''}`
+        : '';
+    wrap.title = 'CPU / RAM (Docky)';
+  };
+
+  return { el: wrap, update };
+}
+
+function metricRow(label, valueEl) {
+  const row = el('div', 'tile-metric');
+  row.appendChild(el('span', 'tile-metric-label', label));
+  row.appendChild(valueEl);
+  return row;
+}
+
+/** Readable byte size (binary units, 1 decimal beyond KiB). */
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i += 1;
+  }
+  return `${i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+}
+
+/** Which controls are legal for a container state (contract §2.5). */
+function controlAvailable(state, action) {
+  switch (state) {
+    case 'running':
+      return action === 'stop' || action === 'restart';
+    case 'paused':
+      return action === 'stop' || action === 'restart';
+    case 'exited':
+    case 'created':
+    case 'dead':
+      return action === 'start';
+    default:
+      return false; // restarting / unknown
+  }
+}
+
+/**
+ * start / stop / restart with a 2-step confirmation (same armed pattern as the
+ * deletion flows). Returns `{ el, update(state, meta), setBusy(bool) }`.
+ * Buttons are disabled unless `controlAvailable(state, action)`.
+ */
+function buildControls({ onAction } = {}) {
   const wrap = el('div', 'tile-controls', null, {
     role: 'group',
-    'aria-label': 'Container controls (unavailable)',
+    'aria-label': 'Container controls',
   });
+  let currentState = 'unknown';
+  let globallyDisabled = true; // no data yet → everything inert
+  let busy = false;
+  const items = [];
+
+  const refreshDisabled = () => {
+    for (const item of items) {
+      const allowed = !globallyDisabled && !busy && controlAvailable(currentState, item.action);
+      item.btn.disabled = !allowed;
+      if (!allowed) item.disarm();
+    }
+  };
+
   for (const { action, glyph } of CONTROL_ACTIONS) {
     const label = action.charAt(0).toUpperCase() + action.slice(1);
     const btn = el('button', `tile-control tile-control-${action}`, glyph, {
       type: 'button',
-      title: `${label} (unavailable)`,
+      title: `${label}`,
       'aria-label': label,
-      disabled: '',
     });
     btn.disabled = true;
+
+    const item = { action, btn, disarm: null };
+    let armed = false;
+    let timer = 0;
+    const disarm = () => {
+      if (timer) clearTimeout(timer);
+      timer = 0;
+      armed = false;
+      btn.classList.remove('armed');
+      btn.textContent = glyph;
+      btn.title = label;
+    };
+    item.disarm = disarm;
+
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (btn.disabled) return;
+      if (armed) {
+        disarm();
+        onAction?.(action);
+        return;
+      }
+      armed = true;
+      btn.classList.add('armed');
+      btn.textContent = '?';
+      btn.title = `Click again to ${action}`;
+      timer = setTimeout(disarm, 3000);
+    });
+    items.push(item);
     wrap.appendChild(btn);
   }
-  return wrap;
+
+  return {
+    el: wrap,
+    update(state, meta = {}) {
+      currentState = state || 'unknown';
+      if (meta.disabled !== undefined) globallyDisabled = !!meta.disabled;
+      refreshDisabled();
+    },
+    setBusy(value) {
+      busy = !!value;
+      refreshDisabled();
+    },
+  };
 }
 
 /**

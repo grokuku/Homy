@@ -7,6 +7,8 @@ import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js
 import { applyBackground, setBackgroundHost } from './backgrounds/manager.js';
 import { openBackgroundModal } from './ui/backgroundModal.js';
 import { openElementsModal } from './ui/elementsModal.js';
+import { openDockyConfigModal } from './ui/dockyModal.js';
+import { dockyPoller } from './docky/docky.js';
 import { initTabs, renderTabs } from './ui/tabs.js';
 import { toast } from './ui/toast.js';
 import { catalog } from './elements/catalog.js';
@@ -777,6 +779,7 @@ $('logout-btn').addEventListener('click', async () => {
   destroyGrid();
   catalog.clear(); // drop the element cache (next session re-fetches)
   clearLocalIconCache(); // drop inlined local-icon SVGs
+  dockyPoller.clear(); // drop Docky subscriptions + batch loop
   setBackgroundHost(null); // back to full-viewport background (frame is gone)
   showLogin();
 });
@@ -884,6 +887,11 @@ $('elements-btn').addEventListener('click', () => {
   openElementsModal();
 });
 
+// Docky integration config (lot 5): URL + write-only key, with a Test button.
+$('docky-btn').addEventListener('click', () => {
+  openDockyConfigModal();
+});
+
 // If the token expires mid-session, return to login.
 window.addEventListener('auth:expired', () => {
   api.setToken(null);
@@ -892,6 +900,7 @@ window.addEventListener('auth:expired', () => {
   destroyGrid();
   catalog.clear(); // drop the element cache (same as an explicit logout)
   clearLocalIconCache(); // drop inlined local-icon SVGs (same as logout)
+  dockyPoller.clear(); // drop Docky subscriptions + batch loop (same as logout)
   setBackgroundHost(null);
   showLogin();
 });

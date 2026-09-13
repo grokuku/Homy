@@ -16,6 +16,14 @@ const env = {
   ICONS_API_BASE: process.env.ICONS_API_BASE || 'https://api.iconify.design',
   ICONS_TIMEOUT_MS: Number(process.env.ICONS_TIMEOUT_MS || 8000),
   REPORTS_TIMEOUT_MS: Number(process.env.REPORTS_TIMEOUT_MS || 8000),
+  // Docky integration (lot 5). DOCKY_URL / DOCKY_KEY OVERRIDE the values stored
+  // in docky.json (write-only config section, never returned with the key).
+  DOCKY_URL: process.env.DOCKY_URL || '',
+  DOCKY_KEY: process.env.DOCKY_KEY || '',
+  DOCKY_TIMEOUT_MS: Number(process.env.DOCKY_TIMEOUT_MS || 8000),
+  DOCKY_STATS_TIMEOUT_MS: Number(process.env.DOCKY_STATS_TIMEOUT_MS || 15000),
+  DOCKY_ACTION_TIMEOUT_MS: Number(process.env.DOCKY_ACTION_TIMEOUT_MS || 20000),
+  DOCKY_CACHE_MS: Number(process.env.DOCKY_CACHE_MS || 30000),
 };
 
 // ---- config.json persistence ----------------------------------------------
@@ -78,6 +86,13 @@ export const serverConfig = {
   iconsTimeoutMs: env.ICONS_TIMEOUT_MS,
   // Outbound timeout (ms) for report service calls (lot 8). Bounded server-side.
   reportsTimeoutMs: env.REPORTS_TIMEOUT_MS,
+  // Docky integration (lot 5): env overrides + bounded outbound timeouts.
+  dockyUrl: env.DOCKY_URL,
+  dockyKey: env.DOCKY_KEY,
+  dockyTimeoutMs: env.DOCKY_TIMEOUT_MS,
+  dockyStatsTimeoutMs: env.DOCKY_STATS_TIMEOUT_MS,
+  dockyActionTimeoutMs: env.DOCKY_ACTION_TIMEOUT_MS,
+  dockyCacheMs: env.DOCKY_CACHE_MS,
 };
 
 export const authConfig = config;

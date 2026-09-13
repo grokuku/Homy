@@ -10,6 +10,7 @@ import { authRoutes } from './routes/auth.routes.js';
 import { layoutRoutes } from './routes/layout.routes.js';
 import { elementsRoutes } from './routes/elements.routes.js';
 import { reportsRoutes } from './routes/reports.routes.js';
+import { dockyRoutes } from './routes/docky.routes.js';
 import { iconsRoutes } from './routes/icons.routes.js';
 import { widgetRoutes } from './routes/widgets.routes.js';
 import { weatherRoutes } from './routes/weather.routes.js';
@@ -19,6 +20,7 @@ import { SettingsService, BG_NAME_RE, THEMES } from './services/settings.service
 import { LayoutService } from './services/layout.service.js';
 import { ElementsService } from './services/elements.service.js';
 import { IconsService } from './services/icons.service.js';
+import { DockyService } from './services/docky.service.js';
 import { Store } from './services/store.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -82,6 +84,16 @@ const iconsService = new IconsService(store, {
   apiBase: serverConfig.iconsApiBase,
   timeoutMs: serverConfig.iconsTimeoutMs,
 });
+// Docky integration (lot 5): one server-side client shared by the proxy routes.
+// The API key is loaded from docky.json (env override) and NEVER leaves it.
+const dockyService = new DockyService(store, {
+  envBaseUrl: serverConfig.dockyUrl,
+  envApiKey: serverConfig.dockyKey,
+  timeoutMs: serverConfig.dockyTimeoutMs,
+  statsTimeoutMs: serverConfig.dockyStatsTimeoutMs,
+  actionTimeoutMs: serverConfig.dockyActionTimeoutMs,
+  cacheTtlMs: serverConfig.dockyCacheMs,
+});
 
 // Background images live in DATA_DIR/backgrounds/<uuid>.<ext>.
 const backgroundsDir = path.join(serverConfig.dataDir, 'backgrounds');
@@ -95,6 +107,7 @@ app.route(
 );
 app.route('/api/elements', elementsRoutes(elementsService, layoutService));
 app.route('/api/reports', reportsRoutes(elementsService, { timeoutMs: serverConfig.reportsTimeoutMs }));
+app.route('/api/docky', dockyRoutes(dockyService));
 app.route('/api/icons', iconsRoutes(iconsService));
 app.route('/api/widgets', widgetRoutes);
 app.route('/api/weather', weatherRoutes);

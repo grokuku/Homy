@@ -20,7 +20,7 @@ import { openElementPicker } from './elementPicker.js';
  *   - `shortcut` needs the element to have an `url` (otherwise it is disabled);
  *   - `health` / `monitoring` / `controls` need a Docky target on the element
  *     (`element.docky.{agent,container}`); without one they are disabled with
- *     an explanation (Docky itself is lot 5).
+ *     an explanation.
  *
  * Every change is applied LIVE through `onUpdate(button)` (the group re-renders
  * the tile immediately and debounces the persistence); the panel stays open so
