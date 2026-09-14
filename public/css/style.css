@@ -1022,6 +1022,18 @@ body.bg-to-view #homy-bg-layer {
 .grid-stack > .grid-stack-item > .grid-stack-item-content {
   overflow: hidden;
 }
+/* bgOpacity:0 → the widget surface must be PERFECTLY invisible: no background,
+   no border, no backdrop blur, no shadow. Without this, the 1px frame (and the
+   backdrop-filter when a dashboard background is active) left a ghost rounded
+   rectangle over the dashboard even though the background colour was already
+   transparent. */
+.grid-stack-item-content[data-surface-off] {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 /* Review C1 (compact mode): the item is the size container for the widget
    @container query below. Explicit width/height (gridstack CSS vars) keep
    the size containment harmless. */
@@ -1098,14 +1110,24 @@ body[data-bg-active] .grid-stack-item-content {
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
+  right: auto;
   z-index: 3;
   flex: 0 0 auto;
+  /* HALF-WIDTH CHIP: the title no longer stretches across the whole group. A
+     short title keeps its natural width (`max-content`); a long one is bounded
+     to ~half the group and ellipsises. The bar stays pointer-events:none (only
+     its buttons are interactive) so it can never swallow a tile click/drag. */
+  width: max-content;
+  max-width: 50%;
+  box-sizing: border-box;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  border-bottom: 0;
   pointer-events: none;
   background: color-mix(in srgb, var(--widget-bg-color, var(--bg-elev)) var(--widget-bg-op, var(--surface-alpha)), transparent);
-  border-top-left-radius: var(--radius);
-  border-top-right-radius: var(--radius);
 }
+.group-widget > .widget-header .widget-title { flex: 0 1 auto; min-width: 2.5em; }
 .group-widget > .widget-header button { pointer-events: auto; }
 .group-board {
   position: relative;
@@ -1114,8 +1136,13 @@ body[data-bg-active] .grid-stack-item-content {
   overflow: auto;
   /* The floating title bar's measured height: row 0 of the trame starts here. */
   padding-top: var(--group-header-h, 0px);
-  /* slightly recessed surface so the trame reads as a container */
-  background: color-mix(in srgb, var(--bg) 45%, transparent);
+  /* slightly recessed surface so the trame reads as a container. Its tint is
+     scaled by the SAME effective surface opacity as the widget (per-widget
+     --widget-bg-op, else the global --surface-alpha): at opacity 0 the recessed
+     tint disappears entirely and the dashboard shows through unchanged. */
+  background: color-mix(in srgb,
+    color-mix(in srgb, var(--bg) 45%, transparent)
+    var(--widget-bg-op, var(--surface-alpha)), transparent);
 }
 /* The internal canvas IS the internal grid (CSS grid slots the tiles by
    col/row/w/h) AND carries the trame background. min-width/min-height:100%
@@ -1188,9 +1215,23 @@ body[data-bg-active] .grid-stack-item-content {
   overflow: hidden; /* content can never escape its own main zone */
 }
 .tile-main:not(.tile-main-static):hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-/* Wide tile (2×1 in units of 2 internal cells = 4×2 internal): icon + label on
-   one line (roadmap §A.5). */
-.group-tile[data-size='4x2'] .tile-main { flex-direction: row; gap: 8px; }
+/* Icon + label core: the label POSITION (bottom/top/left/right, per-button
+   option) flips this box's axis. Monitoring / health stay stacked OUTSIDE it
+   (just below) so they never move with the label. */
+.tile-core {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+}
+.group-tile[data-label-pos='top'] .tile-core { flex-direction: column-reverse; }
+.group-tile[data-label-pos='left'] .tile-core { flex-direction: row-reverse; }
+.group-tile[data-label-pos='right'] .tile-core { flex-direction: row; }
 .tile-icon {
   display: flex;
   align-items: center;
@@ -1228,6 +1269,8 @@ body[data-bg-active] .grid-stack-item-content {
 }
 .tile-label {
   max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
   font-size: 11px;
   line-height: 1.15;
   text-align: center;
@@ -1295,10 +1338,12 @@ body[data-bg-active] .grid-stack-item-content {
   border-color: var(--warning, #e0a800);
   color: var(--warning, #e0a800);
 }
-/* live health colours (data-state set by the Docky refresh) */
+/* live health colours (data-state set by the Docky refresh or the URL probe) */
 .tile-health[data-state='healthy'] { background: var(--success, #3fb950); }
 .tile-health[data-state='unhealthy'] { background: var(--danger, #f85149); }
 .tile-health[data-state='starting'] { background: var(--warning, #e0a800); animation: tile-health-pulse 1s ease-in-out infinite; }
+/* custom-URL probe: host answered error → red; transport/offline → amber. */
+.tile-health[data-state='degraded'] { background: var(--warning, #e0a800); }
 @keyframes tile-health-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 /* « Docky offline » marker shown over a degraded tile */
 .tile-docky-note {
@@ -1573,6 +1618,36 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .report-test-result { font-size: 12px; color: var(--text-muted); }
 .report-test-result.success { color: var(--success); }
 .report-test-result.error { color: var(--danger); }
+
+/* ---------- Element health source (Off | Docky target | Custom URL) ----------
+   A 3-way segmented choice shown at the top of the element form's health
+   section. `docky` reuses the existing target picker; `Custom URL` reveals the
+   healthUrl input. Both sub-panels are hidden unless selected. */
+.health-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.health-section-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.health-source-group { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.health-source-group label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+}
+.health-source-group label:has(input:checked) {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.health-source-group input[type='radio'] { margin: 0; }
+.health-panel.hidden { display: none; }
+.health-url-field { margin-top: 4px; }
+.health-url-field input { width: 100%; }
+.health-url-help { display: block; color: var(--text-muted); font-size: 12px; margin-top: 4px; }
 .config-form .field-label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-muted); }
 .config-form .field-help { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
 .config-form .color-field { display: flex; gap: 8px; align-items: center; }
@@ -1895,6 +1970,61 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .segmented-item:hover:not(:disabled) { color: var(--text); }
 .segmented-item.active { background: var(--accent); color: #fff; }
 .segmented-item:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Fine icon-size control: a 0.5-step percentage slider + a live value. */
+.icon-size-row { display: flex; align-items: center; gap: 10px; }
+.icon-size-row input[type='range'] {
+  flex: 1;
+  height: 20px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.icon-size-row input[type='range']:focus { outline: none; }
+.icon-size-row input[type='range']:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-size-row input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+}
+.icon-size-row input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.icon-size-row input[type='range']:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.icon-size-row input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+}
+.icon-size-row input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.icon-size-value {
+  flex: 0 0 auto;
+  min-width: 42px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
 .opt-danger { display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 12px; }
 .opt-danger .btn.confirm { border-color: var(--danger); color: var(--danger); }
 

@@ -398,9 +398,17 @@ function coerceButtons(raw) {
   return out;
 }
 
-// Button icon size steps — MUST stay in sync with BUTTON_ICON_SIZES in
-// server/routes/layout.routes.js and ICON_SIZES in public/js/elements/button.js.
-const BUTTON_ICON_SIZES = new Set(['S', 'M', 'L', 'XL', 'Fill']);
+// Button icon size (per-button display option) — a PERCENTAGE of the tile's
+// useful internal dimension, 0.5-step, range 8..120. Legacy letter crans
+// (S/M/L/XL/Fill) are accepted and coerced to 40/55/70/85/100. MUST stay in
+// sync with the ICON_* constants in server/routes/layout.routes.js and
+// public/js/elements/button.js.
+const ICON_SIZE_MIN = 8;
+const ICON_SIZE_MAX = 120;
+const ICON_SIZE_DEFAULT = 55;
+const ICON_SIZE_STEP = 0.5;
+const ICON_SIZE_PRESETS = { S: 40, M: 55, L: 70, XL: 85, Fill: 100 };
+const LABEL_POSITIONS = new Set(['bottom', 'top', 'left', 'right']);
 
 // Report-tile geometry bounds (INTERNAL trame cells). Reports have a FREE size
 // (no button-variant minima): 2 cells minimum, up to a generous cap. MUST stay
@@ -422,9 +430,25 @@ function normOptions(raw) {
     health: bool(o.health, false),
     monitoring: bool(o.monitoring, false),
     controls: bool(o.controls, false),
-    iconSize: BUTTON_ICON_SIZES.has(o.iconSize) ? o.iconSize : 'M',
+    iconSize: normIconSize(o.iconSize),
+    labelPosition: LABEL_POSITIONS.has(o.labelPosition) ? o.labelPosition : 'bottom',
     allowIconOverflow: bool(o.allowIconOverflow, false),
   };
+}
+
+/** Tolerant icon-size coercion on LOAD (see layout.routes.js for the contract). */
+function normIconSize(raw) {
+  let n = null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) n = raw;
+  else if (typeof raw === 'string') {
+    const key = raw.trim();
+    if (Object.prototype.hasOwnProperty.call(ICON_SIZE_PRESETS, key)) return ICON_SIZE_PRESETS[key];
+    const parsed = Number(key);
+    if (key && Number.isFinite(parsed)) n = parsed;
+  }
+  if (n === null) return ICON_SIZE_DEFAULT;
+  const stepped = Math.round(n / ICON_SIZE_STEP) * ICON_SIZE_STEP;
+  return Math.min(ICON_SIZE_MAX, Math.max(ICON_SIZE_MIN, stepped));
 }
 
 /**

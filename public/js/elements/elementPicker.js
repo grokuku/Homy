@@ -133,6 +133,7 @@ export function openElementPicker({ title = 'Choose element', onPick, filter = n
       badges.appendChild(el('span', 'badge badge-docky', 'Docky'));
     }
     if (item.healthCheck) badges.appendChild(el('span', 'badge badge-health', 'Health'));
+    if (item.healthUrl) badges.appendChild(el('span', 'badge badge-health', 'Health URL'));
 
     const del = el('button', 'picker-row-del', '✕', { type: 'button', title: 'Delete element' });
     del.addEventListener('click', (e) => {

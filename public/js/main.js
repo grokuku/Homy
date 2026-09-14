@@ -9,6 +9,7 @@ import { openBackgroundModal } from './ui/backgroundModal.js';
 import { openElementsModal } from './ui/elementsModal.js';
 import { openDockyConfigModal } from './ui/dockyModal.js';
 import { dockyPoller } from './docky/docky.js';
+import { healthUrlPoller } from './health/health.js';
 import { initTabs, renderTabs } from './ui/tabs.js';
 import { toast } from './ui/toast.js';
 import { catalog } from './elements/catalog.js';
@@ -934,6 +935,7 @@ $('logout-btn').addEventListener('click', async () => {
   catalog.clear(); // drop the element cache (next session re-fetches)
   clearLocalIconCache(); // drop inlined local-icon SVGs
   dockyPoller.clear(); // drop Docky subscriptions + batch loop
+  healthUrlPoller.clear(); // drop custom-URL health subscriptions + loop
   setBackgroundHost(null); // back to full-viewport background (frame is gone)
   showLogin();
 });
@@ -1055,6 +1057,7 @@ window.addEventListener('auth:expired', () => {
   catalog.clear(); // drop the element cache (same as an explicit logout)
   clearLocalIconCache(); // drop inlined local-icon SVGs (same as logout)
   dockyPoller.clear(); // drop Docky subscriptions + batch loop (same as logout)
+  healthUrlPoller.clear(); // drop custom-URL health loop (same as logout)
   setBackgroundHost(null);
   showLogin();
 });

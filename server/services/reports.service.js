@@ -310,10 +310,20 @@ function deepestErrorCode(err) {
   return code;
 }
 
-/** Tolerant `user.name.mediaLabel` normalization of /Sessions. */
+/**
+ * Tolerant `user.name.mediaLabel` normalization of /Sessions.
+ *
+ * ONE SESSION = ONE ROW. Sessions are NEVER de-duplicated by user (or by
+ * anything else): when the SAME user plays several videos in parallel, Jellyfin
+ * reports one session per playback and EVERY one of them must reach the tile.
+ * The only defensive treatment is the id: Jellyfin ids are unique, but if a
+ * build ever repeats one for two distinct playbacks we suffix the second so a
+ * downstream keyed render can never collapse them into a single row.
+ */
 function normalizeSessions(raw) {
   const list = Array.isArray(raw) ? raw : [];
   const out = [];
+  const seenIds = new Set();
   for (const session of list) {
     if (!session || typeof session !== 'object') continue;
     const item = session.NowPlayingItem;
@@ -326,8 +336,11 @@ function normalizeSessions(raw) {
         ? Math.max(0, Math.min(100, Math.round((positionTicks / durationTicks) * 100)))
         : null;
     const playMethod = str(play.PlayMethod);
+    let id = str(session.Id) || randomUUID();
+    if (seenIds.has(id)) id = `${id}#${out.length}`;
+    seenIds.add(id);
     out.push({
-      id: str(session.Id) || randomUUID(),
+      id,
       user: str(session.UserName) || 'Unknown user',
       media: mediaLabel(item),
       type: str(item.Type),

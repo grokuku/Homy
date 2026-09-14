@@ -93,6 +93,8 @@ export function renderReportTile({ report, element, step = 22.5 }) {
       body.replaceChildren(el('div', 'report-state', degradedMessage(status, data?.error)));
       return;
     }
+    // Every session is rendered as its OWN row — NEVER one row per user. When
+    // the same user plays several videos in parallel, each playback shows up.
     const sessions = Array.isArray(data.sessions) ? data.sessions : [];
     countEl.textContent = sessions.length ? String(sessions.length) : '';
     if (sessions.length === 0) {
@@ -130,6 +132,7 @@ export function renderReportTile({ report, element, step = 22.5 }) {
 
 function buildSession(s) {
   const row = el('div', 'report-session');
+  if (s && s.id) row.dataset.sessionId = String(s.id);
   const top = el('div', 'report-session-top');
   top.appendChild(el('span', 'report-media', s.media || 'Unknown media'));
   if (s.transcoding) top.appendChild(el('span', 'report-badge report-badge-tc', 'transcode'));

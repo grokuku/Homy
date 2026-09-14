@@ -7,7 +7,11 @@ import { verifyToken } from '../services/auth.service.js';
 export function authGuard(publicPaths = []) {
   return async (c, next) => {
     const { pathname } = new URL(c.req.url);
-    if (publicPaths.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
+    if (
+      publicPaths.some((p) =>
+        p instanceof RegExp ? p.test(pathname) : pathname === p || pathname.startsWith(`${p}/`)
+      )
+    ) {
       return next();
     }
 

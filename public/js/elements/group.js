@@ -62,7 +62,8 @@ const ADD_DEFAULT_OPTIONS = {
   health: false,
   monitoring: false,
   controls: false,
-  iconSize: 'M',
+  iconSize: 55,
+  labelPosition: 'bottom',
   allowIconOverflow: false,
 };
 

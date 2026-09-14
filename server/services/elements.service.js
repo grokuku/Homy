@@ -16,7 +16,7 @@ import {
  * `layout.json` is rewritten in full on every drag, so coupling a stable
  * referential to volatile grid data would mean useless writes. Shape:
  *
- *   { version: 1, elements: [ { id, name, icon, url, description,
+ *   { version: 1, elements: [ { id, name, icon, url, description, healthUrl,
  *                               healthCheck, docky, createdAt, updatedAt } ] }
  *
  * Field contract (validated STRICTLY on write → 400, never silently coerced):
@@ -25,6 +25,9 @@ import {
  *   - icon         string ≤ 256 chars, empty allowed (emoji / `holaf:<name>` /
  *                  http(s) URL / future `local:<slug>`);
  *   - url          empty, or a valid http/https URL;
+ *   - healthUrl    null or a valid http/https URL (custom health pill source);
+ *                  a NON-empty value wins over `docky` when resolving the
+ *                  health-pill source (see resolveHealthSource);
  *   - description  string ≤ 300 chars, optional (defaults to '');
  *   - healthCheck  boolean, default false;
  *   - docky        null or `{ agent: ≤64, container: ≤128 }`;
@@ -43,6 +46,7 @@ export const MAX_ELEMENTS = 200;
 export const ELEMENT_NAME_MAX = 60;
 export const ELEMENT_ICON_MAX = 256;
 export const ELEMENT_URL_MAX = 2048;
+export const ELEMENT_HEALTH_URL_MAX = 2048;
 export const ELEMENT_DESCRIPTION_MAX = 300;
 export const DOCKY_AGENT_MAX = 64;
 export const DOCKY_CONTAINER_MAX = 128;
@@ -202,6 +206,13 @@ function validateFields(input, { partial, existing = null }) {
     }
   } else if (!partial) out.url = '';
 
+  // healthUrl — null/empty, or a valid http(s) URL with NO credentials.
+  // A non-empty value makes the element's health pill come from a custom
+  // HTTP probe instead of Docky (see resolveHealthSource).
+  if (has('healthUrl')) {
+    out.healthUrl = validateHealthUrl(input.healthUrl);
+  } else if (!partial) out.healthUrl = null;
+
   // description — string ≤ 300 (empty allowed).
   if (has('description')) {
     if (input.description === null) out.description = '';
@@ -294,6 +305,30 @@ export function publicElement(element) {
   return { ...rest, report: { ...reportRest, hasApiKey: typeof apiKey === 'string' && apiKey.length > 0 } };
 }
 
+function validateHealthUrl(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') throw new ElementsValidationError('healthUrl must be a string or null');
+  const value = raw.trim();
+  if (!value) return null;
+  if (value.length > ELEMENT_HEALTH_URL_MAX) {
+    throw new ElementsValidationError(`healthUrl must be at most ${ELEMENT_HEALTH_URL_MAX} characters`);
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ElementsValidationError('healthUrl must be a valid http(s) URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new ElementsValidationError('healthUrl must be a valid http(s) URL');
+  }
+  // Never accept (nor store) credentials embedded in the URL.
+  if (url.username || url.password) {
+    throw new ElementsValidationError('healthUrl must not contain credentials');
+  }
+  return value;
+}
+
 function validateDocky(raw) {
   if (raw === null || raw === undefined) return null;
   if (typeof raw !== 'object' || Array.isArray(raw)) {
@@ -335,6 +370,7 @@ function coerceStored(raw) {
     name,
     icon: typeof raw.icon === 'string' ? raw.icon.trim().slice(0, ELEMENT_ICON_MAX) : '',
     url: typeof raw.url === 'string' ? raw.url.trim().slice(0, ELEMENT_URL_MAX) : '',
+    healthUrl: coerceHealthUrl(raw.healthUrl),
     description: typeof raw.description === 'string' ? raw.description.trim().slice(0, ELEMENT_DESCRIPTION_MAX) : '',
     healthCheck: raw.healthCheck === true,
     docky: coerceDocky(raw.docky),
@@ -364,4 +400,37 @@ function coerceReport(raw) {
 
 function isIsoString(value) {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value));
+}
+
+/** Tolerant load coercion of a stored healthUrl (never throws). */
+function coerceHealthUrl(raw) {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim();
+  if (!value || value.length > ELEMENT_HEALTH_URL_MAX) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.username || url.password) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the HEALTH-PILL source of an element (shared contract with the
+ * front-end `resolveHealthSource`):
+ *   - `healthUrl` set (and valid) → custom HTTP probe;
+ *   - else `docky` target set     → Docky container health;
+ *   - else                        → `none` (rendered grey/unknown).
+ * The presence of `healthUrl` is what carries the « Docky OR custom URL »
+ * choice; a URL therefore always wins over a Docky target.
+ */
+export function resolveHealthSource(element) {
+  const url = coerceHealthUrl(element?.healthUrl ?? null);
+  if (url) return { type: 'url', url };
+  const agent = typeof element?.docky?.agent === 'string' ? element.docky.agent.trim() : '';
+  const container = typeof element?.docky?.container === 'string' ? element.docky.container.trim() : '';
+  if (agent && container) return { type: 'docky', agent, container };
+  return { type: 'none' };
 }

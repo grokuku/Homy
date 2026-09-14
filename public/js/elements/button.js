@@ -2,6 +2,7 @@ import { el, isValidHttpUrl } from '../util.js';
 import { api } from '../api.js';
 import { toast } from '../ui/toast.js';
 import { dockyApi, dockyPoller } from '../docky/docky.js';
+import { healthUrlPoller } from '../health/health.js';
 import { HolafIcons } from '../../vendor/holaf/holaf-icons.js';
 
 /**
@@ -27,8 +28,12 @@ import { HolafIcons } from '../../vendor/holaf/holaf-icons.js';
  *   - controls          → a live start/stop/restart zone with a 2-step
  *                         confirmation (Docky actions; a 409 is an idempotent
  *                         success);
- *   - iconSize          → S | M | L | XL | Fill = 40/55/70/85/100 % of the tile's
- *                         useful internal dimension (min side), see ICON_FRACTION;
+ *   - iconSize          → a PERCENTAGE (8..120, step 0.5, default 55) of the
+ *                         tile's useful internal dimension (min side). The legacy
+ *                         S | M | L | XL | Fill crans are still accepted and
+ *                         coerced to 40/55/70/85/100 (see ICON_SIZE_PRESETS);
+ *   - labelPosition     → bottom | top | left | right (default bottom): where the
+ *                         label sits relative to the icon;
  *   - allowIconOverflow → advanced, default OFF: lets the icon spill outside the
  *                         tile box instead of being clipped.
  *
@@ -44,11 +49,45 @@ import { HolafIcons } from '../../vendor/holaf/holaf-icons.js';
  * CLAMPED UP to 2 so no tile ever renders under the 45 px floor.
  */
 
+// Icon size is a PERCENTAGE of the tile's useful internal dimension (its
+// smaller usable side), adjustable by a 0.5 step. The historical S/M/L/XL/Fill
+// crans are kept as accepted aliases (coerced to their percentage) so buttons
+// stored before this option became a percentage keep working.
+export const ICON_SIZE_MIN = 8;
+export const ICON_SIZE_MAX = 120;
+export const ICON_SIZE_DEFAULT = 55;
+export const ICON_SIZE_STEP = 0.5;
+export const ICON_SIZE_PRESETS = { S: 40, M: 55, L: 70, XL: 85, Fill: 100 };
+// Legacy letter list — still exported for back-compat with older callers.
 export const ICON_SIZES = ['S', 'M', 'L', 'XL', 'Fill'];
-export const ICON_SIZE_DEFAULT = 'M';
 
-// Fraction of the tile's useful internal dimension (= its smaller side).
-export const ICON_FRACTION = { S: 0.4, M: 0.55, L: 0.7, XL: 0.85, Fill: 1 };
+// Label placement crans (relative to the icon).
+export const LABEL_POSITIONS = ['bottom', 'top', 'left', 'right'];
+export const LABEL_POSITION_DEFAULT = 'bottom';
+
+/**
+ * Coerce an icon size to a percentage in [8,120], rounded to the 0.5 step.
+ * Accepts a finite number, a numeric string, or a legacy letter
+ * (S/M/L/XL/Fill → 40/55/70/85/100). Anything else falls back to 55 (never
+ * throws), so a hand-edited / legacy value can never break a render.
+ */
+export function normalizeIconSize(raw) {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return clampIconSize(raw);
+  if (typeof raw === 'string') {
+    const key = raw.trim();
+    if (Object.prototype.hasOwnProperty.call(ICON_SIZE_PRESETS, key)) return ICON_SIZE_PRESETS[key];
+    if (key) {
+      const n = Number(key);
+      if (Number.isFinite(n)) return clampIconSize(n);
+    }
+  }
+  return ICON_SIZE_DEFAULT;
+}
+
+function clampIconSize(n) {
+  const stepped = Math.round(n / ICON_SIZE_STEP) * ICON_SIZE_STEP;
+  return Math.min(ICON_SIZE_MAX, Math.max(ICON_SIZE_MIN, stepped));
+}
 
 // Smallest legal tile edge, in INTERNAL cells (2×2 internal = 1×1 global = 45 px
 // on a 1440 px canvas). Sub-minimum stored values are clamped up to this.
@@ -72,7 +111,8 @@ export function normalizeOptions(raw) {
     health: bool(o.health, false),
     monitoring: bool(o.monitoring, false),
     controls: bool(o.controls, false),
-    iconSize: ICON_SIZES.includes(o.iconSize) ? o.iconSize : ICON_SIZE_DEFAULT,
+    iconSize: normalizeIconSize(o.iconSize),
+    labelPosition: LABEL_POSITIONS.includes(o.labelPosition) ? o.labelPosition : LABEL_POSITION_DEFAULT,
     allowIconOverflow: bool(o.allowIconOverflow, false),
   };
 }
@@ -91,7 +131,7 @@ const SIZE_BIG = { w: 4, h: 4 }; // 2×2 global
  * cells (1 global cell = 2 internal cells). User-validated rule (§A.7):
  *
  *   icon alone ............ 1×1 global — smallest legal square
- *   icon + label .......... 2×1 global (icon + label on one row)
+ *   icon + label .......... 1×1 min · 2×1 ideal (label may sit under/over/beside)
  *   icon + health ......... 1×1 min (dot in a corner) · 2×1 ideal
  *   icon + monitoring ..... 2×2 global (CPU/RAM rows beside the icon)
  *   icon + controls ....... 2×1 min · 2×2 ideal
@@ -110,9 +150,11 @@ export function minSizeForVariant(raw) {
       ? { min: { ...SIZE_BIG }, ideal: { ...SIZE_BIG } }
       : { min: { ...SIZE_WIDE }, ideal: { ...SIZE_BIG } };
   }
-  if (o.icon && o.label) return { min: { ...SIZE_WIDE }, ideal: { ...SIZE_WIDE } };
+  if (o.icon && o.label) return { min: { ...SIZE_SQUARE }, ideal: { ...SIZE_WIDE } };
   if (o.icon && o.health) return { min: { ...SIZE_SQUARE }, ideal: { ...SIZE_WIDE } };
-  if (o.label || o.health) return { min: { ...SIZE_WIDE }, ideal: { ...SIZE_WIDE } };
+  // Label alone (or health alone) still fits a 1×1: the label truncates.
+  if (o.label) return { min: { ...SIZE_SQUARE }, ideal: { ...SIZE_WIDE } };
+  if (o.health) return { min: { ...SIZE_WIDE }, ideal: { ...SIZE_WIDE } };
   return { min: { ...SIZE_SQUARE }, ideal: { ...SIZE_SQUARE } };
 }
 
@@ -168,13 +210,15 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
   const root = el('div', 'group-tile', null, {
     'data-variant': variant,
     'data-size': `${b.w}x${b.h}`,
-    'data-icon-size': o.iconSize,
+    'data-icon-size': String(o.iconSize),
+    'data-label-pos': o.labelPosition,
     'data-element-id': b.elementId,
   });
   applyTileMetrics(root, b, stepPx);
   if (o.allowIconOverflow) root.classList.add('allow-overflow');
 
   const target = dockyTargetOf(def);
+  const healthUrl = healthUrlOf(def);
   let healthEl = null;
   let monitoring = null;
   let controls = null;
@@ -214,12 +258,19 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
       : el('div', 'tile-main');
     if (!clickable) main.classList.add('tile-main-static');
 
-    if (hasIcon) {
-      const iconBox = el('div', 'tile-icon');
-      iconBox.appendChild(buildIconNode(iconValue, name));
-      main.appendChild(iconBox);
+    // Icon + label are wrapped in a `.tile-core` box so the LABEL POSITION
+    // (bottom/top/left/right) can flip their axis WITHOUT moving the sibling
+    // monitoring / health blocks, which stay stacked under the core.
+    if (hasIcon || hasLabel) {
+      const core = el('div', 'tile-core');
+      if (hasIcon) {
+        const iconBox = el('div', 'tile-icon');
+        iconBox.appendChild(buildIconNode(iconValue, name));
+        core.appendChild(iconBox);
+      }
+      if (hasLabel) core.appendChild(el('span', 'tile-label', name));
+      main.appendChild(core);
     }
-    if (hasLabel) main.appendChild(el('span', 'tile-label', name));
     if (hasMonitoring) {
       monitoring = buildMonitoring();
       main.appendChild(monitoring.el);
@@ -251,14 +302,21 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
   // ---- explicit "nothing enabled" fallback ---------------------------------
   if (!hasContent && !hasControls) root.appendChild(el('div', 'tile-empty', '—'));
 
-  // ---- live Docky data wiring ----------------------------------------------
-  // A small note is shown over degraded tiles (« Docky offline »), so the
-  // degraded state is explicit even on a health-only tile.
+  // ---- live health data wiring --------------------------------------------
+  // Two independent sources, resolved from the element contract:
+  //   healthUrl set  → the health pill comes from the custom HTTP probe;
+  //   else docky set → the health pill comes from Docky (which also feeds
+  //                    monitoring + controls);
+  //   else           → grey/unknown.
+  // A Docky target is still subscribed when monitoring/controls are shown even
+  // if the pill is URL-sourced, so those keep working.
   const offlineNote = el('span', 'tile-docky-note hidden', 'Docky offline');
   if (target) root.appendChild(offlineNote);
 
-  let dispose = () => {};
-  if (target && (hasHealth || hasMonitoring || hasControls)) {
+  const disposers = [];
+  const dockyFeedsHealth = !healthUrl;
+  const useDocky = !!target && (hasMonitoring || hasControls || (hasHealth && dockyFeedsHealth));
+  if (useDocky) {
     root.dataset.docky = 'pending';
     const apply = (data) => {
       const degraded = data?.degraded === true;
@@ -267,25 +325,45 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
       const failed = degraded || !!(hres?.error) || !!(sres?.error);
       const state = failed ? 'unknown' : hres?.state || 'unknown';
       const health = failed ? 'unknown' : hres?.health || 'unknown';
-      root.dataset.docky = degraded
-        ? 'offline'
-        : failed
-          ? 'error'
-          : 'ok';
+      root.dataset.docky = degraded ? 'offline' : failed ? 'error' : 'ok';
       offlineNote.classList.toggle('hidden', !degraded);
-      if (healthEl) {
+      if (healthEl && dockyFeedsHealth) {
         healthEl.dataset.state = health;
         healthEl.title = healthTitle(health, state, hres);
       }
       if (monitoring) monitoring.update(failed ? null : sres, { degraded, error: hres?.error || sres?.error });
       if (controls) controls.update(state, { disabled: failed });
     };
-    dispose = dockyPoller.register(target, apply);
+    disposers.push(dockyPoller.register(target, apply));
   } else {
     root.dataset.docky = 'none';
     if (monitoring) monitoring.update(null, {});
-    if (healthEl) healthEl.dataset.state = 'unknown';
   }
+
+  if (healthUrl && hasHealth) {
+    root.dataset.healthUrl = 'pending';
+    const applyUrl = (data) => {
+      if (!healthEl) return;
+      const state = data?.state || 'unknown';
+      healthEl.dataset.state = state;
+      healthEl.title = urlHealthTitle(state, data);
+      root.dataset.healthUrl = state;
+    };
+    disposers.push(healthUrlPoller.registerUrl(healthUrl, applyUrl));
+  } else if (healthEl && !useDocky) {
+    // Health pill requested but NO usable source: stay grey.
+    healthEl.dataset.state = 'unknown';
+  }
+
+  const dispose = () => {
+    for (const fn of disposers) {
+      try {
+        fn();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
 
   return { el: root, dispose };
 }
@@ -310,8 +388,7 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5) {
     hasLabel: o.label,
     hasMonitoring: o.monitoring,
     hasControls: o.controls,
-    w: b.w,
-    h: b.h,
+    labelPosition: o.labelPosition,
     iconSize: o.iconSize,
   });
   tileEl.style.gridColumn = `${b.col + 1} / span ${b.w}`;
@@ -331,9 +408,15 @@ function dockyTargetOf(element) {
   return agent && container ? { agent, container } : null;
 }
 
+/** Read a usable custom health URL off a catalogue element (valid http(s)). */
+function healthUrlOf(element) {
+  const value = element?.healthUrl ? String(element.healthUrl).trim() : '';
+  return isValidHttpUrl(value) ? value : null;
+}
+
 /**
- * Live health dot. `data-state` drives the colour (healthy/unhealthy/starting/
- * none/unknown); a title explains the current state and any per-target error.
+ * Live health dot. `data-state` drives the colour (healthy/unhealthy/degraded/
+ * starting/none/unknown); a title explains the current state and any error.
  */
 function buildHealth() {
   const dot = el('span', 'tile-health', null, {
@@ -352,6 +435,16 @@ function healthTitle(health, state, result) {
   const statePart = state && state !== 'unknown' ? ` · ${state}` : '';
   const err = result?.error?.message ? ` — ${result.error.message}` : '';
   return `${label}${statePart}${err}`;
+}
+
+/** Title for a custom-URL probe result (state + HTTP status / error code). */
+function urlHealthTitle(state, data) {
+  const label =
+    { healthy: 'Healthy', unhealthy: 'Unhealthy', degraded: 'Unreachable', unknown: 'Unknown' }[state] ||
+    'Unknown';
+  const statusPart = data?.status ? ` · HTTP ${data.status}` : '';
+  const err = data?.error && state !== 'healthy' ? ` — ${data.error}` : '';
+  return `${label}${statusPart}${err}`;
 }
 
 /**
@@ -792,22 +885,26 @@ const CONTROLS_RESERVE = 28;
 /**
  * Icon edge (px) for the tile's AVAILABLE space: the smaller of the two usable
  * dimensions once the tile chrome and any sibling block (label / monitoring /
- * controls) are subtracted. Sizing the icon from the raw tile edge (the lot-2
- * behaviour) let a large emoji spill out of a small tile onto its neighbours;
- * sizing it from the real leftover space keeps every variant inside its box.
+ * controls) are subtracted. The icon is sized from the real leftover space so a
+ * large emoji can never spill out of a small tile onto its neighbours.
+ *
+ * `labelPosition` decides which axis the label consumes: top/bottom subtract a
+ * height reserve, left/right a width reserve. `iconSize` is a percentage of the
+ * resulting base (0.5-step, 8..120) — kept to 2 decimals so two adjacent slider
+ * crans (e.g. 40 and 40.5) genuinely differ.
  */
-function computeIconPx({ wPx, hPx, hasLabel, hasMonitoring, hasControls, w, h, iconSize }) {
-  const rowLayout = w > h; // mirrors .group-tile[data-size='4x2'] .tile-main
+function computeIconPx({ wPx, hPx, hasLabel, hasMonitoring, hasControls, labelPosition, iconSize }) {
   let availW = Math.max(0, wPx - TILE_CHROME);
   let availH = Math.max(0, hPx - TILE_CHROME);
   if (hasLabel) {
-    if (rowLayout) availW -= LABEL_RESERVE;
+    if (labelPosition === 'left' || labelPosition === 'right') availW -= LABEL_RESERVE;
     else availH -= LABEL_RESERVE;
   }
   if (hasMonitoring) availH -= MONITORING_RESERVE;
   if (hasControls) availH -= CONTROLS_RESERVE;
   const base = Math.max(1, Math.min(availW, availH));
-  return Math.round(base * (ICON_FRACTION[iconSize] ?? ICON_FRACTION[ICON_SIZE_DEFAULT]));
+  const pct = normalizeIconSize(iconSize);
+  return Math.max(1, Math.round(base * pct) / 100);
 }
 
 function initialsOf(label) {

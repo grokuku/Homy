@@ -1,6 +1,16 @@
 import { el } from '../util.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
-import { normalizeButton, minSizeForVariant, ICON_SIZES, buildIconNode } from './button.js';
+import {
+  normalizeButton,
+  minSizeForVariant,
+  normalizeIconSize,
+  ICON_SIZE_MIN,
+  ICON_SIZE_MAX,
+  ICON_SIZE_STEP,
+  ICON_SIZE_PRESETS,
+  LABEL_POSITIONS,
+  buildIconNode,
+} from './button.js';
 import { toast } from '../ui/toast.js';
 import { openElementPicker } from './elementPicker.js';
 
@@ -73,6 +83,12 @@ const SWITCHES = [
 
 const CONFIRM_MS = 3000; // 2-step delete: window before the arm reverts
 
+// Human labels for the 4 label-position crans.
+const LABEL_POS_LABEL = { bottom: 'Bottom', top: 'Top', left: 'Left', right: 'Right' };
+
+/** Pretty icon-size percentage (drops a trailing « .0 »). */
+const fmtIconSize = (n) => String(Math.round(Number(n) * 10) / 10);
+
 const hasDockyTarget = (element) => !!(element?.docky && (element.docky.agent || element.docky.container));
 
 /**
@@ -134,6 +150,9 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
 
     // Tile size (minimum-aware).
     body.appendChild(buildSizeGroup());
+
+    // Label placement (only meaningful when the label is shown).
+    body.appendChild(buildLabelPositionGroup());
 
     // Icon appearance.
     body.appendChild(buildIconGroup());
@@ -226,25 +245,72 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
     return group;
   }
 
-  function buildIconGroup() {
-    const iconOn = !!work.options.icon;
+  function buildLabelPositionGroup() {
+    const labelOn = !!work.options.label;
     const group = el('div', 'opt-group');
-    group.appendChild(el('div', 'opt-group-title', 'Icon size'));
+    group.appendChild(el('div', 'opt-group-title', 'Label position'));
 
     const row = el('div', 'segmented');
-    for (const size of ICON_SIZES) {
-      const active = work.options.iconSize === size;
-      const b = el('button', 'segmented-item' + (active ? ' active' : ''), size, { type: 'button' });
-      b.disabled = !iconOn;
-      b.title = iconOn ? `${size} icon` : 'Enable “Icon” to change its size';
+    for (const pos of LABEL_POSITIONS) {
+      const active = work.options.labelPosition === pos;
+      const b = el('button', 'segmented-item' + (active ? ' active' : ''), LABEL_POS_LABEL[pos], {
+        type: 'button',
+      });
+      b.disabled = !labelOn;
+      b.title = labelOn ? `Place the label ${pos} of the icon` : 'Enable “Label” to change its position';
       b.addEventListener('click', () => {
-        work.options.iconSize = size;
+        work.options.labelPosition = pos;
         onUpdate?.(normalizeButton(work));
         paint();
       });
       row.appendChild(b);
     }
     group.appendChild(row);
+    return group;
+  }
+
+  function buildIconGroup() {
+    const iconOn = !!work.options.icon;
+    const group = el('div', 'opt-group');
+    group.appendChild(el('div', 'opt-group-title', 'Icon size'));
+
+    // Fine control: a 0.5-step slider over a PERCENTAGE (8..120) of the tile's
+    // useful internal dimension. The panel working copy uses the normalized
+    // value so a legacy letter (M) shows as 55.
+    const row = el('div', 'icon-size-row');
+    const slider = el('input', 'icon-size-slider', null, {
+      type: 'range',
+      min: String(ICON_SIZE_MIN),
+      max: String(ICON_SIZE_MAX),
+      step: String(ICON_SIZE_STEP),
+      'aria-label': 'Icon size (percent of the tile)',
+    });
+    slider.value = String(normalizeIconSize(work.options.iconSize));
+    const valueEl = el('span', 'icon-size-value', `${fmtIconSize(slider.value)}%`);
+    slider.disabled = !iconOn;
+    slider.addEventListener('input', () => {
+      work.options.iconSize = normalizeIconSize(slider.value);
+      valueEl.textContent = `${fmtIconSize(work.options.iconSize)}%`;
+      onUpdate?.(normalizeButton(work));
+    });
+    row.append(slider, valueEl);
+    group.appendChild(row);
+
+    // Quick presets — the legacy S/M/L/XL/Fill crans, which pose the value.
+    const row2 = el('div', 'segmented');
+    for (const [key, value] of Object.entries(ICON_SIZE_PRESETS)) {
+      const active = normalizeIconSize(work.options.iconSize) === value;
+      const b = el('button', 'segmented-item' + (active ? ' active' : ''), key, { type: 'button' });
+      b.disabled = !iconOn;
+      b.title = iconOn ? `${key} — ${value}%` : 'Enable “Icon” to change its size';
+      b.addEventListener('click', () => {
+        work.options.iconSize = value;
+        onUpdate?.(normalizeButton(work));
+        paint();
+      });
+      row2.appendChild(b);
+    }
+    group.appendChild(row2);
 
     // Advanced: allow the icon to overflow its tile (default OFF).
     const overflow = el('label', 'opt-switch' + (iconOn ? '' : ' disabled'));

@@ -21,11 +21,18 @@ const MAX_BUTTONS_PER_GROUP = 50;
 const MAX_BUTTONS_PER_PAGE = 200; // buttons of ALL groups on a single page
 const BUTTON_CELLS_MAX = 4; // button w/h in INTERNAL cells (1..4)
 const ELEMENT_ID_MAX = 128;
-// Button icon size steps (per-button display option): fraction of the tile's
-// useful internal dimension. "Fill" = 100 %. MUST stay in sync with
-// ICON_SIZES in public/js/elements/button.js.
-const BUTTON_ICON_SIZES = new Set(['S', 'M', 'L', 'XL', 'Fill']);
-const BUTTON_ICON_SIZE_DEFAULT = 'M';
+// Button icon size (per-button display option): a PERCENTAGE of the tile's
+// useful internal dimension, adjustable by a 0.5 step. The legacy letter crans
+// (S/M/L/XL/Fill) are still ACCEPTED and coerced to 40/55/70/85/100 so buttons
+// stored before the percentage model keep working. MUST stay in sync with
+// ICON_* in public/js/elements/button.js.
+const ICON_SIZE_MIN = 8;
+const ICON_SIZE_MAX = 120;
+const ICON_SIZE_DEFAULT = 55;
+const ICON_SIZE_STEP = 0.5;
+const ICON_SIZE_PRESETS = { S: 40, M: 55, L: 70, XL: 85, Fill: 100 };
+// Label placement crans (relative to the icon). Defaults to 'bottom'.
+const LABEL_POSITIONS = new Set(['bottom', 'top', 'left', 'right']);
 // Report-tile geometry bounds (internal trame cells). Reports have a FREE size
 // (no button-variant minima) — MUST stay in sync with layout.service.js and
 // public/js/elements/reportTile.js.
@@ -467,7 +474,6 @@ function sanitizeReports(raw) {
 function normalizeButtonOptions(raw) {
   const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const bool = (v, def) => (typeof v === 'boolean' ? v : def);
-  const iconSize = BUTTON_ICON_SIZES.has(o.iconSize) ? o.iconSize : BUTTON_ICON_SIZE_DEFAULT;
   return {
     icon: bool(o.icon, true),
     label: bool(o.label, true),
@@ -475,9 +481,29 @@ function normalizeButtonOptions(raw) {
     health: bool(o.health, false),
     monitoring: bool(o.monitoring, false),
     controls: bool(o.controls, false),
-    iconSize,
+    iconSize: normalizeButtonIconSize(o.iconSize),
+    labelPosition: LABEL_POSITIONS.has(o.labelPosition) ? o.labelPosition : 'bottom',
     allowIconOverflow: bool(o.allowIconOverflow, false),
   };
+}
+
+/**
+ * Tolerant icon-size coercion: a finite number (clamped to [8,120], snapped to
+ * the 0.5 step), a numeric string, or a legacy letter (S/M/L/XL/Fill → its
+ * percentage). Anything else falls back to the 55 % default — never fails.
+ */
+function normalizeButtonIconSize(raw) {
+  let n = null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) n = raw;
+  else if (typeof raw === 'string') {
+    const key = raw.trim();
+    if (Object.prototype.hasOwnProperty.call(ICON_SIZE_PRESETS, key)) return ICON_SIZE_PRESETS[key];
+    const parsed = Number(key);
+    if (key && Number.isFinite(parsed)) n = parsed;
+  }
+  if (n === null) return ICON_SIZE_DEFAULT;
+  const stepped = Math.round(n / ICON_SIZE_STEP) * ICON_SIZE_STEP;
+  return Math.min(ICON_SIZE_MAX, Math.max(ICON_SIZE_MIN, stepped));
 }
 
 /** Total buttons carried by a batch of (already sanitized or raw) items. */

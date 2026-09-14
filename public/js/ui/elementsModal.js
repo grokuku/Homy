@@ -52,6 +52,7 @@ const CONFIRM_MS = 3000; // 2-step delete: window before the arm reverts
 const API_KEY_SENTINEL = '__KEEP__';
 
 let reportTypesPromise = null;
+let healthSeq = 0; // unique radio-group names when several forms are alive
 
 /** Fetch the report types once per session (tolerant: never rejects). */
 function loadReportTypes() {
@@ -211,15 +212,117 @@ function buildReportingSection(element) {
   return { section, getValue, toggle };
 }
 
+/**
+ * Build the « Health check » section of the element form: an explicit 3-way
+ * source choice — Off | Docky target | Custom URL — replacing the old
+ * standalone toggle. Returns `{ section, getValue, dispose }`:
+ *   - `docky` reuses the existing target picker (agent/container NAME);
+ *   - `Custom URL` reveals the `healthUrl` input (client-side http(s) check);
+ *   - the non-selected source is NOT sent (`healthUrl:null` when Docky is
+ *     chosen, `docky:null` otherwise), so the server resolution is unambiguous.
+ */
+function buildHealthSection(element) {
+  const existingUrl = typeof element?.healthUrl === 'string' ? element.healthUrl.trim() : '';
+  const existingDocky = !!(element?.docky?.agent || element?.docky?.container);
+  // Initial choice: a stored healthUrl wins; else a Docky target; else Off.
+  let initial = 'off';
+  if (isValidHttpUrl(existingUrl)) initial = 'url';
+  else if (existingDocky) initial = 'docky';
+
+  const section = el('div', 'health-section');
+  section.appendChild(el('div', 'health-section-title', 'Health check'));
+  section.appendChild(
+    el(
+      'small',
+      'field-help',
+      'Source of the tile health pill. “Docky target” uses the linked container (and also enables monitoring / controls); “Custom URL” probes an http(s) endpoint from the Homy server.'
+    )
+  );
+
+  const group = el('div', 'health-source-group');
+  const name = `health-source-${++healthSeq}`;
+  const choices = [
+    { value: 'off', label: 'Off' },
+    { value: 'docky', label: 'Docky target' },
+    { value: 'url', label: 'Custom URL' },
+  ];
+  const radios = new Map();
+  for (const c of choices) {
+    const radio = el('input', null, null, { type: 'radio', name });
+    radio.value = c.value;
+    radio.checked = c.value === initial;
+    const label = el('label');
+    label.append(radio, el('span', null, c.label));
+    group.appendChild(label);
+    radios.set(c.value, radio);
+  }
+  section.appendChild(group);
+
+  // Docky panel (the existing filterable picker) — shown only when selected.
+  const dockyField = buildDockyTargetField({ element });
+  const dockyPanel = el('div', 'health-panel');
+  dockyPanel.appendChild(dockyField.section);
+  section.appendChild(dockyPanel);
+
+  // Custom URL panel.
+  const urlPanel = el('div', 'health-panel');
+  const urlField = el('div', 'field health-url-field');
+  urlField.appendChild(el('span', 'field-label', 'Health URL'));
+  const urlInput = el('input', null, null, {
+    type: 'text',
+    placeholder: 'https://jf.holaf.fr/health',
+    autocomplete: 'off',
+    spellcheck: 'false',
+  });
+  urlInput.value = isValidHttpUrl(existingUrl) ? existingUrl : '';
+  urlField.appendChild(urlInput);
+  urlField.appendChild(
+    el(
+      'small',
+      'health-url-help',
+      'Any http(s) URL answering 2xx/3xx is healthy (red on 4xx/5xx, amber when unreachable). Credentials in the URL are refused.'
+    )
+  );
+  urlPanel.appendChild(urlField);
+  section.appendChild(urlPanel);
+
+  const currentMode = () => {
+    for (const [value, radio] of radios) if (radio.checked) return value;
+    return 'off';
+  };
+  const sync = () => {
+    const mode = currentMode();
+    dockyPanel.classList.toggle('hidden', mode !== 'docky');
+    urlPanel.classList.toggle('hidden', mode !== 'url');
+  };
+  for (const radio of radios.values()) radio.addEventListener('change', sync);
+  sync();
+
+  function getValue() {
+    const mode = currentMode();
+    if (mode === 'docky') {
+      return { ok: true, healthCheck: true, healthUrl: null, docky: dockyField.getValue() };
+    }
+    if (mode === 'url') {
+      const healthUrl = urlInput.value.trim();
+      if (!healthUrl) return { ok: false, error: 'Health URL is required' };
+      if (!isValidHttpUrl(healthUrl)) return { ok: false, error: 'Health URL must be a valid http(s) URL' };
+      return { ok: true, healthCheck: true, healthUrl, docky: null };
+    }
+    return { ok: true, healthCheck: false, healthUrl: null, docky: null };
+  }
+
+  return { section, getValue, dispose: () => dockyField.dispose() };
+}
+
 // Field schema consumed by the shared builder. Keys are flat (the builder's
-// contract); the Docky target is a dedicated picker section (buildDockyTargetField)
-// appended below, folded into `{ agent, container }` on save.
+// contract); the health source (buildHealthSection) is appended below, folded
+// into `{ healthCheck, healthUrl, docky }` on save.
 const FORM_FIELDS = [
   { key: 'name', label: 'Name', type: 'text', required: true, placeholder: 'e.g. Jellyfin' },
   { key: 'icon', label: 'Icon', type: 'text', placeholder: 'Emoji, holaf:<name>, local:<slug> or https://…', help: 'Pick a local icon from the library or type an emoji / holaf:<name> / https://… URL.' },
   { key: 'url', label: 'URL', type: 'url', placeholder: 'https://…' },
   { key: 'description', label: 'Description', type: 'textarea', rows: 2, placeholder: 'Optional' },
-  { key: 'healthCheck', label: 'Health check', type: 'toggle', help: 'Delegate a health probe to Docky (via the Docky target below).' },
 ];
 
 let formSeq = 0; // unique <form> ids when several forms are alive
@@ -326,6 +429,7 @@ export function openElementsModal() {
       badges.appendChild(el('span', 'badge badge-docky', `Docky: ${target}`));
     }
     if (item.healthCheck) badges.appendChild(el('span', 'badge badge-health', 'Health'));
+    if (item.healthUrl) badges.appendChild(el('span', 'badge badge-health', 'Health URL'));
     if (item.report?.type) {
       badges.appendChild(el('span', 'badge badge-report', `Report: ${item.report.type}`));
     }
@@ -466,10 +570,11 @@ export function openElementFormModal(element, onSaved) {
   const reporting = buildReportingSection(element);
   form.appendChild(reporting.section);
 
-  // Docky target (lot 5): filterable agent/container picker with a free-text
-  // fallback when Docky is unavailable. Persists agent + container NAME only.
-  const dockyField = buildDockyTargetField({ element });
-  form.appendChild(dockyField.section);
+  // Health source choice (Off | Docky target | Custom URL): picks the tile
+  // health pill source. The Docky target picker (lot 5) now lives INSIDE this
+  // section and is only shown when « Docky target » is selected.
+  const health = buildHealthSection(element);
+  form.appendChild(health.section);
 
   const content = el('div', 'elements-form-body');
   content.append(form, errorEl);
@@ -492,14 +597,20 @@ export function openElementFormModal(element, onSaved) {
       toast(reportResult.error, 'error');
       return;
     }
-    const docky = dockyField.getValue();
+    const healthResult = health.getValue();
+    if (!healthResult.ok) {
+      errorEl.textContent = healthResult.error;
+      toast(healthResult.error, 'error');
+      return;
+    }
     const payload = {
       name: v.name,
       icon: v.icon || '',
       url: v.url || '',
       description: v.description || '',
-      healthCheck: !!v.healthCheck,
-      docky,
+      healthCheck: healthResult.healthCheck,
+      healthUrl: healthResult.healthUrl,
+      docky: healthResult.docky,
       report: reportResult.value,
     };
     const saveBtn = formCtrl?.el.querySelector('.holaf-modal-footer button[type="submit"]');
@@ -525,7 +636,7 @@ export function openElementFormModal(element, onSaved) {
     title: editing ? 'Edit element' : 'New element',
     size: 'md',
     content,
-    onClose: () => dockyField.dispose(),
+    onClose: () => health.dispose(),
     actions: [
       { label: 'Cancel', type: 'cancel' },
       { label: editing ? 'Save' : 'Create', type: 'primary', form: formId },

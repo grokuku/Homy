@@ -11,6 +11,7 @@ import { layoutRoutes } from './routes/layout.routes.js';
 import { elementsRoutes } from './routes/elements.routes.js';
 import { reportsRoutes } from './routes/reports.routes.js';
 import { dockyRoutes } from './routes/docky.routes.js';
+import { healthRoutes } from './routes/health.routes.js';
 import { iconsRoutes } from './routes/icons.routes.js';
 import { widgetRoutes } from './routes/widgets.routes.js';
 import { weatherRoutes } from './routes/weather.routes.js';
@@ -21,6 +22,7 @@ import { LayoutService } from './services/layout.service.js';
 import { ElementsService } from './services/elements.service.js';
 import { IconsService } from './services/icons.service.js';
 import { DockyService } from './services/docky.service.js';
+import { HealthService } from './services/health.service.js';
 import { Store } from './services/store.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +37,9 @@ app.get('/api/health', (c) => c.json({ ok: true, uptime: process.uptime() }));
 // ---- JWT guard for /api/* (public paths exempted) --------------------------
 
 const PUBLIC_PATHS = [
-  '/api/health',
+  // EXACT match (RegExp): `/api/health` is the public ping, but
+  // `/api/health/check` (custom URL probing) MUST stay JWT-protected.
+  /^\/api\/health$/,
   '/api/auth/status',
   '/api/auth/setup',
   '/api/auth/login',
@@ -95,6 +99,13 @@ const dockyService = new DockyService(store, {
   cacheTtlMs: serverConfig.dockyCacheMs,
 });
 
+// Custom health-check prober (element.healthUrl): http(s) only, bounded
+// timeout + ~30 s per-URL cache, credentials rejected before any fetch.
+const healthService = new HealthService({
+  timeoutMs: serverConfig.healthTimeoutMs,
+  cacheTtlMs: serverConfig.healthCacheMs,
+});
+
 // Background images live in DATA_DIR/backgrounds/<uuid>.<ext>.
 const backgroundsDir = path.join(serverConfig.dataDir, 'backgrounds');
 const backgroundExists = (name) => BG_NAME_RE.test(name) && existsSync(path.join(backgroundsDir, name));
@@ -108,6 +119,7 @@ app.route(
 app.route('/api/elements', elementsRoutes(elementsService, layoutService));
 app.route('/api/reports', reportsRoutes(elementsService, { timeoutMs: serverConfig.reportsTimeoutMs }));
 app.route('/api/docky', dockyRoutes(dockyService));
+app.route('/api/health', healthRoutes(healthService));
 app.route('/api/icons', iconsRoutes(iconsService));
 app.route('/api/widgets', widgetRoutes);
 app.route('/api/weather', weatherRoutes);

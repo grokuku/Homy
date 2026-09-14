@@ -88,14 +88,20 @@ export function applyAppearance(container, config) {
   container.style.removeProperty('--widget-border-color');
   container.style.removeProperty('--widget-border-width');
   container.style.removeProperty('--widget-text-color');
+  delete container.dataset.surfaceOff;
 
   if (bgColor) {
     container.style.setProperty('--widget-bg-color', bgColor);
     // Opacity only applies when a background color is set. Any finite value
     // (100 included) is applied explicitly so it keeps priority over the
-    // global --surface-alpha token.
+    // global --surface-alpha token. At EXACTLY 0 % the whole widget surface
+    // must vanish — not just its background: the residual border and the
+    // backdrop-filter would otherwise leave a visible ghost rectangle over the
+    // dashboard, so `data-surface-off` neutralizes them too.
     if (Number.isFinite(bgOpacity)) {
-      container.style.setProperty('--widget-bg-op', `${Math.max(0, Math.min(100, bgOpacity))}%`);
+      const op = Math.max(0, Math.min(100, bgOpacity));
+      container.style.setProperty('--widget-bg-op', `${op}%`);
+      if (op === 0) container.dataset.surfaceOff = '';
     }
   }
   if (borderColor) container.style.setProperty('--widget-border-color', borderColor);

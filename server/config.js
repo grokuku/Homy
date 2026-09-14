@@ -24,6 +24,10 @@ const env = {
   DOCKY_STATS_TIMEOUT_MS: Number(process.env.DOCKY_STATS_TIMEOUT_MS || 15000),
   DOCKY_ACTION_TIMEOUT_MS: Number(process.env.DOCKY_ACTION_TIMEOUT_MS || 20000),
   DOCKY_CACHE_MS: Number(process.env.DOCKY_CACHE_MS || 30000),
+  // Custom health-check probes (element.healthUrl). Bounded timeout + cache;
+  // http(s) only, no credentials, ≤ MAX_HEALTH_URLS per request.
+  HEALTH_TIMEOUT_MS: Number(process.env.HEALTH_TIMEOUT_MS || 5000),
+  HEALTH_CACHE_MS: Number(process.env.HEALTH_CACHE_MS || 30000),
 };
 
 // ---- config.json persistence ----------------------------------------------
@@ -93,6 +97,9 @@ export const serverConfig = {
   dockyStatsTimeoutMs: env.DOCKY_STATS_TIMEOUT_MS,
   dockyActionTimeoutMs: env.DOCKY_ACTION_TIMEOUT_MS,
   dockyCacheMs: env.DOCKY_CACHE_MS,
+  // Custom health-check probe bounds (server/services/health.service.js).
+  healthTimeoutMs: env.HEALTH_TIMEOUT_MS,
+  healthCacheMs: env.HEALTH_CACHE_MS,
 };
 
 export const authConfig = config;
