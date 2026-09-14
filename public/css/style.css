@@ -1026,8 +1026,18 @@ body.bg-to-view #homy-bg-layer {
    no border, no backdrop blur, no shadow. Without this, the 1px frame (and the
    backdrop-filter when a dashboard background is active) left a ghost rounded
    rectangle over the dashboard even though the background colour was already
-   transparent. */
-.grid-stack-item-content[data-surface-off] {
+   transparent.
+
+   SPECIFICITY (measured bug fix): the glass rule below is
+   `body[data-bg-active] .grid-stack-item-content` → (0,2,1). The plain
+   `.grid-stack-item-content[data-surface-off]` selector is only (0,2,0), so
+   the blur used to WIN the cascade and a blurred rectangle stayed visible over
+   the wallpaper at opacity 0. The second selector below mirrors the glass rule
+   plus the attribute → (0,3,1) so the neutralization actually wins. Keeping the
+   plain selector too covers the no-background case (base rule is only
+   (0,1,0)). */
+.grid-stack-item-content[data-surface-off],
+body[data-bg-active] .grid-stack-item-content[data-surface-off] {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
