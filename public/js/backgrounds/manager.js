@@ -35,6 +35,9 @@ import { HolafAmbient } from '../../vendor/holaf/holaf-ambient.js';
  *     settles and re-backs the canvas),
  *   - visibilitychange: the brick pauses its rAF loop when the tab is hidden,
  *   - prefers-reduced-motion: the brick renders ONE static frame, no loop,
+ *   - scale/fps (perf options, settings.background.procedural): the buffer is
+ *     rendered at scale × css × dpr and upscaled by the compositor, the rAF
+ *     loop only paints at the configured fps ceiling (animation speed kept),
  *   - dispose: destroy() cancels the rAF, disconnects the observer and
  *     removes its listeners; layers are removed from the DOM.
  */
@@ -47,11 +50,38 @@ let layerEl = null; // fixed full-viewport wrapper hosting the three layers
 let imgResizeSync = null; // window resize listener for scroll-mode image height
 let lastImage = null; // last applied image descriptor (scroll re-apply per host)
 let host = null; // framed preview host (#grid-preview-bg), or null → full viewport
+let currentType = 'none'; // type currently rendered (fast-path in-place updates)
 
-/** Apply a (server-validated) background descriptor. */
+/**
+ * Apply a (server-validated) background descriptor.
+ *
+ * FAST PATH: when the incoming descriptor has the SAME type as the one already
+ * rendered, the live layer is updated IN PLACE instead of being torn down:
+ *   - procedural → `HolafAmbient.setConfig` — the single instance and its rAF
+ *     loop survive, so a live draft (the Background modal previews on the real
+ *     full-screen background) never restarts the animation while dragging
+ *     sliders, and a `scale` change resizes the backing store + repaints
+ *     immediately;
+ *   - anything else → full re-render (image layers are cheap; the browser
+ *     caches the URL).
+ * Any type change still goes through dispose + render, so switching
+ * none↔image↔procedural tears the old layer down exactly as before.
+ */
 export function applyBackground(bg) {
-  disposeBackground();
   const type = bg?.type || 'none';
+
+  if (type === 'procedural' && currentType === 'procedural' && ambient) {
+    try {
+      ambient.setConfig(proceduralOpts(bg.procedural || {}));
+      return;
+    } catch (err) {
+      console.error('[backgrounds] ambient update failed:', err);
+      // fall through to a clean re-render below
+    }
+  }
+
+  disposeBackground();
+  currentType = type;
   if (type === 'none') {
     document.body.removeAttribute('data-bg-active');
     return;
@@ -92,6 +122,7 @@ export function disposeBackground() {
     imgResizeSync = null;
   }
   lastImage = null;
+  currentType = 'none';
 }
 
 // ---- host / frame clipping (lot 2) -----------------------------------------
@@ -232,11 +263,14 @@ function renderImage(img) {
 
 // ---- procedural layer -------------------------------------------------------
 
-function renderProcedural(proc) {
-  canvasEl = document.createElement('canvas');
-  canvasEl.id = 'homy-bg-canvas';
-  adopt(canvasEl);
-
+/**
+ * Map a server-validated procedural descriptor to HolafAmbient options.
+ * `scale` is stored as a percentage (25..100) in settings and converted to the
+ * brick's fraction (0.25..1); `fps` is an integer ceiling (15..60). Shared by
+ * the initial render (create) and the in-place setConfig fast path, so both
+ * paths always agree.
+ */
+function proceduralOpts(proc) {
   const opts = {
     target: canvasEl,
     mode: ['waves', 'particles', 'aurora'].includes(proc.generator) ? proc.generator : 'waves',
@@ -247,12 +281,26 @@ function renderProcedural(proc) {
     // là où ctx.filter n'existe pas (Safari < 18).
     blur: Number.isFinite(Number(proc.blur)) ? Number(proc.blur) : 0,
     links: proc.links !== false,
+    // Performance (holaf-ambient ≥ 0.3.0) : scale = facteur de résolution du
+    // buffer interne (settings en %, la brique veut une fraction 0.25..1) et
+    // fps = plafond de framerate. Le serveur injecte déjà les défauts 100/60
+    // (settings.json anciens compris) ; les replis ci-dessous ne servent que
+    // si un jour ce fichier est appelé avec un descriptor brut.
+    scale: (Number.isFinite(Number(proc.scale)) ? Number(proc.scale) : 100) / 100,
+    fps: Number.isInteger(Number(proc.fps)) && Number(proc.fps) >= 10 ? Number(proc.fps) : 60,
   };
   if (Array.isArray(proc.colors) && proc.colors.length > 0) {
     opts.colors = proc.colors.filter((c) => typeof c === 'string');
   }
+  return opts;
+}
+
+function renderProcedural(proc) {
+  canvasEl = document.createElement('canvas');
+  canvasEl.id = 'homy-bg-canvas';
+  adopt(canvasEl);
   try {
-    ambient = HolafAmbient.create(opts);
+    ambient = HolafAmbient.create(proceduralOpts(proc));
   } catch (err) {
     console.error('[backgrounds] ambient creation failed:', err);
     canvasEl.remove();

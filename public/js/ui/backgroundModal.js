@@ -2,6 +2,10 @@ import { el } from '../util.js';
 import { api } from '../api.js';
 import { toast } from './toast.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
+// Imported ONLY for the static `elementCount` helper (density hint). No
+// HolafAmbient instance is ever created here any more: the modal renders no
+// canvas — the LIVE PREVIEW is the real, full-screen background behind the
+// modal, driven by the background manager (single ambient instance reused).
 import { HolafAmbient } from '../../vendor/holaf/holaf-ambient.js';
 import { applyBackground } from '../backgrounds/manager.js';
 
@@ -13,18 +17,31 @@ import { applyBackground } from '../backgrounds/manager.js';
  *     blur (0-20px), dim (0-80%), fixed (viewport) vs scrolling
  *   - procedural: generator (waves / particles / aurora) + mood preset, speed,
  *     density (intensity 1..100), opacity, blur (0-40px), links (particles
- *     only), palette preset or custom comma-separated colors
+ *     only), palette preset or custom comma-separated colors, PLUS the two
+ *     performance sliders (holaf-ambient ≥ 0.3.0): scale — internal render
+ *     resolution 25-100 % (buffer = css × dpr × scale, upscaled by the
+ *     compositor) — and FPS max 15-60 (rAF loop paints at most N fps, the
+ *     animation keeps its wall-clock speed).
  *
- * The procedural section embeds a LIVE PREVIEW canvas driven by the vendored
- * holaf-ambient brick itself: what you see in the preview is what gets applied
- * after Save. The preview instance is destroyed in onClose (no rAF loop left
- * running behind a closed modal).
+ * NO in-modal preview canvas. Instead the modal edits a DRAFT and applies it
+ * LIVE to the REAL full-screen background behind itself:
+ *   - at open we clone the SAVED settings (`saved`) for an exact revert;
+ *   - every user edit rebuilds the draft descriptor and calls
+ *     `applyBackground(draft)` — discrete controls (type, generator, palette,
+ *     presets, checkboxes, thumbnail pick) apply immediately, sliders and the
+ *     hex text field are DEBOUNCED (~300 ms) so dragging never re-creates the
+ *     ambient instance (the manager updates it in place via setConfig);
+ *   - the modal panel is opaque and anchored to the LEFT, and the overlay scrim
+ *     is neutralised (--hm-overlay-bg: transparent) so the animated background
+ *     stays visible — the background IS the preview;
+ *   - Save = PUT /api/settings (persist) + close; Cancel / Escape / overlay
+ *     click / ✕ = re-apply the SAVED snapshot (exact revert) + close.
  *
- * Saving = PUT /api/settings (full background object, server-validated),
- * then the onSaved callback applies it live via the background manager.
- * The footer Save button is provided by the HolafModal shell (a REAL button
- * we attach an onClick handler to — per the lot-2 lesson we never replace
- * native interactions with synthetic events).
+ * Saving = PUT /api/settings (full background object, server-validated), then
+ * the onSaved callback applies it live via the background manager. The footer
+ * Save button is provided by the HolafModal shell (a REAL button we attach an
+ * onClick handler to — per the lot-2 lesson we never replace native
+ * interactions with synthetic events).
  */
 
 // Palette presets (same set as the holaf-lib test bench) and mood presets that
@@ -41,8 +58,23 @@ const MOODS = {
   intense: { speed: 1.6, density: 22, opacity: 1, blur: 0 },
 };
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** Deep clone of a plain server descriptor (exact revert needs an isolated copy). */
+function clone(v) {
+  try {
+    if (typeof structuredClone === 'function') return structuredClone(v);
+  } catch {
+    /* fall through to JSON */
+  }
+  return JSON.parse(JSON.stringify(v));
+}
+
 export function openBackgroundModal({ settings, onSaved }) {
   const current = settings?.background || { type: 'none' };
+  // SNAPSHOT of the saved settings — the reverve target. It is never mutated by
+  // the draft; Cancel/Escape/overlay re-apply this exact object, whatever draft
+  // detours the user took (image → procedural → image …).
+  const saved = clone(current);
 
   // ---- type -----------------------------------------------------------------
   const typeSel = el('select', null, null, { id: 'bg-type-select' });
@@ -94,6 +126,9 @@ export function openBackgroundModal({ settings, onSaved }) {
         if (e.target === del) return;
         selectedName = f.name;
         thumbs.querySelectorAll('.bg-thumb').forEach((t) => t.classList.toggle('selected', t.dataset.name === selectedName));
+        // Picking a thumbnail is a discrete choice → apply the draft at once so
+        // the image shows up live on the real background.
+        applyDraftNow();
       });
       del.addEventListener('click', async () => {
         try {
@@ -123,6 +158,7 @@ export function openBackgroundModal({ settings, onSaved }) {
       selectedName = res.name;
       await refreshThumbs();
       toast('Background uploaded', 'success');
+      if (typeSel.value === 'image') applyDraftNow();
     } catch (err) {
       toast(err.message || 'Upload failed', 'error');
     } finally {
@@ -165,6 +201,17 @@ export function openBackgroundModal({ settings, onSaved }) {
     unit: 'px',
     help: 'Softens the whole background (global gaussian blur) without touching the rest of the page.',
   });
+  // Performance (holaf-ambient ≥ 0.3.0) : résolution du buffer interne et
+  // plafond de framerate. Défauts = 100 % / 60 fps (settings sans ces clés,
+  // y compris d'anciens settings.json : le serveur renvoie les défauts).
+  const scaleInput = rangeField('Échelle de rendu', 25, 100, 5, proc.scale ?? 100, {
+    unit: '%',
+    help: 'Rendu interne réduit puis agrandi — quasi invisible sur des dégradés doux',
+  });
+  const fpsInput = rangeField('FPS max', 15, 60, 1, proc.fps ?? 60, {
+    unit: 'fps',
+    help: 'Limite la charge ; au-delà de 60 Hz le fond est plafonné (invisible sur un fond animé lent)',
+  });
   const linksInput = el('input', null, null, { type: 'checkbox' });
   linksInput.checked = proc.links !== false;
   const linksWrap = toggleWrap('Particle links', linksInput);
@@ -193,11 +240,6 @@ export function openBackgroundModal({ settings, onSaved }) {
   }
   const swatches = el('div', 'bg-swatches');
 
-  // Aperçu live : un <canvas> piloté par la brique holaf-ambient elle-même.
-  const previewCanvas = el('canvas');
-  const previewWrap = el('div', 'bg-preview');
-  previewWrap.appendChild(previewCanvas);
-
   /** Valeur numérique d'un champ (repli si vide / NaN). */
   function num(input, fallback) {
     const n = Number(input.value);
@@ -213,39 +255,88 @@ export function openBackgroundModal({ settings, onSaved }) {
       .map((s) => s.toLowerCase());
   }
 
-  function previewOpts() {
-    return {
-      target: previewCanvas,
-      mode: genSel.value,
-      speed: num(speedInput.input, 1),
-      density: num(densityInput.input, 10),
-      opacity: num(opacityInput.input, 1),
-      blur: num(procBlurInput.input, 0),
-      links: linksInput.checked,
-      colors: parsedColors(),
-    };
-  }
-
-  let previewInst = null;
-  try {
-    previewInst = HolafAmbient.create(previewOpts());
-  } catch (err) {
-    console.error('[backgrounds] preview creation failed:', err);
-  }
-
-  /** Applique les réglages à l'aperçu + met à jour aides et pastilles. */
-  function syncPreview() {
-    try {
-      if (previewInst) previewInst.setConfig(previewOpts());
-    } catch (err) {
-      console.warn('[backgrounds] preview update failed:', err);
+  /**
+   * Build the DRAFT background descriptor from the current form state. This is
+   * exactly the server-shaped object we PUT on Save — the same one we apply live,
+   * so what the user sees behind the modal is what gets persisted. `null` means
+   * "nothing applicable yet" (image type with no file picked): the live
+   * background is then left untouched rather than flashing a broken layer.
+   */
+  function buildDescriptor() {
+    const type = typeSel.value;
+    if (type === 'image') {
+      if (!selectedName) return null;
+      return {
+        type: 'image',
+        image: {
+          name: selectedName,
+          blur: num(blurInput.input, 0),
+          dim: num(dimInput.input, 0),
+          fixed: fixedInput.checked,
+        },
+      };
     }
+    if (type === 'procedural') {
+      return {
+        type: 'procedural',
+        procedural: {
+          generator: genSel.value,
+          speed: num(speedInput.input, 1),
+          density: num(densityInput.input, 10),
+          opacity: num(opacityInput.input, 1),
+          blur: num(procBlurInput.input, 0),
+          // Perf : le serveur attend des entiers (scale en %, fps entier).
+          scale: Math.round(num(scaleInput.input, 100)),
+          fps: Math.round(num(fpsInput.input, 60)),
+          links: linksInput.checked,
+          colors: parsedColors(),
+        },
+      };
+    }
+    return { type: 'none' };
+  }
+
+  // ---- live draft application (debounced) ------------------------------------
+  let applyTimer = null;
+  let committed = false; // Save succeeded → closing must NOT revert
+
+  /** Apply the current draft to the REAL background immediately. */
+  function applyDraftNow() {
+    if (applyTimer) {
+      clearTimeout(applyTimer);
+      applyTimer = null;
+    }
+    const draft = buildDescriptor();
+    if (!draft) return; // image without a picked file → keep the current bg
+    try {
+      applyBackground(draft);
+    } catch (err) {
+      console.warn('[backgrounds] live draft apply failed:', err);
+    }
+  }
+
+  /**
+   * Debounced draft apply for CONTINUOUS inputs (sliders, hex typing): a drag
+   * fires a burst of `input` events, and re-baying the canvas on every tick
+   * would cost more than it saves. 300 ms after the last event we apply once —
+   * the manager updates the single ambient instance in place (no restart).
+   */
+  function scheduleApply() {
+    if (applyTimer) clearTimeout(applyTimer);
+    applyTimer = setTimeout(() => {
+      applyTimer = null;
+      applyDraftNow();
+    }, 300);
+  }
+
+  /** Refresh helps / value badges / swatches (no preview instance any more). */
+  function syncMeta() {
     const n = HolafAmbient.elementCount(genSel.value, num(densityInput.input, 10));
     const unit = genSel.value === 'particles' ? 'particles' : genSel.value === 'aurora' ? 'glows' : 'ribbons';
     densityHelp.textContent = `≈ ${n} ${unit}`;
     // Badges de valeur : un preset (ou le change de générateur) écrit les
     // valeurs directement dans les inputs sans événement input → re-sync.
-    for (const f of [speedInput, densityInput, opacityInput, procBlurInput]) f.sync();
+    for (const f of [speedInput, densityInput, opacityInput, procBlurInput, scaleInput, fpsInput]) f.sync();
     linksWrap.classList.toggle('hidden', genSel.value !== 'particles');
     swatches.replaceChildren(
       ...parsedColors().map((hex) => {
@@ -278,25 +369,27 @@ export function openBackgroundModal({ settings, onSaved }) {
   const procSection = el('div', 'bg-section');
   procSection.append(
     sectionTitle('Generator'),
-    fieldWrap('Preview (live)', previewWrap),
     fieldWrap('Generator', genSel),
     fieldWrap('Mood preset', presetSel),
     speedInput.wrap,
     densityInput.wrap,
     opacityInput.wrap,
     procBlurInput.wrap,
+    scaleInput.wrap,
+    fpsInput.wrap,
     linksWrap,
     fieldWrap('Palette', paletteSel),
     fieldWrap('Colors (comma-separated hex, empty = default)', colorsInput),
     swatches
   );
 
-  // Les réglages mettent l'aperçu à jour en direct.
-  genSel.addEventListener('change', syncPreview);
-  colorsInput.addEventListener('input', syncPreview);
-  linksInput.addEventListener('change', syncPreview);
-  for (const f of [speedInput, densityInput, opacityInput, procBlurInput]) {
-    f.input.addEventListener('input', syncPreview);
+  // Discrete controls apply the draft at once; continuous inputs are debounced.
+  genSel.addEventListener('change', () => { syncMeta(); applyDraftNow(); });
+  colorsInput.addEventListener('input', () => { syncMeta(); scheduleApply(); });
+  linksInput.addEventListener('change', applyDraftNow);
+  fixedInput.addEventListener('change', applyDraftNow);
+  for (const f of [speedInput, densityInput, opacityInput, procBlurInput, scaleInput, fpsInput, blurInput, dimInput]) {
+    f.input.addEventListener('input', scheduleApply);
   }
   presetSel.addEventListener('change', () => {
     const m = MOODS[presetSel.value];
@@ -305,13 +398,15 @@ export function openBackgroundModal({ settings, onSaved }) {
     densityInput.input.value = String(m.density);
     opacityInput.input.value = String(m.opacity);
     procBlurInput.input.value = String(m.blur);
-    syncPreview();
+    syncMeta();
+    applyDraftNow();
   });
   paletteSel.addEventListener('change', () => {
     const hexes = PALETTES[paletteSel.value];
     if (!hexes) return; // « custom » : on laisse la saisie de l'utilisateur
     colorsInput.value = hexes.join(', ');
-    syncPreview();
+    syncMeta();
+    applyDraftNow();
   });
 
   function syncSections() {
@@ -319,27 +414,42 @@ export function openBackgroundModal({ settings, onSaved }) {
     imageSection.classList.toggle('hidden', t !== 'image');
     procSection.classList.toggle('hidden', t !== 'procedural');
   }
-  typeSel.addEventListener('change', syncSections);
-  // La section procédurale peut passer de cachée à visible : l'aperçu se
-  // réajuste (son canvas n'a une taille qu'une fois affiché).
-  typeSel.addEventListener('change', syncPreview);
+  // A type change swaps the live layer behind the modal immediately
+  // (none ↔ image ↔ procedural), so the user sees the real result at once.
+  typeSel.addEventListener('change', () => { syncSections(); applyDraftNow(); });
   syncSections();
-  syncPreview();
+  syncMeta();
+  // Populate the uploaded-backgrounds grid on open (pre-existing gap): without
+  // it the image section started empty and an existing background could not be
+  // picked. Async — the grid fills in as soon as the list resolves.
+  refreshThumbs();
 
   const content = el('div', 'config-form');
-  content.append(typeField, imageSection, procSection);
+  content.append(
+    el('p', 'bg-live-hint', 'Changes apply live to the background behind this window. Save keeps them; Cancel restores the previous background.'),
+    typeField,
+    imageSection,
+    procSection
+  );
 
-  // ---- save -------------------------------------------------------------------
+  // ---- save / close -----------------------------------------------------------
   const ctrl = HolafModal.open({
     title: 'Background',
     size: 'md',
     content,
-    // L'aperçu anime tant que la modale est ouverte : on coupe sa boucle rAF
-    // à la fermeture.
+    // Any close that is NOT a successful Save means "revert the live draft":
+    // Cancel, Escape, overlay click and the ✕ button all funnel through here.
     onClose: () => {
-      if (previewInst) {
-        previewInst.destroy();
-        previewInst = null;
+      if (applyTimer) {
+        clearTimeout(applyTimer);
+        applyTimer = null;
+      }
+      if (!committed) {
+        try {
+          applyBackground(clone(saved));
+        } catch (err) {
+          console.error('[backgrounds] revert failed:', err);
+        }
       }
     },
     actions: [
@@ -356,6 +466,15 @@ export function openBackgroundModal({ settings, onSaved }) {
       },
     ],
   });
+
+  // The background behind the modal IS the preview: neutralise the overlay
+  // scrim (fully transparent — no darkening over the animated background) and
+  // anchor the opaque panel to the LEFT so the largest possible area stays
+  // visible. The panel keeps its own opaque surface + shadow → still readable.
+  // (HolafModal exposes --hm-overlay-bg per instance; setting it here, after
+  // open(), wins over the global theme without touching the palette.)
+  ctrl.overlay.style.setProperty('--hm-overlay-bg', 'transparent');
+  ctrl.overlay.style.justifyContent = 'flex-start';
 
   async function save(ctrlRef) {
     const errorEl = ctrlRef.el.querySelector('.bg-error');
@@ -383,6 +502,8 @@ export function openBackgroundModal({ settings, onSaved }) {
             density: num(densityInput.input, 10),
             opacity: num(opacityInput.input, 1),
             blur: num(procBlurInput.input, 0),
+            scale: Math.round(num(scaleInput.input, 100)),
+            fps: Math.round(num(fpsInput.input, 60)),
             links: linksInput.checked,
             colors: parsedColors(),
           },
@@ -390,6 +511,7 @@ export function openBackgroundModal({ settings, onSaved }) {
       }
       // Server-side strict validation is the gate; reflect failures inline.
       const next = await api.put('/api/settings', { theme: settings?.theme || 'dark', background });
+      committed = true; // the draft is now the saved state → close must not revert
       onSaved?.(next);
       toast('Background saved', 'success');
       ctrlRef.close();

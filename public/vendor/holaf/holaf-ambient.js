@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
- * Holaf UI — Brique HolafAmbient · version 0.2.0
+ * Holaf UI — Brique HolafAmbient · version 0.3.0
  * ─────────────────────────────────────────────────────────────────────────────
  * Fonds animés canvas, « sans style » : la brique dessine MAIS ne touche PAS
  * au layout. Le host fournit un <canvas> (existant ou via sélecteur) et le
@@ -38,9 +38,25 @@
  * 10. Anti-banding : passe de bruit `source-atop` très légère (désactivée si
  *     `blur >= 2`, sur très grand canvas, ou si le contexte ne la supporte pas).
  *
+ * ─── Changements 0.2.0 → 0.3.0 (performance, ADDITIF — zéro breaking) ───────
+ * 11. Nouvelle option `scale` (0.25..1, défaut 1) : facteur de résolution du
+ *     BUFFER interne. Backing store = round(css × dpr × scale) (min 1 px) ; le
+ *     canvas garde ses dimensions CSS → l'agrandissement (bilinéaire) est fait
+ *     par le compositeur, `image-rendering` auto. Coexiste avec le
+ *     ResizeObserver (le buffer est recalculé au resize en respectant scale)
+ *     et avec le dpr (jamais double-appliqué : un seul produit css × dpr ×
+ *     scale). Le flou (`blur`) et le grain suivent le même ratio.
+ * 12. Nouvelle option `fps` (entier ≥ 10, défaut 0 = non plafonné) : plafond
+ *     de framerate. La boucle rAF continue mais ne redessine que si
+ *     `elapsed ≥ 1000/fps` ; l'horloge d'effet avance À CHAQUE tick et le dt
+ *     est cumulé entre deux paints → l'animation garde sa vitesse horloge,
+ *     seul son taux de rafraîchissement baisse. Le plafonnement vit SOUS les
+ *     mécanismes de cycle de vie : visibilitychange (pause) et
+ *     prefers-reduced-motion (frame unique) restent prioritaires et inchangés.
+ *
  * PERFORMANCE OBLIGATOIRE :
  *   - requestAnimationFrame (une seule boucle par instance).
- *   - devicePixelRatio respecté (backing store = css × dpr).
+ *   - devicePixelRatio respecté (backing store = css × dpr × scale).
  *   - pause automatique sur document.visibilitychange ('hidden').
  *   - prefers-reduced-motion : rendu STATIQUE (une seule frame, pas de boucle).
  *   - ResizeObserver sur le target : re-dimensionnement + regénération.
@@ -54,7 +70,7 @@
 const HolafAmbient = (function () {
     "use strict";
 
-    const VERSION = "0.2.0";
+    const VERSION = "0.3.0";
     const TAU = Math.PI * 2;
     const DEFAULT_COLORS = ["#3b82f6", "#22d3ee", "#a78bfa", "#f472b6", "#fbbf24"];
 
@@ -224,6 +240,8 @@ const HolafAmbient = (function () {
             links: true,
             blur: 0,
             grain: GRAIN_ALPHA,
+            scale: 1,
+            fps: 0,
         };
         let config = { ...defaults };
 
@@ -245,6 +263,14 @@ const HolafAmbient = (function () {
             // au-delà l'effet n'est plus qu'une tache.
             c.blur = clamp(Number.isFinite(Number(c.blur)) ? Number(c.blur) : 0, 0, 40);
             c.grain = clamp(Number.isFinite(Number(c.grain)) ? Number(c.grain) : GRAIN_ALPHA, 0, 0.2);
+            // Échelle de résolution du buffer interne (0.25..1). 1 = pleine
+            // résolution (css × dpr, comportement 0.2.0). Le canvas garde sa
+            // taille CSS : l'agrandissement est fait par le compositeur.
+            c.scale = clamp(Number.isFinite(Number(c.scale)) ? Number(c.scale) : 1, 0.25, 1);
+            // Plafond de framerate : entier ≥ 10 paints/s, sinon 0 = non
+            // plafonné (comportement 0.2.0). Non entier / < 10 / invalide → 0.
+            const fpsN = Number(c.fps);
+            c.fps = Number.isInteger(fpsN) && fpsN >= 10 ? fpsN : 0;
             return c;
         }
 
@@ -254,6 +280,11 @@ const HolafAmbient = (function () {
         let reducedMotion = false;
         let animId = null;
         let lastTs = 0;
+        // Throttle fps : timestamp du dernier paint effectif + temps cumulé
+        // (s) depuis ce paint. L'horloge d'effet et le dt avancent à CHAQUE
+        // tick rAF ; seul le paint attend son tour (cf. frame()).
+        let lastPaintTs = -1;
+        let pendingDt = 0;
         let cssW = 0;
         let cssH = 0;
         let dpr = 1;
@@ -291,13 +322,22 @@ const HolafAmbient = (function () {
             cssH = canvas.clientHeight || canvas.height || 0;
         }
 
+        // Ratio pixel effectif du backing store : css × dpr × scale (le scale
+        // réduit le buffer, jamais la taille CSS de l'élément — l'upscale est
+        // fait par le compositeur). Une seule application du produit : ni le
+        // dpr ni le scale ne sont doublés.
+        function pixRatio() {
+            return dpr * (config.scale || 1);
+        }
+
         function resizeBacking() {
             measure();
-            const cw = Math.max(1, Math.floor(cssW * dpr));
-            const ch = Math.max(1, Math.floor(cssH * dpr));
+            const pr = pixRatio();
+            const cw = Math.max(1, Math.round(cssW * pr));
+            const ch = Math.max(1, Math.round(cssH * pr));
             if (canvas.width !== cw) canvas.width = cw;
             if (canvas.height !== ch) canvas.height = ch;
-            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.setTransform(pr, 0, 0, pr, 0, 0);
             buildParticles(true);
             // Redimensionner le backing store EFFACE le canvas : on redessine
             // immédiatement (sinon une frame vide reste à l'écran quand la
@@ -514,8 +554,9 @@ const HolafAmbient = (function () {
             if (w * h > 2600000) return;
             if (!st.noise) st.noise = makeNoisePattern(g) || false;
             if (!st.noise) return;
+            const pr = dpr * (config.scale || 1);
             g.save();
-            g.setTransform(dpr, 0, 0, dpr, 0, 0);
+            g.setTransform(pr, 0, 0, pr, 0, 0);
             g.globalCompositeOperation = "source-atop";
             g.globalAlpha = cfg.grain;
             g.fillStyle = st.noise;
@@ -552,11 +593,12 @@ const HolafAmbient = (function () {
             if (w <= 0 || h <= 0) return;
             const cw = canvas.width;
             const ch = canvas.height;
+            const pr = pixRatio();
             const blurred = config.blur > 0 && supportsFilter(ctx);
             const buf = blurred ? ensureBuf(cw, ch) : null;
             const g = buf ? buf.ctx : ctx;
 
-            g.setTransform(dpr, 0, 0, dpr, 0, 0);
+            g.setTransform(pr, 0, 0, pr, 0, 0);
             g.globalCompositeOperation = "source-over";
             g.globalAlpha = 1;
             g.filter = "none";
@@ -577,9 +619,10 @@ const HolafAmbient = (function () {
 
             if (blurred && buf) {
                 // Recompose le tampon sur le canvas visible, flouté d'un coup.
-                // Le léger sur-échantillonnage (pad = rayon) évite que le flou
-                // ne « décroche » du bord (fondu transparent sur les bords).
-                const pad = config.blur * dpr;
+                // Le léger sur-échantillonnage (pad = rayon, en px BUFFER) évite
+                // que le flou ne « décroche » du bord (fondu transparent sur
+                // les bords). Rayon en px buffer = blur CSS × ratio pixel.
+                const pad = config.blur * pr;
                 ctx.setTransform(1, 0, 0, 1, 0, 0);
                 ctx.globalCompositeOperation = "source-over";
                 ctx.globalAlpha = 1;
@@ -602,8 +645,25 @@ const HolafAmbient = (function () {
             // `effectT` avance à la vitesse demandée (phases, couleurs) ; les
             // modes reçoivent le dt RÉEL et appliquent `speed` eux-mêmes une
             // seule fois (sinon la vitesse serait au carré : bug 0.1.0).
+            // Avec un plafond fps, l'horloge avance À CHAQUE tick (l'animation
+            // garde sa vitesse horloge, seul le taux de paint baisse) et le dt
+            // réel est cumulé entre deux paints (mouvement à l'heure horloge).
             effectT += rawDt * (config.speed || 0);
-            draw(effectT, rawDt);
+            pendingDt += rawDt;
+
+            // Plafond fps (option `fps`, entier ≥ 10 ; 0 = non plafonné) : la
+            // boucle rAF continue mais on ne redessine qu'à échéance. Tolérance
+            // de 1 ms sur la comparaison (jitter des timestamps rAF). La
+            // priorité reste : destroyed/paused/hidden/reduced-motion → aucun
+            // paint ni tick (cf. shouldRun, qui court AU-DESSUS du throttle).
+            const interval = config.fps >= 10 ? 1000 / config.fps : 0;
+            if (interval > 0 && lastPaintTs >= 0 && ts - lastPaintTs < interval - 1) {
+                if (shouldRun()) animId = requestAnimationFrame(frame);
+                return;
+            }
+            lastPaintTs = ts;
+            draw(effectT, pendingDt);
+            pendingDt = 0;
             if (shouldRun()) animId = requestAnimationFrame(frame);
         }
 
@@ -625,6 +685,10 @@ const HolafAmbient = (function () {
                 animId = null;
             }
             lastTs = 0;
+            // Repartir propre : la 1ʳᵉ frame après reprise peint immédiatement
+            // (pas d'attente du throttle) et sans dette de mouvement.
+            lastPaintTs = -1;
+            pendingDt = 0;
         }
 
         function pause() {
@@ -655,11 +719,18 @@ const HolafAmbient = (function () {
                 const colorsChanged = next.colors.join(",") !== (prev.colors || []).join(",");
                 const modeChanged = next.mode !== prev.mode;
                 const densityChanged = next.density !== prev.density;
+                const scaleChanged = next.scale !== prev.scale;
                 config = next;
                 if (colorsChanged) invalidatePalette();
                 if (modeChanged || densityChanged) buildParticles(true);
                 if (next.speed !== prev.speed) lastTs = 0; // pas de saut d'horloge
-                if (!reducedMotion && !paused) draw(effectT, 0);
+                if (scaleChanged) {
+                    // Nouvelle résolution de buffer : resizeBacking() redimensionne
+                    // ET redessine immédiatement (mise à jour à chaud de `scale`).
+                    resizeBacking();
+                } else if (!reducedMotion && !paused) {
+                    draw(effectT, 0);
+                }
             },
 
             pause,

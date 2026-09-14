@@ -13,7 +13,9 @@ import { Store } from './store.service.js';
  *       type: 'none' | 'image' | 'procedural',
  *       image?:      { name, blur: 0..20, dim: 0..80, fixed: bool },
  *       procedural?: { generator, speed: 0..3, density: 1..100,
- *                      opacity: 0..1, blur: 0..40, links: bool, colors?: [hex…] },
+ *                      opacity: 0..1, blur: 0..40, links: bool, colors?: [hex…],
+ *                      scale: 25..100 (% résolution du buffer, défaut 100),
+ *                      fps: 15..60 (plafond de framerate, défaut 60) },
  *     },
  *   }
  */
@@ -163,6 +165,14 @@ export class SettingsService {
         // Flou global du rendu procédural (px CSS). Validé ici pour que le
         // contrat « aucune entrée non validée n'atteint le client » tienne.
         blur: numInRange(proc.blur ?? 0, 0, 40, 'background.procedural.blur'),
+        // Performance (holaf-ambient ≥ 0.3.0) :
+        //   - scale : % de la résolution du buffer interne (25..100). Absent
+        //     = 100 (pleine résolution, comportement d'avant) — les
+        //     settings.json existants SANS ces clés restent valides.
+        //   - fps : plafond de framerate (15..60). Absent = 60 (= rAF 60 Hz,
+        //     non contraignant sur un écran standard).
+        scale: intInRange(proc.scale ?? 100, 25, 100, 'background.procedural.scale'),
+        fps: intInRange(proc.fps ?? 60, 15, 60, 'background.procedural.fps'),
         links: proc.links === undefined ? true : !!proc.links,
         colors,
       },

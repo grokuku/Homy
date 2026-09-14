@@ -1812,17 +1812,18 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .bg-toggle { display: flex !important; align-items: center; gap: 8px; margin-bottom: 12px; }
 .bg-toggle input { width: auto; }
 .bg-toggle span { font-size: 13px; color: var(--text-muted); }
-/* Aperçu live de la section Generator : le canvas est piloté par la brique
-   holaf-ambient, dimensionnée par le conteneur (l'hôte pose le CSS). */
-.bg-preview {
-  position: relative;
-  height: 132px;
+/* Live preview = the REAL full-screen background behind the modal (no in-modal
+   canvas any more). This banner tells the user, and warns that Cancel reverts. */
+.bg-live-hint {
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
-  background: var(--bg);
 }
-.bg-preview canvas { display: block; width: 100%; height: 100%; }
 .bg-swatches { display: flex; gap: 6px; margin-top: 8px; }
 .bg-swatches i {
   width: 22px;
