@@ -62,6 +62,18 @@ const DEFAULT_PAGE_NAME = 'Home'; // page 1 is always called "Home"
  */
 export const KNOWN_ITEM_TYPES = new Set([...WIDGET_MANIFEST_FINAL.map((w) => w.type), 'group']);
 
+/** Group title-chip visibility values (mirrors the settingsSchema + the front). */
+const TITLE_VISIBILITIES = new Set(['always', 'hover', 'never']);
+
+/**
+ * Tolerant `titleVisibility` coercion for a group config: any unknown/missing
+ * value (or a hand-edited config) falls back to 'always', the documented
+ * default. Mirrors normalizeTitleVisibility() in public/js/elements/group.js.
+ */
+export function normalizeTitleVisibility(raw) {
+  return TITLE_VISIBILITIES.has(raw) ? raw : 'always';
+}
+
 export class LayoutService {
   constructor(store) {
     this.store = store;
@@ -160,7 +172,12 @@ export class LayoutService {
       }
       out.push(
         type === 'group'
-          ? { ...item, buttons: coerceButtons(item.buttons), reports: coerceReports(item.reports) }
+          ? {
+              ...item,
+              config: normalizeGroupConfig(item.config),
+              buttons: coerceButtons(item.buttons),
+              reports: coerceReports(item.reports),
+            }
           : item
       );
     }
@@ -265,6 +282,11 @@ export class LayoutService {
       const entry = page.items.find((i) => i.id === id);
       if (entry) {
         entry.config = { ...(entry.config || {}), ...(config || {}) };
+        // Tolerant normalization on write: a group's titleVisibility can only
+        // ever be stored as one of always|hover|never (unknown → always).
+        if (entry.type === 'group') {
+          entry.config.titleVisibility = normalizeTitleVisibility(entry.config.titleVisibility);
+        }
         this._persist();
         return entry;
       }
@@ -361,6 +383,16 @@ function clampColumns(value, fallback) {
   const n = Math.round(Number(value));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(MAX_COLUMNS, Math.max(MIN_COLUMNS, n));
+}
+
+/**
+ * Group config normalization on load/write: the `titleVisibility` key is
+ * coerced to one of always|hover|never (unknown/missing → always). Every other
+ * config key passes through untouched (tolerance: never drops user data).
+ */
+export function normalizeGroupConfig(config) {
+  const c = config && typeof config === 'object' && !Array.isArray(config) ? config : {};
+  return { ...c, titleVisibility: normalizeTitleVisibility(c.titleVisibility) };
 }
 
 /**

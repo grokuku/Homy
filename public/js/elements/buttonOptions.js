@@ -1,4 +1,4 @@
-import { el } from '../util.js';
+import { el, isValidHttpUrl } from '../util.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
 import {
   normalizeButton,
@@ -28,9 +28,12 @@ import { openElementPicker } from './elementPicker.js';
  *
  * OPTION AVAILABILITY (degraded tolerance):
  *   - `shortcut` needs the element to have an `url` (otherwise it is disabled);
- *   - `health` / `monitoring` / `controls` need a Docky target on the element
+ *   - `health` needs a HEALTH SOURCE on the element — a custom `healthUrl` (with
+ *     `healthCheck:true`) OR a Docky target (with `healthCheck:true`); without a
+ *     source it is disabled with an explanation;
+ *   - `monitoring` / `controls` need a Docky target on the element
  *     (`element.docky.{agent,container}`); without one they are disabled with
- *     an explanation.
+ *     an explanation (a custom health URL does NOT enable them).
  *
  * Every change is applied LIVE through `onUpdate(button)` (the group re-renders
  * the tile immediately and debounces the persistence); the panel stays open so
@@ -61,9 +64,9 @@ const SWITCHES = [
   {
     key: 'health',
     label: 'Health',
-    needs: 'docky',
-    help: 'Status dot (delegated to Docky).',
-    disabledHelp: 'No Docky target on this element.',
+    needs: 'health',
+    help: 'Status dot (custom URL probe or Docky).',
+    disabledHelp: 'No health source on this element.',
   },
   {
     key: 'monitoring',
@@ -90,6 +93,18 @@ const LABEL_POS_LABEL = { bottom: 'Bottom', top: 'Top', left: 'Left', right: 'Ri
 const fmtIconSize = (n) => String(Math.round(Number(n) * 10) / 10);
 
 const hasDockyTarget = (element) => !!(element?.docky && (element.docky.agent || element.docky.container));
+
+/**
+ * True when the element has a usable health-pill source: `healthCheck` on AND
+ * (a valid custom `healthUrl` OR a Docky target). Mirrors the server-side
+ * `resolveHealthSource` contract — a Docky target alone (healthCheck off) or an
+ * URL alone (healthCheck off) is NOT a source.
+ */
+const hasHealthSource = (element) => {
+  if (element?.healthCheck !== true) return false;
+  if (isValidHttpUrl(String(element?.healthUrl || '').trim())) return true;
+  return hasDockyTarget(element);
+};
 
 /**
  * Open the options panel for one tile. Returns the HolafModal controller.
@@ -187,7 +202,14 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
   }
 
   function buildSwitch(sw) {
-    const disabled = sw.needs === 'url' ? !hasUrl() : sw.needs === 'docky' ? !hasDockyTarget(currentElement) : false;
+    const disabled =
+      sw.needs === 'url'
+        ? !hasUrl()
+        : sw.needs === 'docky'
+          ? !hasDockyTarget(currentElement)
+          : sw.needs === 'health'
+            ? !hasHealthSource(currentElement)
+            : false;
     const row = el('label', 'opt-switch' + (disabled ? ' disabled' : ''));
 
     const cb = el('input', null, null, { type: 'checkbox' });

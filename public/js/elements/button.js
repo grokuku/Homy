@@ -218,7 +218,12 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
   if (o.allowIconOverflow) root.classList.add('allow-overflow');
 
   const target = dockyTargetOf(def);
-  const healthUrl = healthUrlOf(def);
+  // Health pill source is INDEPENDENT from the Docky target: `healthCheck` is
+  // the master switch; a custom `healthUrl` then wins over the Docky target.
+  // The Docky target is still read for monitoring/controls regardless.
+  const pillSource = resolvePillSource(def);
+  const healthUrl = pillSource.type === 'url' ? pillSource.url : null;
+  const dockyFeedsHealth = pillSource.type === 'docky';
   let healthEl = null;
   let monitoring = null;
   let controls = null;
@@ -226,7 +231,9 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
   /** Apply a resolved action result to the tile (optimistic update). */
   const applyActionResult = (res) => {
     if (!res) return;
-    if (healthEl) {
+    // A control action reflects Docky state: only refresh the pill when Docky
+    // is actually the pill's source (never override a custom-URL pill).
+    if (healthEl && dockyFeedsHealth) {
       healthEl.dataset.state = res.health || 'unknown';
       healthEl.title = healthTitle(res.health, res.state, null);
     }
@@ -303,18 +310,18 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
   if (!hasContent && !hasControls) root.appendChild(el('div', 'tile-empty', '—'));
 
   // ---- live health data wiring --------------------------------------------
-  // Two independent sources, resolved from the element contract:
-  //   healthUrl set  → the health pill comes from the custom HTTP probe;
-  //   else docky set → the health pill comes from Docky (which also feeds
-  //                    monitoring + controls);
-  //   else           → grey/unknown.
-  // A Docky target is still subscribed when monitoring/controls are shown even
-  // if the pill is URL-sourced, so those keep working.
+  // Two independent concerns, resolved from the element contract:
+  //   pill source  → healthCheck false ⇒ none (grey, no probe);
+  //                  healthCheck true + healthUrl ⇒ custom HTTP probe;
+  //                  healthCheck true + no URL + docky ⇒ Docky health;
+  //                  healthCheck true + nothing ⇒ none (grey).
+  //   monitoring / controls → ALWAYS the Docky target, even when the pill comes
+  //     from a custom URL. A Docky target is therefore still subscribed when
+  //     those are shown even if the pill is URL-sourced.
   const offlineNote = el('span', 'tile-docky-note hidden', 'Docky offline');
   if (target) root.appendChild(offlineNote);
 
   const disposers = [];
-  const dockyFeedsHealth = !healthUrl;
   const useDocky = !!target && (hasMonitoring || hasControls || (hasHealth && dockyFeedsHealth));
   if (useDocky) {
     root.dataset.docky = 'pending';
@@ -351,7 +358,7 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
     };
     disposers.push(healthUrlPoller.registerUrl(healthUrl, applyUrl));
   } else if (healthEl && !useDocky) {
-    // Health pill requested but NO usable source: stay grey.
+    // Health pill requested but NO usable source: stay grey, never probe.
     healthEl.dataset.state = 'unknown';
   }
 
@@ -406,6 +413,20 @@ function dockyTargetOf(element) {
   const agent = element?.docky?.agent ? String(element.docky.agent).trim() : '';
   const container = element?.docky?.container ? String(element.docky.container).trim() : '';
   return agent && container ? { agent, container } : null;
+}
+
+/**
+ * Resolve the tile's health-pill source (mirror of the server-side
+ * `resolveHealthSource` contract): `healthCheck` false → none; else a valid
+ * `healthUrl` → custom probe; else a Docky target → Docky health; else none.
+ */
+function resolvePillSource(element) {
+  if (element?.healthCheck !== true) return { type: 'none' };
+  const url = healthUrlOf(element);
+  if (url) return { type: 'url', url };
+  const target = dockyTargetOf(element);
+  if (target) return { type: 'docky', ...target };
+  return { type: 'none' };
 }
 
 /** Read a usable custom health URL off a catalogue element (valid http(s)). */

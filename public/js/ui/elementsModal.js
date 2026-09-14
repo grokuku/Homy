@@ -24,11 +24,14 @@ import { buildDockyTargetField } from './dockyTarget.js';
  * FORM (second, stacked HolafModal)
  *   The element form reuses the project's field builder (buildField/collect from
  *   ui/settingsModal.js): Name (required, 1..60 server-side), Icon (emoji /
- *   holaf:<name> / http(s) URL + a LIVE preview), URL, Description, Health check
- *   (toggle), and a live Docky target picker (filterable agent/container
- *   dropdowns with state/health badges, free-text fallback when Docky is
- *   unavailable — lot 5). The footer Save is bound to the form through the HTML
- *   `form=` attribute — a real native submit (lot-2 lesson).
+ *   holaf:<name> / http(s) URL + a LIVE preview), URL, Description, then TWO
+ *   INDEPENDENT settings — a « Docky target » picker (filterable agent/
+ *   container dropdowns with state/health badges, free-text fallback when Docky
+ *   is unavailable — lot 5) that feeds monitoring + controls, and a « Health
+ *   check » source choice (Off | Docky target | Custom URL) that feeds the tile
+ *   health pill WITHOUT ever clearing the Docky target. The footer Save is
+ *   bound to the form through the HTML `form=` attribute — a real native submit
+ *   (lot-2 lesson).
  *
  * DELETE
  *   `DELETE /api/elements/:id` returns 409 with the `pages` usage list when the
@@ -213,29 +216,51 @@ function buildReportingSection(element) {
 }
 
 /**
- * Build the « Health check » section of the element form: an explicit 3-way
- * source choice — Off | Docky target | Custom URL — replacing the old
- * standalone toggle. Returns `{ section, getValue, dispose }`:
- *   - `docky` reuses the existing target picker (agent/container NAME);
- *   - `Custom URL` reveals the `healthUrl` input (client-side http(s) check);
- *   - the non-selected source is NOT sent (`healthUrl:null` when Docky is
- *     chosen, `docky:null` otherwise), so the server resolution is unambiguous.
+ * Build the two INDEPENDENT element settings related to Docky + health:
+ *
+ *   1. « Docky target » (always visible) — the agent/container picker (lot 5),
+ *      used for CPU/RAM monitoring and start/stop/restart controls. It is NEVER
+ *      wiped by the health-source choice below.
+ *   2. « Health check » — the source of the tile health pill:
+ *      Off | Docky target | Custom URL (http(s)). `healthCheck` is the master
+ *      switch:
+ *        - Off        → `healthCheck:false, healthUrl:null` (Docky target intact);
+ *        - Docky      → `healthCheck:true,  healthUrl:null` (pill reads the target);
+ *        - Custom URL → `healthCheck:true,  healthUrl:<url>` (Docky target intact).
+ *
+ * A non-blocking inline warning is shown when « Docky target » is selected but
+ * no target is set (the save is still allowed — the pill just stays grey).
+ *
+ * Returns `{ dockySection, section, getValue, dispose }`. `dockySection` must be
+ * appended BEFORE `section` for a natural top-to-bottom reading.
  */
 function buildHealthSection(element) {
   const existingUrl = typeof element?.healthUrl === 'string' ? element.healthUrl.trim() : '';
   const existingDocky = !!(element?.docky?.agent || element?.docky?.container);
-  // Initial choice: a stored healthUrl wins; else a Docky target; else Off.
+  // Initial source: `healthCheck` is the master switch; a stored healthUrl then
+  // wins over a Docky target.
   let initial = 'off';
-  if (isValidHttpUrl(existingUrl)) initial = 'url';
-  else if (existingDocky) initial = 'docky';
+  if (element?.healthCheck === true) {
+    if (isValidHttpUrl(existingUrl)) initial = 'url';
+    else if (existingDocky) initial = 'docky';
+  }
 
+  // ---- 1. Docky target (monitoring + controls) ------------------------------
+  const dockyField = buildDockyTargetField({ element, onChange: () => syncWarning() });
+  const dockySection = el('div', 'docky-section');
+  dockySection.appendChild(
+    el('small', 'field-help', 'Used for CPU/RAM monitoring and start/stop/restart controls.')
+  );
+  dockySection.appendChild(dockyField.section);
+
+  // ---- 2. Health pill source ------------------------------------------------
   const section = el('div', 'health-section');
   section.appendChild(el('div', 'health-section-title', 'Health check'));
   section.appendChild(
     el(
       'small',
       'field-help',
-      'Source of the tile health pill. “Docky target” uses the linked container (and also enables monitoring / controls); “Custom URL” probes an http(s) endpoint from the Homy server.'
+      'Source of the tile health pill — independent from the Docky target above. “Docky target” reads the linked container; “Custom URL” probes an http(s) endpoint from the Homy server.'
     )
   );
 
@@ -258,11 +283,9 @@ function buildHealthSection(element) {
   }
   section.appendChild(group);
 
-  // Docky panel (the existing filterable picker) — shown only when selected.
-  const dockyField = buildDockyTargetField({ element });
-  const dockyPanel = el('div', 'health-panel');
-  dockyPanel.appendChild(dockyField.section);
-  section.appendChild(dockyPanel);
+  // Inline, non-blocking warning (live).
+  const warningEl = el('div', 'health-warning hidden', '', { role: 'status' });
+  section.appendChild(warningEl);
 
   // Custom URL panel.
   const urlPanel = el('div', 'health-panel');
@@ -290,29 +313,38 @@ function buildHealthSection(element) {
     for (const [value, radio] of radios) if (radio.checked) return value;
     return 'off';
   };
+
+  function syncWarning() {
+    const missing = currentMode() === 'docky' && !dockyField.getValue();
+    warningEl.classList.toggle('hidden', !missing);
+    warningEl.textContent = missing
+      ? 'Health source is “Docky target” but no Docky target is set — the pill will stay grey. Pick an agent and a container above, or choose another source.'
+      : '';
+  }
+
   const sync = () => {
-    const mode = currentMode();
-    dockyPanel.classList.toggle('hidden', mode !== 'docky');
-    urlPanel.classList.toggle('hidden', mode !== 'url');
+    urlPanel.classList.toggle('hidden', currentMode() !== 'url');
+    syncWarning();
   };
   for (const radio of radios.values()) radio.addEventListener('change', sync);
   sync();
 
   function getValue() {
     const mode = currentMode();
+    const docky = dockyField.getValue(); // NEVER dropped by the health choice.
     if (mode === 'docky') {
-      return { ok: true, healthCheck: true, healthUrl: null, docky: dockyField.getValue() };
+      return { ok: true, healthCheck: true, healthUrl: null, docky };
     }
     if (mode === 'url') {
       const healthUrl = urlInput.value.trim();
       if (!healthUrl) return { ok: false, error: 'Health URL is required' };
       if (!isValidHttpUrl(healthUrl)) return { ok: false, error: 'Health URL must be a valid http(s) URL' };
-      return { ok: true, healthCheck: true, healthUrl, docky: null };
+      return { ok: true, healthCheck: true, healthUrl, docky };
     }
-    return { ok: true, healthCheck: false, healthUrl: null, docky: null };
+    return { ok: true, healthCheck: false, healthUrl: null, docky };
   }
 
-  return { section, getValue, dispose: () => dockyField.dispose() };
+  return { dockySection, section, getValue, dispose: () => dockyField.dispose() };
 }
 
 // Field schema consumed by the shared builder. Keys are flat (the builder's
@@ -570,10 +602,12 @@ export function openElementFormModal(element, onSaved) {
   const reporting = buildReportingSection(element);
   form.appendChild(reporting.section);
 
-  // Health source choice (Off | Docky target | Custom URL): picks the tile
-  // health pill source. The Docky target picker (lot 5) now lives INSIDE this
-  // section and is only shown when « Docky target » is selected.
+  // Docky target (monitoring + controls) and the health-pill source choice
+  // (Off | Docky target | Custom URL) are TWO INDEPENDENT settings: the target
+  // is always visible and is never cleared by the health choice, which lives in
+  // its own section below.
   const health = buildHealthSection(element);
+  form.appendChild(health.dockySection);
   form.appendChild(health.section);
 
   const content = el('div', 'elements-form-body');

@@ -392,22 +392,36 @@ Radarr/Sonarr/qBittorrent later is a new provider, not a refactor.
   + **Test connection**) validates credentials before saving; an existing key shows a `••••••••`
   placeholder and is preserved unless replaced.
 
-### Health pill source: Docky or custom URL
+### Health pill source and Docky target (independent)
 
-A tile's **health pill** (the small status dot on a button tile) is fed by **one** of two sources,
-chosen per element in the form's **“Health check”** section: **Off**, **Docky target** or
-**Custom URL**.
+A tile's **health pill** (the small status dot on a button tile) and its **Docky target**
+(CPU/RAM **monitoring** + start/stop/restart **controls**) are **two INDEPENDENT settings** of an
+element, edited in two separate sections of the element form:
 
-- **Model.** `elements.json` stores an optional `healthUrl` (null or a valid http(s) URL) next to
-  the existing `healthCheck` (bool) and `docky` (`{ agent, container }`) fields. `healthUrl` is
-  **not a secret** and is returned by every catalogue route.
-- **Resolution.** `healthUrl` set → the pill is the custom HTTP probe; otherwise a `docky` target →
-  the pill is the Docky container health; otherwise → grey/unknown. The presence of `healthUrl`
-  therefore carries the « Docky OR custom URL » choice (it always wins over `docky`). CPU/RAM
-  monitoring and start/stop controls remain **Docky-only**.
-- **Probing.** The front batches every distinct `healthUrl` of the page into one
-  `POST /api/health/check` (~30 s), pauses while the tab is hidden, and tears its timer down on
-  dispose/logout. The server keeps a per-URL TTL cache, so the same URL is probed at most once per
-  window.
-- **Colours.** `2xx/3xx` → **green**, an error status (`4xx/5xx`) → **red**, a transport/TLS/timeout
-  failure → **amber** (degraded), no source / no data yet → **grey**.
+- **Docky target** — `element.docky = { agent, container }`. Always present in the form; feeds
+  **monitoring** and **controls** only. It is **never cleared** by the health-source choice (and
+  vice versa).
+- **Health check** — the pill's **source**, chosen per element as **Off**, **Docky target** or
+  **Custom URL**. `element.healthCheck` is the master switch; `element.healthUrl` is the optional
+  custom endpoint.
+
+**Model.** `elements.json` stores `healthCheck` (bool), `healthUrl` (null or a valid http(s) URL)
+and `docky` (`{ agent, container }` or null) as independent fields — validated independently, so
+an element may carry a `docky` target **and** a `healthUrl` at the same time. `healthUrl` is
+**not a secret** and is returned by every catalogue route.
+
+**Resolution.** The front (and the shared `resolveHealthSource`) resolves the pill source as:
+`healthCheck:false` → **no source** (grey, **no probe**, even if a URL/Docky target is stored);
+`healthCheck:true` + a valid `healthUrl` → the **custom HTTP probe**; `healthCheck:true` +
+`healthUrl:null` + a `docky` target → the **Docky container health**; `healthCheck:true` but
+neither → **no source** (grey). A custom `healthUrl` therefore wins over the Docky target for the
+pill, but the Docky target is **kept** (it still feeds monitoring + controls). CPU/RAM monitoring
+and start/stop controls remain **Docky-only**.
+
+**Probing.** The front batches every distinct `healthUrl` of the page into one
+`POST /api/health/check` (~30 s), pauses while the tab is hidden, and tears its timer down on
+dispose/logout. The server keeps a per-URL TTL cache, so the same URL is probed at most once per
+window. An element whose source is **Off** never registers a URL and never triggers a probe.
+
+**Colours.** `2xx/3xx` → **green**, an error status (`4xx/5xx`) → **red**, a transport/TLS/timeout
+failure → **amber** (degraded), no source / no data yet → **grey**.

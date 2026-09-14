@@ -17,8 +17,11 @@ import { toast } from '../ui/toast.js';
  *
  * A `group` (layout v4) is a titled container whose `buttons[]` are button
  * tiles referencing catalogue elements. It renders:
- *   - an optional header (config.title) +, in EDIT mode, a « + Add element »
- *     action that opens the catalogue picker;
+ *   - an optional floating TITLE chip (config.title), an absolute overlay that
+ *     reserves ZERO space (row 0 of the trame is flush with the top edge); its
+ *     visibility is governed by config.titleVisibility (always | hover | never);
+ *   - in EDIT mode, a separate « + Add element » / « + Add report » action bar
+ *     that stays available whatever the title visibility is;
  *   - the INTERNAL TRAME (a grid 2× finer than the global grid: one internal
  *     cell = half a global cell), drawn with repeating gradients at the exact
  *     step so the lines line up with the tiles;
@@ -75,6 +78,18 @@ export const group = {
   settingsSchema: {
     fields: [
       { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Group title' },
+      {
+        key: 'titleVisibility',
+        label: 'Title visibility',
+        type: 'select',
+        default: 'always',
+        options: [
+          { value: 'always', label: 'Always' },
+          { value: 'hover', label: 'On hover' },
+          { value: 'never', label: 'Never' },
+        ],
+        help: 'Always shows the title chip, reveals it on hover, or hides it entirely.',
+      },
     ],
   },
 
@@ -87,59 +102,56 @@ export const group = {
     container.classList.toggle('group-editing', editable);
 
     const title = (config?.title || '').trim();
-    let header = null;
-    if (title || editable) {
-      header = el('div', 'widget-header');
-      if (title) header.appendChild(el('span', 'widget-title', title));
-      if (editable) {
-        const addBtn = el('button', 'group-add', '+ Add element', {
-          type: 'button',
-          title: 'Add an element to this group',
-        });
-        addBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          addElement();
-        });
-        const addReportBtn = el('button', 'group-add group-add-report', '+ Add report', {
-          type: 'button',
-          title: 'Add a report tile (element with Special reporting)',
-        });
-        addReportBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          addReport();
-        });
-        header.append(addBtn, addReportBtn);
-      }
+    // Title chip visibility: always | hover | never (unknown → always).
+    // Published as a data attribute so style.css owns the show/hide rule
+    // (including « hover reveals, EDIT always shows »). In `never` the chip is
+    // NOT rendered at all, so no title can appear in VIEW as well as EDIT.
+    const titleVisibility = normalizeTitleVisibility(config?.titleVisibility);
+    container.dataset.titleVisibility = titleVisibility;
+
+    // ---- floating TITLE chip (overlay, pointer-events:none) ----------------
+    // The chip reserves NO space: it is absolutely positioned and `.group-board`
+    // fills the WHOLE interior (no padding), so row 0 of the internal trame
+    // starts exactly at the top edge of the group (tile.top == board.top),
+    // whether or not the title is shown. The chip is translucent + blurred so
+    // whatever it overlaps remains perceptible; only its buttons (if any) are
+    // interactive.
+    if (title && titleVisibility !== 'never') {
+      const header = el('div', 'widget-header');
+      header.appendChild(el('span', 'widget-title', title));
       container.appendChild(header);
+    }
+
+    // ---- edit-only actions (NOT the title chip) ----------------------------
+    // « + Add element » / « + Add report » stay reachable whatever
+    // titleVisibility is (including `never`), so a group can always be filled
+    // from the editor. They live in their own floating bar, clear of the chip.
+    if (editable) {
+      const actions = el('div', 'group-actions');
+      const addBtn = el('button', 'group-add', '+ Add element', {
+        type: 'button',
+        title: 'Add an element to this group',
+      });
+      addBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addElement();
+      });
+      const addReportBtn = el('button', 'group-add group-add-report', '+ Add report', {
+        type: 'button',
+        title: 'Add a report tile (element with Special reporting)',
+      });
+      addReportBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addReport();
+      });
+      actions.append(addBtn, addReportBtn);
+      container.appendChild(actions);
     }
 
     const board = el('div', 'group-board');
     const canvas = el('div', 'group-grid');
     board.appendChild(canvas);
     container.appendChild(board);
-
-    // The title bar is absolutely positioned OVER the group (see
-    // .group-widget > .widget-header in style.css) so it never pushes or blocks
-    // the trame. `.group-board` reserves its MEASURED height as a top padding:
-    // row 0 of the internal trame therefore starts BELOW the title, in EDIT as
-    // well as VIEW, and the title can never mask the first row. Re-measured on
-    // every resize (the bar's height varies with title/add-buttons/mode) and
-    // once after the first paint (fonts/layout settle).
-    const syncHeaderOffset = () => {
-      const px = header ? Math.max(0, Math.round(header.offsetHeight)) : 0;
-      const next = `${px}px`;
-      if (board.style.getPropertyValue('--group-header-h') !== next) {
-        board.style.setProperty('--group-header-h', next);
-      }
-    };
-    syncHeaderOffset();
-    let headerRaf = 0;
-    if (typeof requestAnimationFrame === 'function') {
-      headerRaf = requestAnimationFrame(() => {
-        headerRaf = 0;
-        syncHeaderOffset();
-      });
-    }
 
     const buttons = (Array.isArray(item?.buttons) ? item.buttons : [])
       .map(normalizeButton)
@@ -549,7 +561,6 @@ export const group = {
         if (raf) return;
         raf = requestAnimationFrame(() => {
           raf = 0;
-          syncHeaderOffset();
           const next = measureStep(container, item);
           if (Math.abs(next - step) > 0.25) {
             step = next;
@@ -566,8 +577,6 @@ export const group = {
       if (observer) observer.disconnect();
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
-      if (headerRaf) cancelAnimationFrame(headerRaf);
-      headerRaf = 0;
       clearDeleteTimers();
       disposeTiles();
       dragCleanup?.();
@@ -605,6 +614,14 @@ function measureStep(container, item) {
 }
 
 // ---- geometry helpers --------------------------------------------------------
+
+/** Title-chip visibility values (must mirror the server + settingsSchema). */
+const TITLE_VISIBILITIES = new Set(['always', 'hover', 'never']);
+
+/** Tolerant titleVisibility coercion: unknown/missing → 'always'. */
+function normalizeTitleVisibility(raw) {
+  return TITLE_VISIBILITIES.has(raw) ? raw : 'always';
+}
 
 /** Round to the nearest even internal-cell value (tile sizes are {2,4}). */
 function snap2(value) {

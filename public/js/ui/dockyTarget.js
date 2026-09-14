@@ -19,7 +19,7 @@ import { dockyApi } from '../docky/docky.js';
  * Returns `{ section, getValue, dispose }`.
  */
 
-export function buildDockyTargetField({ element } = {}) {
+export function buildDockyTargetField({ element, onChange } = {}) {
   const existingAgent = element?.docky?.agent || '';
   const existingContainer = element?.docky?.container || '';
 
@@ -117,6 +117,12 @@ export function buildDockyTargetField({ element } = {}) {
   }
 
   agentField.onChange((value) => loadContainers(value));
+  // Let the caller react to ANY agent/container edit (used by the health
+  // section to keep its “Docky target missing” warning live).
+  if (typeof onChange === 'function') {
+    agentField.onChange(onChange);
+    containerField.onChange(onChange);
+  }
 
   init();
 
@@ -151,8 +157,18 @@ function makeCombo({ placeholder }) {
   root.append(input, list);
 
   let items = [];
-  let changeHandler = null;
+  const changeHandlers = [];
   let hideTimer = 0;
+
+  const notify = (value, item) => {
+    for (const fn of changeHandlers) {
+      try {
+        fn(value, item);
+      } catch {
+        /* a listener must never break the picker */
+      }
+    }
+  };
 
   const show = () => {
     if (!items.length) return;
@@ -184,14 +200,14 @@ function makeCombo({ placeholder }) {
       e.preventDefault(); // keep focus, select before blur
       input.value = it.label;
       hide();
-      changeHandler?.(it.label, it);
+      notify(it.label, it);
     });
     return node;
   }
 
   input.addEventListener('focus', show);
   input.addEventListener('input', () => {
-    changeHandler?.(input.value.trim(), null);
+    notify(input.value.trim(), null);
     render();
     show();
   });
@@ -206,7 +222,7 @@ function makeCombo({ placeholder }) {
         e.preventDefault();
         input.value = first.dataset.value;
         hide();
-        changeHandler?.(input.value, null);
+        notify(input.value, null);
       }
     }
   });
@@ -225,7 +241,7 @@ function makeCombo({ placeholder }) {
       return input.value;
     },
     onChange(fn) {
-      changeHandler = fn;
+      if (typeof fn === 'function') changeHandlers.push(fn);
     },
     dispose() {
       if (hideTimer) clearTimeout(hideTimer);

@@ -40,6 +40,18 @@ const WIDGET_MANIFEST = [
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Group title' },
+        {
+          key: 'titleVisibility',
+          label: 'Title visibility',
+          type: 'select',
+          default: 'always',
+          options: [
+            { value: 'always', label: 'Always' },
+            { value: 'hover', label: 'On hover' },
+            { value: 'never', label: 'Never' },
+          ],
+          help: 'Always shows the title chip, reveals it on hover, or hides it entirely.',
+        },
       ],
     },
   },

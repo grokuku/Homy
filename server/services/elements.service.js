@@ -26,11 +26,17 @@ import {
  *                  http(s) URL / future `local:<slug>`);
  *   - url          empty, or a valid http/https URL;
  *   - healthUrl    null or a valid http/https URL (custom health pill source);
- *                  a NON-empty value wins over `docky` when resolving the
- *                  health-pill source (see resolveHealthSource);
+ *                  only meaningful when `healthCheck` is true (see
+ *                  resolveHealthSource); validated INDEPENDENTLY from `docky`;
  *   - description  string ≤ 300 chars, optional (defaults to '');
- *   - healthCheck  boolean, default false;
- *   - docky        null or `{ agent: ≤64, container: ≤128 }`;
+ *   - healthCheck  boolean, default false — master switch of the health pill.
+ *                  `healthCheck:false` → no source, `healthCheck:true` +
+ *                  `healthUrl` → custom HTTP probe, `healthCheck:true` +
+ *                  `healthUrl:null` + `docky` → Docky container health;
+ *   - docky        null or `{ agent: ≤64, container: ≤128 }`; feeds the
+ *                  health pill (when it is the chosen source) AND the CPU/RAM
+ *                  monitoring + start/stop/restart controls. Kept even when a
+ *                  custom `healthUrl` is set (the two are independent);
  *   - createdAt / updatedAt  ISO timestamps (server-generated).
  *
  * Bounds: MAX_ELEMENTS. The route caps the request body at 256 KB (413).
@@ -207,8 +213,9 @@ function validateFields(input, { partial, existing = null }) {
   } else if (!partial) out.url = '';
 
   // healthUrl — null/empty, or a valid http(s) URL with NO credentials.
-  // A non-empty value makes the element's health pill come from a custom
-  // HTTP probe instead of Docky (see resolveHealthSource).
+  // Independent from `docky`: an element may hold BOTH a custom health URL
+  // and a Docky target. `healthCheck` is the master switch that decides which
+  // source (if any) feeds the pill — see resolveHealthSource.
   if (has('healthUrl')) {
     out.healthUrl = validateHealthUrl(input.healthUrl);
   } else if (!partial) out.healthUrl = null;
@@ -226,7 +233,9 @@ function validateFields(input, { partial, existing = null }) {
     }
   } else if (!partial) out.description = '';
 
-  // healthCheck — boolean, default false.
+  // healthCheck — boolean, default false. Master switch of the health pill:
+  // false → no source at all (grey, no probe); true → healthUrl if set, else
+  // the Docky target if set, else no source.
   if (has('healthCheck')) {
     if (typeof input.healthCheck !== 'boolean') throw new ElementsValidationError('healthCheck must be a boolean');
     out.healthCheck = input.healthCheck;
@@ -419,14 +428,18 @@ function coerceHealthUrl(raw) {
 
 /**
  * Resolve the HEALTH-PILL source of an element (shared contract with the
- * front-end `resolveHealthSource`):
- *   - `healthUrl` set (and valid) → custom HTTP probe;
- *   - else `docky` target set     → Docky container health;
- *   - else                        → `none` (rendered grey/unknown).
- * The presence of `healthUrl` is what carries the « Docky OR custom URL »
- * choice; a URL therefore always wins over a Docky target.
+ * front-end tile renderer, elements/button.js):
+ *   - `healthCheck` not true  → `none` (grey, NO probe — even if healthUrl or
+ *                               a Docky target is stored);
+ *   - `healthCheck` true + a valid `healthUrl` → `{ type:'url', url }`
+ *     (custom HTTP probe);
+ *   - `healthCheck` true, no URL, a Docky target → `{ type:'docky', … }`;
+ *   - `healthCheck` true, neither                → `none`.
+ * A custom `healthUrl` wins over a Docky target, but the Docky target is kept
+ * (it still feeds monitoring + controls). NEVER triggers a probe by itself.
  */
 export function resolveHealthSource(element) {
+  if (element?.healthCheck !== true) return { type: 'none' };
   const url = coerceHealthUrl(element?.healthUrl ?? null);
   if (url) return { type: 'url', url };
   const agent = typeof element?.docky?.agent === 'string' ? element.docky.agent.trim() : '';

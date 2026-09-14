@@ -6,6 +6,7 @@ import {
   MAX_COLUMNS,
   MAX_PAGES,
   PAGE_NAME_MAX,
+  normalizeGroupConfig,
 } from '../services/layout.service.js';
 import { WIDGET_MANIFEST_FINAL } from './widgets.routes.js';
 
@@ -350,6 +351,10 @@ function sanitizeItem(item) {
   };
 
   if (isGroup) {
+    // Tolerant config normalization: titleVisibility is coerced to
+    // always|hover|never (unknown → always) so a hand-edited / stale config
+    // can never persist an unhandled value. Other keys pass through.
+    clean.config = normalizeGroupConfig(clean.config);
     const { error, buttons } = sanitizeButtons(item.buttons);
     if (error) return { error };
     clean.buttons = buttons;

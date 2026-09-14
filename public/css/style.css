@@ -1099,13 +1099,15 @@ body[data-bg-active] .grid-stack-item-content {
    constant physical size (the step never derives from the group's own size);
    overflow scrolls inside .group-board. */
 .group-widget { overflow: hidden; }
-/* The group title bar FLOATS over the top of the trame (absolute) so it never
-   pushes, compresses or blocks the first trame row. `.group-board` reserves
-   the bar's MEASURED height as a top padding (--group-header-h, published by
-   elements/group.js), so row 0 of the internal trame always starts BELOW the
-   title — in EDIT as well as VIEW — while the scroll area keeps the FULL group
-   height. The bar is pointer-events:none (only its buttons are interactive) so
-   it can never swallow a tile click/drag underneath it. */
+/* The group title bar FLOATS over the top of the trame (absolute). It reserves
+   NO space whatsoever: `.group-board` fills the ENTIRE group interior (no
+   padding), so row 0 of the internal trame starts exactly at the top edge of
+   the content box (tile.top == board.top) — in EDIT as well as VIEW, and
+   identically whether the chip is shown or not. The chip is a small
+   TRANSLUCENT pill (max ~half the group, ellipsis) with pointer-events:none
+   (only its buttons, if any, are interactive) so a click/drag in its area
+   still reaches the trame underneath without ever masking it. Its visibility
+   is governed by [data-title-visibility] (see below). */
 .group-widget > .widget-header {
   position: absolute;
   top: 0;
@@ -1123,19 +1125,33 @@ body[data-bg-active] .grid-stack-item-content {
   gap: 6px;
   padding: 6px 10px;
   border-radius: var(--radius);
-  border-bottom: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
   pointer-events: none;
-  background: color-mix(in srgb, var(--widget-bg-color, var(--bg-elev)) var(--widget-bg-op, var(--surface-alpha)), transparent);
+  /* TRANSLUCENT chip: a semi-transparent raised surface so whatever the chip
+     overlaps (e.g. a tile in row 0) stays perceptible. Deliberately NOT tied to
+     the per-widget background opacity — at bgOpacity:0 the title must stay
+     legible. The light backdrop-filter is consistent with the dashboard glass. */
+  background: color-mix(in srgb, var(--bg-elev-2) 72%, transparent);
+  -webkit-backdrop-filter: blur(6px) saturate(1.15);
+  backdrop-filter: blur(6px) saturate(1.15);
+  transition: opacity var(--mode-dur, 160ms) ease;
 }
 .group-widget > .widget-header .widget-title { flex: 0 1 auto; min-width: 2.5em; }
 .group-widget > .widget-header button { pointer-events: auto; }
+/* titleVisibility: always = chip shown (default); hover = hidden until the
+   group is hovered OR in EDIT (so a group stays identifiable while editing);
+   never = group.js does not even render the chip (nothing to hide). */
+.group-widget[data-title-visibility="hover"] > .widget-header { opacity: 0; }
+.group-widget[data-title-visibility="hover"]:hover > .widget-header,
+.group-widget.group-editing[data-title-visibility="hover"] > .widget-header { opacity: 1; }
 .group-board {
   position: relative;
   flex: 1;
   min-height: 0;
   overflow: auto;
-  /* The floating title bar's measured height: row 0 of the trame starts here. */
-  padding-top: var(--group-header-h, 0px);
+  /* NO reserved space: the floating title chip reserves nothing (see
+     .group-widget > .widget-header), so the internal trame fills the whole
+     interior — row 0 is flush with the top edge. */
   /* slightly recessed surface so the trame reads as a container. Its tint is
      scaled by the SAME effective surface opacity as the widget (per-widget
      --widget-bg-op, else the global --surface-alpha): at opacity 0 the recessed
@@ -1446,20 +1462,33 @@ body.tile-dragging .report-tile.tile-editable { cursor: grabbing; }
    bottom-right resize handle. All are position:absolute so they never change
    the tile's measured size (the compact-typography @container queries above
    still see the same box). */
+/* Edit-only group action bar: « + Add element » / « + Add report ». A SEPARATE
+   floating bar (NOT the title chip) so it stays reachable whatever
+   titleVisibility is, including `never`. Anchored top-right, just above the
+   gridstack ⚙/✕ controls (which start at top:26px) and clear of the top-left
+   title chip. */
+.group-actions {
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  z-index: 4;
+  display: flex;
+  gap: 4px;
+  pointer-events: auto;
+}
 .group-add {
-  margin-left: auto;
   flex: 0 0 auto;
   padding: 3px 8px;
   font-size: 12px;
   font-weight: 600;
   border-radius: 6px;
   border: 1px dashed var(--border);
-  background: transparent;
+  /* translucent so a tile underneath stays perceptible */
+  background: color-mix(in srgb, var(--bg-elev-2) 82%, transparent);
   color: var(--text-muted);
   cursor: pointer;
 }
 .group-add:hover { border-color: var(--accent); color: var(--accent); }
-.group-add + .group-add { margin-left: 4px; }
 
 .group-tile.tile-editable { cursor: move; }
 .group-tile.tile-editable:hover { outline: 1px dashed var(--accent); outline-offset: 1px; }
@@ -1620,9 +1649,10 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .report-test-result.error { color: var(--danger); }
 
 /* ---------- Element health source (Off | Docky target | Custom URL) ----------
-   A 3-way segmented choice shown at the top of the element form's health
-   section. `docky` reuses the existing target picker; `Custom URL` reveals the
-   healthUrl input. Both sub-panels are hidden unless selected. */
+   A 3-way source choice in the element form's health section, INDEPENDENT from
+   the always-visible Docky target picker (`docky-target-section`). `Custom URL`
+   reveals the healthUrl input; the inline `.health-warning` appears when
+   « Docky target » is chosen without a target. */
 .health-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
 .health-section-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
 .health-source-group { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
@@ -1648,6 +1678,17 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 .health-url-field { margin-top: 4px; }
 .health-url-field input { width: 100%; }
 .health-url-help { display: block; color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+.health-warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--warning, #e0a800);
+  border: 1px solid color-mix(in srgb, var(--warning, #e0a800) 45%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warning, #e0a800) 10%, transparent);
+}
+.health-warning.hidden { display: none; }
 .config-form .field-label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-muted); }
 .config-form .field-help { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
 .config-form .color-field { display: flex; gap: 8px; align-items: center; }
