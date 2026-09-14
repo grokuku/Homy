@@ -7,6 +7,7 @@ import {
   MAX_PAGES,
   PAGE_NAME_MAX,
   normalizeGroupConfig,
+  normalizeGroupZoom,
 } from '../services/layout.service.js';
 import { WIDGET_MANIFEST_FINAL } from './widgets.routes.js';
 
@@ -34,6 +35,19 @@ const ICON_SIZE_STEP = 0.5;
 const ICON_SIZE_PRESETS = { S: 40, M: 55, L: 70, XL: 85, Fill: 100 };
 // Label placement crans (relative to the icon). Defaults to 'bottom'.
 const LABEL_POSITIONS = new Set(['bottom', 'top', 'left', 'right']);
+// Per-tile SURFACE options (tile background box). MUST stay in sync with the
+// SURFACE_* constants/functions in public/js/elements/button.js and with the
+// mirror in server/services/layout.service.js.
+const SURFACE_OPACITY_MIN = 0;
+const SURFACE_OPACITY_MAX = 100;
+const SURFACE_OPACITY_DEFAULT = 100;
+const SURFACE_INSET_MIN = 0;
+const SURFACE_INSET_MAX = 8;
+const SURFACE_INSET_DEFAULT = 0;
+const SURFACE_SHAPES = new Set(['rounded', 'square']);
+const SURFACE_SHAPE_DEFAULT = 'rounded';
+// Safe, single-property colour value (hex / rgb()·hsl() functional / named).
+const SURFACE_COLOR_RE = /^(#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\([0-9a-zA-Z.,%\s/]+\)|[a-zA-Z]{3,20})$/;
 // Report-tile geometry bounds (internal trame cells). Reports have a FREE size
 // (no button-variant minima) — MUST stay in sync with layout.service.js and
 // public/js/elements/reportTile.js.
@@ -351,10 +365,14 @@ function sanitizeItem(item) {
   };
 
   if (isGroup) {
-    // Tolerant config normalization: titleVisibility is coerced to
-    // always|hover|never (unknown → always) so a hand-edited / stale config
-    // can never persist an unhandled value. Other keys pass through.
+    // Tolerant config normalization (the WRITE path): titleVisibility is
+    // coerced to always|hover|never (unknown → always) and zoom to a finite
+    // number in [0.5, 3] (invalid / out-of-range → 1) so a hand-edited or
+    // stale config can never persist an unhandled value. Other keys pass
+    // through. normalizeGroupConfig already covers both; the explicit zoom
+    // call documents the write-side contract and stays idempotent.
     clean.config = normalizeGroupConfig(clean.config);
+    clean.config.zoom = normalizeGroupZoom(clean.config.zoom);
     const { error, buttons } = sanitizeButtons(item.buttons);
     if (error) return { error };
     clean.buttons = buttons;
@@ -489,7 +507,32 @@ function normalizeButtonOptions(raw) {
     iconSize: normalizeButtonIconSize(o.iconSize),
     labelPosition: LABEL_POSITIONS.has(o.labelPosition) ? o.labelPosition : 'bottom',
     allowIconOverflow: bool(o.allowIconOverflow, false),
+    surfaceOpacity: normalizeSurfaceOpacity(o.surfaceOpacity),
+    surfaceInset: normalizeSurfaceInset(o.surfaceInset),
+    surfaceShape: SURFACE_SHAPES.has(o.surfaceShape) ? o.surfaceShape : SURFACE_SHAPE_DEFAULT,
+    surfaceColor: normalizeSurfaceColor(o.surfaceColor),
   };
+}
+
+/** Clamp a surface opacity to an integer percentage in [0,100] (default 100). */
+function normalizeSurfaceOpacity(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SURFACE_OPACITY_DEFAULT;
+  return Math.min(SURFACE_OPACITY_MAX, Math.max(SURFACE_OPACITY_MIN, Math.round(n)));
+}
+
+/** Clamp a surface inset to an integer px value in [0,8] (default 0). */
+function normalizeSurfaceInset(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SURFACE_INSET_DEFAULT;
+  return Math.min(SURFACE_INSET_MAX, Math.max(SURFACE_INSET_MIN, Math.round(n)));
+}
+
+/** Tolerant surface colour coercion: a plausible CSS colour, else '' (theme). */
+function normalizeSurfaceColor(raw) {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s || s.length > 64) return '';
+  return SURFACE_COLOR_RE.test(s) ? s : '';
 }
 
 /**

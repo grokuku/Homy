@@ -65,6 +65,57 @@ export const ICON_SIZES = ['S', 'M', 'L', 'XL', 'Fill'];
 export const LABEL_POSITIONS = ['bottom', 'top', 'left', 'right'];
 export const LABEL_POSITION_DEFAULT = 'bottom';
 
+// Per-tile SURFACE options — the tile's own background box (independent from
+// the widget-level appearance applied to the whole group container).
+//   - surfaceOpacity : 0..100 (%) opacity of the tile background;
+//   - surfaceInset   : 0..8 px margin of the surface INSIDE its cell — two
+//                      adjacent tiles get a regular 2×inset separation;
+//   - surfaceShape   : 'rounded' (default, theme radius) | 'square' (no radius);
+//   - surfaceColor   : explicit background colour ('' → theme default).
+// All are tolerant: unknown / out-of-range values fall back to the default so a
+// button stored before these keys existed keeps the EXACT current look.
+export const SURFACE_OPACITY_MIN = 0;
+export const SURFACE_OPACITY_MAX = 100;
+export const SURFACE_OPACITY_DEFAULT = 100;
+export const SURFACE_INSET_MIN = 0;
+export const SURFACE_INSET_MAX = 8;
+export const SURFACE_INSET_DEFAULT = 0;
+export const SURFACE_SHAPES = ['rounded', 'square'];
+export const SURFACE_SHAPE_DEFAULT = 'rounded';
+
+/** Clamp a surface opacity to an integer percentage in [0,100] (default 100). */
+export function normalizeSurfaceOpacity(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SURFACE_OPACITY_DEFAULT;
+  return Math.min(SURFACE_OPACITY_MAX, Math.max(SURFACE_OPACITY_MIN, Math.round(n)));
+}
+
+/** Clamp a surface inset to an integer px value in [0,8] (default 0). */
+export function normalizeSurfaceInset(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SURFACE_INSET_DEFAULT;
+  return Math.min(SURFACE_INSET_MAX, Math.max(SURFACE_INSET_MIN, Math.round(n)));
+}
+
+/** Coerce a surface shape to rounded|square (unknown → rounded). */
+export function normalizeSurfaceShape(raw) {
+  return SURFACE_SHAPES.includes(raw) ? raw : SURFACE_SHAPE_DEFAULT;
+}
+
+// Safe, single-property colour value (hex / rgb()/hsl() functional / named).
+// The value is only ever written through style.setProperty, and a semicolon /
+// quote is rejected here so a hand-edited config can never smuggle a second
+// declaration. Anything unusable → '' (theme default).
+const SURFACE_COLOR_RE =
+  /^(#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\([0-9a-zA-Z.,%\s/]+\)|[a-zA-Z]{3,20})$/;
+
+/** Tolerant surface colour coercion: a plausible CSS colour, else '' (theme). */
+export function normalizeSurfaceColor(raw) {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s || s.length > 64) return '';
+  return SURFACE_COLOR_RE.test(s) ? s : '';
+}
+
 /**
  * Coerce an icon size to a percentage in [8,120], rounded to the 0.5 step.
  * Accepts a finite number, a numeric string, or a legacy letter
@@ -114,6 +165,10 @@ export function normalizeOptions(raw) {
     iconSize: normalizeIconSize(o.iconSize),
     labelPosition: LABEL_POSITIONS.includes(o.labelPosition) ? o.labelPosition : LABEL_POSITION_DEFAULT,
     allowIconOverflow: bool(o.allowIconOverflow, false),
+    surfaceOpacity: normalizeSurfaceOpacity(o.surfaceOpacity),
+    surfaceInset: normalizeSurfaceInset(o.surfaceInset),
+    surfaceShape: normalizeSurfaceShape(o.surfaceShape),
+    surfaceColor: normalizeSurfaceColor(o.surfaceColor),
   };
 }
 
@@ -397,6 +452,7 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5) {
     hasControls: o.controls,
     labelPosition: o.labelPosition,
     iconSize: o.iconSize,
+    surfaceInset: o.surfaceInset,
   });
   tileEl.style.gridColumn = `${b.col + 1} / span ${b.w}`;
   tileEl.style.gridRow = `${b.row + 1} / span ${b.h}`;
@@ -404,6 +460,36 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5) {
   tileEl.style.setProperty('--tile-icon-px', `${iconPx}px`);
   tileEl.style.setProperty('--tile-w-px', `${wPx}px`);
   tileEl.style.setProperty('--tile-h-px', `${hPx}px`);
+  applyTileSurface(tileEl, o);
+}
+
+/**
+ * Apply a button's per-tile SURFACE options to an already-built tile through
+ * inline CSS custom properties consumed by `.group-tile` (style.css):
+ *
+ *   --tile-surface-color   explicit background (removed → theme default)
+ *   --tile-surface-op      background opacity, 0..100 %
+ *   --tile-surface-inset   margin of the surface inside its cell, in px
+ *   --tile-surface-radius  8px (rounded) | 0px (square)
+ *
+ * At opacity 0 the `data-surface-off` attribute neutralizes the residual
+ * border / shadow / backdrop-filter (same contract as the widget appearance)
+ * so the surface becomes PERFECTLY invisible. Shared by the initial paint, the
+ * in-trame move/resize (applyTileMetrics) and the multi-selection live editor.
+ */
+export function applyTileSurface(tileEl, options) {
+  if (!tileEl) return;
+  const o = normalizeOptions(options);
+  if (o.surfaceColor) tileEl.style.setProperty('--tile-surface-color', o.surfaceColor);
+  else tileEl.style.removeProperty('--tile-surface-color');
+  tileEl.style.setProperty('--tile-surface-op', `${o.surfaceOpacity}%`);
+  tileEl.style.setProperty('--tile-surface-inset', `${o.surfaceInset}px`);
+  tileEl.style.setProperty('--tile-surface-radius', o.surfaceShape === 'square' ? '0px' : '8px');
+  if (o.surfaceOpacity === 0) tileEl.dataset.surfaceOff = '';
+  else delete tileEl.dataset.surfaceOff;
+  tileEl.dataset.surfaceShape = o.surfaceShape;
+  tileEl.dataset.surfaceOpacity = String(o.surfaceOpacity);
+  tileEl.dataset.surfaceInset = String(o.surfaceInset);
 }
 
 // ---- pieces -----------------------------------------------------------------
@@ -914,9 +1000,13 @@ const CONTROLS_RESERVE = 28;
  * resulting base (0.5-step, 8..120) — kept to 2 decimals so two adjacent slider
  * crans (e.g. 40 and 40.5) genuinely differ.
  */
-function computeIconPx({ wPx, hPx, hasLabel, hasMonitoring, hasControls, labelPosition, iconSize }) {
-  let availW = Math.max(0, wPx - TILE_CHROME);
-  let availH = Math.max(0, hPx - TILE_CHROME);
+function computeIconPx({ wPx, hPx, hasLabel, hasMonitoring, hasControls, labelPosition, iconSize, surfaceInset = 0 }) {
+  // The surface inset is a margin INSIDE the grid cell: it shrinks the tile's
+  // content box by 2×inset, so the icon must be sized from the smaller box or
+  // it would overflow a heavily inset tile.
+  const inset = normalizeSurfaceInset(surfaceInset) * 2;
+  let availW = Math.max(0, wPx - TILE_CHROME - inset);
+  let availH = Math.max(0, hPx - TILE_CHROME - inset);
   if (hasLabel) {
     if (labelPosition === 'left' || labelPosition === 'right') availW -= LABEL_RESERVE;
     else availH -= LABEL_RESERVE;

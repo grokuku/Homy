@@ -1,6 +1,17 @@
 import { el, uuid } from '../util.js';
 import { catalog } from './catalog.js';
-import { normalizeButton, renderButtonTile, applyTileMetrics, minSizeForVariant } from './button.js';
+import {
+  normalizeButton,
+  renderButtonTile,
+  applyTileMetrics,
+  minSizeForVariant,
+  normalizeSurfaceColor,
+  SURFACE_OPACITY_MIN,
+  SURFACE_OPACITY_MAX,
+  SURFACE_INSET_MIN,
+  SURFACE_INSET_MAX,
+  SURFACE_SHAPES,
+} from './button.js';
 import {
   renderReportTile,
   applyReportMetrics,
@@ -11,6 +22,7 @@ import {
 import { openElementPicker } from './elementPicker.js';
 import { openButtonOptions } from './buttonOptions.js';
 import { toast } from '../ui/toast.js';
+import { api } from '../api.js';
 
 /**
  * Group widget (LOT 2 container + LOT 4 in-trame tile editing).
@@ -58,6 +70,19 @@ const DEFAULT_STEP = 22.5; // px — 1440px canvas: 45px global cell / 2
 const MAX_TILE_CELLS = 4; // server-side per-button cap (internal cells)
 const DEFAULT_REPORT_SIZE = { w: 8, h: 6 }; // internal cells (free size)
 const TILE_DELETE_CONFIRM_MS = 3000;
+// Per-group ZOOM: a UNIFORM scale factor applied to the whole group content by
+// multiplying the base `--group-step`. Because the SAME effective step drives
+// both grid axes (grid-template-columns AND grid-auto-rows) and the tiles span
+// integer multiples of it, scaling keeps every tile perfectly SQUARE. Range and
+// step MUST stay in sync with normalizeGroupZoom() server-side
+// (server/services/layout.service.js) and the `zoom` settingsSchema field.
+const GROUP_ZOOM_MIN = 0.5;
+const GROUP_ZOOM_MAX = 3;
+const GROUP_ZOOM_DEFAULT = 1;
+const GROUP_ZOOM_STEP = 0.05;
+// Ctrl+drag sensitivity: how many px of (horizontal) travel change the zoom by
+// 1.0. 200px ≈ the full 0.5→3 sweep, fine enough for a live, precise feel.
+const GROUP_ZOOM_PX_PER_UNIT = 200;
 const ADD_DEFAULT_OPTIONS = {
   icon: true,
   label: true,
@@ -68,7 +93,15 @@ const ADD_DEFAULT_OPTIONS = {
   iconSize: 55,
   labelPosition: 'bottom',
   allowIconOverflow: false,
+  surfaceOpacity: 100,
+  surfaceInset: 0,
+  surfaceShape: 'rounded',
+  surfaceColor: '',
 };
+
+// Human labels / swatch fallback for the multi-selection surface bar.
+const SURFACE_SHAPE_LABEL = { rounded: 'Rounded', square: 'Square' };
+const SURFACE_SWATCH_FALLBACK = '#3a4150';
 
 export const group = {
   name: 'Group',
@@ -89,6 +122,17 @@ export const group = {
           { value: 'never', label: 'Never' },
         ],
         help: 'Always shows the title chip, reveals it on hover, or hides it entirely.',
+      },
+      {
+        key: 'zoom',
+        label: 'Zoom',
+        type: 'range',
+        default: 1,
+        min: 0.5,
+        max: 3,
+        step: 0.05,
+        unit: '\u00d7',
+        help: 'Uniform scale of the group content (tiles + grid), keeping tiles square. Also adjustable with Ctrl+drag on the group in edit mode; Ctrl+double-click resets to 1.',
       },
     ],
   },
@@ -165,11 +209,30 @@ export const group = {
     const groupCols = Math.max(2, (Number(item?.w) || 1) * 2);
     const groupRows = Math.max(2, (Number(item?.h) || 1) * 2);
 
+    // ZOOM: uniform content scale, persisted in config.zoom (default 1).
+    // `baseStep` is the raw half-global-cell unit; `step` is the EFFECTIVE
+    // (baseStep × zoom) value that drives the trame AND the tiles — so a
+    // single factor scales everything together, keeping tiles square.
+    let zoom = normalizeGroupZoom(config?.zoom);
+    let baseStep = DEFAULT_STEP;
     let step = DEFAULT_STEP;
     let raf = 0;
     let dragCleanup = null; // active tile move/resize teardown (destroyed mid-drag)
+    let zoomCleanup = null; // active Ctrl+drag zoom teardown (destroyed mid-drag)
+    let zoomBadge = null; // transient « 1.25× » readout shown while adjusting
+    let resetHintTimer = 0; // brief « reset » flash after a reset gesture
     const deleteTimers = new Set(); // armed ✕ confirm timers (cleared on re-render/destroy)
     const tileDisposers = new Set(); // report-tile refresh cleanups (no timer leaks)
+
+    // ---- multi-selection (edit mode) -----------------------------------------
+    // `selected` holds button IDS; `tileEls` maps id → live tile element so a
+    // surface change can be applied IN PLACE (no full re-render) while dragging
+    // a slider. `selectionBar` is the floating group edit panel (body-appended
+    // so a group's `overflow: hidden` never clips it).
+    const selected = new Set();
+    const tileEls = new Map();
+    let selectionBar = null;
+    let selectionKeyHandler = null;
 
     const clearDeleteTimers = () => {
       for (const t of deleteTimers) clearTimeout(t);
@@ -193,10 +256,12 @@ export const group = {
       clearDeleteTimers();
       disposeTiles();
       canvas.replaceChildren();
+      tileEls.clear();
       for (const button of buttons) {
         const element = catalog.get(button.elementId);
         const { el: tile, dispose } = renderButtonTile({ button, element, step });
         tileDisposers.add(dispose);
+        tileEls.set(button.id, tile);
         if (editable) decorateTile(tile, button);
         canvas.appendChild(tile);
       }
@@ -207,6 +272,7 @@ export const group = {
         if (editable) decorateReportTile(tile, report);
         canvas.appendChild(tile);
       }
+      syncSelection();
     };
 
     // ---- persistence ----------------------------------------------------------
@@ -282,6 +348,7 @@ export const group = {
     function removeButton(button) {
       const index = buttons.indexOf(button);
       if (index >= 0) buttons.splice(index, 1);
+      selected.delete(button.id);
       renderTiles();
       persist();
       toast('Tile removed', 'success');
@@ -331,6 +398,10 @@ export const group = {
 
     function decorateTile(tile, button) {
       tile.classList.add('tile-editable');
+      // Expose the button id so the Ctrl+click multi-selection path (which the
+      // container capture handler must discriminate from Ctrl+drag zoom) can
+      // resolve the tile's button.
+      tile.dataset.buttonId = button.id;
 
       const controls = el('div', 'tile-edit-controls');
       const optBtn = el('button', 'tile-edit-opt', '⚙', {
@@ -398,11 +469,25 @@ export const group = {
         true
       );
 
-      tile.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
-        if (e.target.closest('button, input, select, textarea, .tile-resize, .tile-edit-controls')) return;
-        startMove(e, tile, button, allTiles(), applyTileMetrics);
-      });
+      // CAPTURE phase: the editor's dragGuard (grid/editor.js) attaches a
+      // bubbling mousedown `stopPropagation` to every <a>/input/button inside
+      // the content, INCLUDING a shortcut tile's <a href> — a bubbling listener
+      // here would never run. Capturing on the tile makes the in-trame drag /
+      // selection authoritative over that guard (the guard only exists to keep
+      // gridstack's WIDGET drag out, which this stopPropagation also does).
+      tile.addEventListener(
+        'mousedown',
+        (e) => {
+          if (e.button !== 0) return;
+          if (e.target.closest('button, input, select, textarea, .tile-resize, .tile-edit-controls')) return;
+          startMove(e, tile, button, allTiles(), applyTileMetrics, {
+            // A mousedown that does NOT move is a SELECTION click; Ctrl/Cmd toggles
+            // the tile in/out of the selection. A real move keeps the drag path.
+            onClick: () => toggleSelect(button, e.ctrlKey || e.metaKey),
+          });
+        },
+        true
+      );
     }
 
     function decorateReportTile(tile, report) {
@@ -459,7 +544,10 @@ export const group = {
       });
     }
 
-    function startMove(e, tile, obj, list, apply) {
+    function startMove(e, tile, obj, list, apply, { onClick } = {}) {
+      // Ctrl/Cmd+drag is the ZOOM gesture (handled at the container in capture
+      // phase); never start a tile move for it.
+      if (e.ctrlKey || e.metaKey) return;
       e.stopPropagation();
       e.preventDefault();
       const startX = e.clientX;
@@ -485,6 +573,9 @@ export const group = {
         if (moved) {
           renderTiles();
           persist();
+        } else {
+          // No displacement → a click, not a drag.
+          onClick?.();
         }
       };
       dragCleanup = () => endDrag(onMove, onUp);
@@ -494,6 +585,8 @@ export const group = {
     }
 
     function startResize(e, tile, obj, list, apply, { minW, minH, maxW, maxH, snap }) {
+      // Ctrl/Cmd+drag is the ZOOM gesture; never start a tile resize for it.
+      if (e.ctrlKey || e.metaKey) return;
       e.stopPropagation();
       e.preventDefault();
       const startX = e.clientX;
@@ -534,18 +627,407 @@ export const group = {
       dragCleanup = null;
     }
 
-    // ---- initial paint + live step -------------------------------------------
+    // ---- selection state + floating action bar ------------------------------
 
+    /** Repaint the selection ring on every tile then refresh the action bar. */
+    function syncSelection() {
+      for (const [id, tile] of tileEls) tile.classList.toggle('tile-selected', selected.has(id));
+      renderSelectionBar();
+    }
+
+    function clearSelection() {
+      if (!selected.size) return;
+      selected.clear();
+      syncSelection();
+    }
+
+    /** Plain click selects ONLY this tile; Ctrl/Cmd+click toggles it. */
+    function toggleSelect(button, additive) {
+      if (!editable) return;
+      if (additive) {
+        if (selected.has(button.id)) selected.delete(button.id);
+        else selected.add(button.id);
+      } else {
+        selected.clear();
+        selected.add(button.id);
+      }
+      syncSelection();
+    }
+
+    /** The selected buttons, in document order. */
+    const selectedButtons = () => buttons.filter((b) => selected.has(b.id));
+
+    /** A surface option's value when ALL selected tiles agree, else undefined. */
+    function commonValue(key) {
+      const list = selectedButtons();
+      if (!list.length) return undefined;
+      const first = list[0].options[key];
+      return list.every((b) => b.options[key] === first) ? first : undefined;
+    }
+
+    /** Apply one option to every selected tile, live + persisted. */
+    function applyToSelection(key, value) {
+      const list = selectedButtons();
+      if (!list.length) return;
+      for (const b of list) {
+        b.options[key] = value;
+        const tile = tileEls.get(b.id);
+        if (tile) applyTileMetrics(tile, b, step);
+      }
+      persist();
+    }
+
+    /** A labelled range for the selection bar; a mixed value shows « — ». */
+    function buildBarRange({ label, key, min, max, step: stepSize, unit }) {
+      const field = el('div', 'sel-field');
+      field.appendChild(el('span', null, label));
+      const value = commonValue(key);
+      const slider = el('input', null, null, {
+        type: 'range',
+        min: String(min),
+        max: String(max),
+        step: String(stepSize),
+        'aria-label': `Selected tiles ${label.toLowerCase()}`,
+      });
+      slider.value = String(value === undefined ? Math.round((Number(min) + Number(max)) / 2) : value);
+      const valEl = el('span', 'sel-val', value === undefined ? '—' : `${value}${unit}`);
+      slider.addEventListener('input', () => {
+        applyToSelection(key, Number(slider.value));
+        valEl.textContent = `${slider.value}${unit}`;
+      });
+      field.append(slider, valEl);
+      if (value === undefined) field.appendChild(el('span', 'sel-mixed', 'mixed'));
+      return field;
+    }
+
+    /**
+     * Floating « N tiles selected » bar. Built with the COMMON value of each
+     * surface option: a value shared by every selected tile pre-fills the
+     * control, a divergent value shows a « mixed » marker and a neutral slider
+     * position — moving a control OVERWRITES that option on ALL selected tiles
+     * (the untouched options keep their per-tile values).
+     */
+    function renderSelectionBar() {
+      if (!editable) return;
+      if (!selected.size) {
+        selectionBar?.remove();
+        selectionBar = null;
+        return;
+      }
+      if (!selectionBar) {
+        selectionBar = el('div', 'group-selection-bar', null, { role: 'toolbar', 'aria-label': 'Selected tiles' });
+        document.body.appendChild(selectionBar);
+      }
+      const bar = selectionBar;
+      bar.replaceChildren();
+
+      const count = selected.size;
+      bar.appendChild(el('span', 'sel-count', `${count} tile${count > 1 ? 's' : ''} selected`));
+
+      // Shape.
+      const shape = commonValue('surfaceShape');
+      const shapeField = el('div', 'sel-field');
+      shapeField.appendChild(el('span', null, 'Shape'));
+      const seg = el('div', 'segmented');
+      for (const s of SURFACE_SHAPES) {
+        const b = el('button', 'segmented-item' + (shape === s ? ' active' : ''), SURFACE_SHAPE_LABEL[s] || s, {
+          type: 'button',
+        });
+        b.addEventListener('click', () => {
+          applyToSelection('surfaceShape', s);
+          renderSelectionBar();
+        });
+        seg.appendChild(b);
+      }
+      shapeField.appendChild(seg);
+      if (shape === undefined) shapeField.appendChild(el('span', 'sel-mixed', 'mixed'));
+      bar.appendChild(shapeField);
+
+      // Opacity + inset.
+      bar.appendChild(
+        buildBarRange({
+          label: 'Opacity',
+          key: 'surfaceOpacity',
+          min: SURFACE_OPACITY_MIN,
+          max: SURFACE_OPACITY_MAX,
+          step: 1,
+          unit: '%',
+        })
+      );
+      bar.appendChild(
+        buildBarRange({
+          label: 'Inset',
+          key: 'surfaceInset',
+          min: SURFACE_INSET_MIN,
+          max: SURFACE_INSET_MAX,
+          step: 1,
+          unit: 'px',
+        })
+      );
+
+      // Colour (+ theme reset).
+      const color = commonValue('surfaceColor');
+      const colorField = el('div', 'sel-field');
+      colorField.appendChild(el('span', null, 'Color'));
+      const input = el('input', null, null, { type: 'color', 'aria-label': 'Selected tiles surface color' });
+      input.value = color || SURFACE_SWATCH_FALLBACK;
+      input.addEventListener('input', () => applyToSelection('surfaceColor', normalizeSurfaceColor(input.value)));
+      colorField.appendChild(input);
+      const themeBtn = el('button', 'btn', 'Theme', {
+        type: 'button',
+        title: 'Use the theme default color on all selected tiles',
+      });
+      themeBtn.addEventListener('click', () => {
+        applyToSelection('surfaceColor', '');
+        renderSelectionBar();
+      });
+      colorField.appendChild(themeBtn);
+      if (color === undefined) colorField.appendChild(el('span', 'sel-mixed', 'mixed'));
+      bar.appendChild(colorField);
+
+      const clear = el('button', 'btn sel-clear', 'Clear selection', { type: 'button' });
+      clear.addEventListener('click', clearSelection);
+      bar.appendChild(clear);
+    }
+
+    // ---- zoom (uniform content scale) ----------------------------------------
+    //
+    // Ctrl+drag (edit mode) adjusts `zoom` LIVE. The factor multiplies the base
+    // internal step, so the trame AND the tiles scale together — the tiles stay
+    // perfectly square (a single factor, same in both axes). It never touches
+    // the tiles' col/row/w/h (internal cells) nor the group geometry on the
+    // global grid. Content larger than the group simply scrolls, as before.
+
+    /** Apply the effective step (baseStep × zoom) to the trame and the tiles. */
     const applyStep = () => {
-      // The single square unit (half a global COLUMN, width-derived) — see
-      // measureStep. Tiles span integer multiples of it in BOTH axes.
-      const next = measureStep(container, item);
-      step = next;
-      canvas.style.setProperty('--group-step', `${next}px`);
+      // The single square unit (half a global COLUMN, width-derived), scaled by
+      // the group zoom. Tiles span integer multiples of it in BOTH axes.
+      baseStep = measureStep(container, item);
+      step = baseStep * zoom;
+      canvas.style.setProperty('--group-step', `${step}px`);
     };
+
+    /**
+     * Re-fit every tile to the current effective step WITHOUT rebuilding the
+     * DOM: the grid tracks (driven by --group-step) already resize the tile
+     * boxes, this refreshes the icon px computed from each tile's footprint.
+     */
+    const applyZoomMetrics = () => {
+      const list = allTiles();
+      const children = canvas.children;
+      for (let i = 0; i < list.length; i += 1) {
+        const tile = children[i];
+        const obj = list[i];
+        if (!tile || !obj) continue;
+        if ('options' in obj) applyTileMetrics(tile, obj, step);
+        else applyReportMetrics(tile, obj, step);
+      }
+    };
+
+    /** Keep local caches (state.layout + editor meta) in sync with the zoom. */
+    const broadcastZoom = (value) => {
+      if (!item?.id) return;
+      window.dispatchEvent(
+        new CustomEvent('homy:widget-config', { detail: { id: item.id, config: { zoom: value } } })
+      );
+    };
+
+    /** Persist the zoom through the SAME config PATCH as the ⚙ modal. */
+    const persistZoom = (value) => {
+      if (!item?.id) return;
+      api
+        .patch(`/api/layout/items/${item.id}/config`, { config: { zoom: value } })
+        .catch((err) => toast(err.message || 'Failed to save zoom', 'error'));
+    };
+
+    /**
+     * Set the zoom (clamped + snapped to the shared step). Live updates
+     * (Ctrl+drag) refresh the layout + local caches; the final value is
+     * persisted on drag end / reset / modal save.
+     */
+    const setZoom = (value, { persist: doPersist = false, broadcast = true } = {}) => {
+      const next = clampZoom(value);
+      const changed = next !== zoom;
+      zoom = next;
+      applyStep();
+      applyZoomMetrics();
+      if (broadcast) broadcastZoom(zoom);
+      if (doPersist) persistZoom(zoom);
+      return changed;
+    };
+
+    // ---- zoom readout (transient « 1.25× » badge) ----------------------------
+
+    const ensureZoomBadge = () => {
+      if (!zoomBadge) {
+        zoomBadge = el('div', 'group-zoom-badge', null, { 'aria-hidden': 'true' });
+        document.body.appendChild(zoomBadge);
+      }
+      return zoomBadge;
+    };
+
+    const placeZoomBadge = (x, y) => {
+      if (!zoomBadge) return;
+      zoomBadge.style.left = `${x}px`;
+      zoomBadge.style.top = `${y}px`;
+    };
+
+    const showZoomBadge = (text, x, y, reset = false) => {
+      const badge = ensureZoomBadge();
+      badge.textContent = text;
+      badge.classList.toggle('reset', reset);
+      placeZoomBadge(x, y);
+    };
+
+    const hideZoomBadge = () => {
+      if (resetHintTimer) {
+        clearTimeout(resetHintTimer);
+        resetHintTimer = 0;
+      }
+      zoomBadge?.remove();
+      zoomBadge = null;
+    };
+
+    /**
+     * Start a live Ctrl+drag zoom. `startX/startY` are the press point (the
+     * baseline for the drag), `pointerX/pointerY` the current position (for the
+     * badge placement).
+     *
+     * The gesture is armed lazily by the container mousedown handler (see
+     * below) so a Ctrl+CLICK without movement stays a multi-SELECTION toggle
+     * (toggleSelect) — only an actual drag switches to zoom.
+     */
+    function startZoom(startX, startY, pointerX, pointerY) {
+      const startZoomValue = zoom;
+      let changed = false;
+      document.body.classList.add('group-zoom-dragging');
+      showZoomBadge(zoomText(zoom), pointerX, pointerY);
+
+      const update = (ev) => {
+        // Horizontal travel drives the zoom (drag right = larger); vertical up
+        // also counts so a diagonal gesture feels natural. The factor is a
+        // SINGLE uniform scale → the ratio is always preserved.
+        const delta = ev.clientX - startX - (ev.clientY - startY);
+        if (setZoom(startZoomValue + delta / GROUP_ZOOM_PX_PER_UNIT)) changed = true;
+        showZoomBadge(zoomText(zoom), ev.clientX, ev.clientY);
+      };
+      const cleanup = () => {
+        document.removeEventListener('mousemove', update);
+        document.removeEventListener('mouseup', onUp);
+        document.removeEventListener('keydown', onKey);
+        document.body.classList.remove('group-zoom-dragging');
+        hideZoomBadge();
+        zoomCleanup = null;
+      };
+      const onUp = () => {
+        cleanup();
+        if (changed) persistZoom(zoom);
+      };
+      const onKey = (ev) => {
+        if (ev.key !== 'Escape') return;
+        cleanup();
+        if (startZoomValue !== zoom) setZoom(startZoomValue, { persist: true });
+      };
+      zoomCleanup = cleanup;
+      document.addEventListener('mousemove', update);
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('keydown', onKey);
+      return update;
+    }
+
+    /** Ctrl+double-click reset: back to 1 with a brief, explicit readout. */
+    function resetZoom(e) {
+      e.stopPropagation();
+      e.preventDefault();
+      if (zoom !== GROUP_ZOOM_DEFAULT) setZoom(GROUP_ZOOM_DEFAULT, { persist: true });
+      clearTimeout(resetHintTimer);
+      showZoomBadge(`Reset ${zoomText(GROUP_ZOOM_DEFAULT)}`, e.clientX, e.clientY, true);
+      resetHintTimer = setTimeout(() => {
+        resetHintTimer = 0;
+        hideZoomBadge();
+      }, 700);
+    }
+
+    // ---- initial paint + live step -------------------------------------------
 
     applyStep();
     renderTiles();
+
+    // Edit-only: Escape clears the selection; a click on the trame background
+    // (not on a tile / control) clears it too. Both are no-ops in VIEW mode.
+    if (editable) {
+      selectionKeyHandler = (e) => {
+        if (e.key === 'Escape' && selected.size) clearSelection();
+      };
+      document.addEventListener('keydown', selectionKeyHandler);
+      board.addEventListener('click', (e) => {
+        if (e.target === board || e.target === canvas) clearSelection();
+      });
+
+      // CAPTURE phase so a Ctrl/Cmd gesture wins over the tile move/resize
+      // handlers (deeper) AND gridstack's drag handle (bubble on this very
+      // element). We ARM the gesture on mousedown but only promote it to a ZOOM
+      // once the pointer has travelled past a small threshold: a Ctrl+CLICK
+      // without movement therefore stays a multi-SELECTION toggle, while a
+      // Ctrl+DRAG adjusts the zoom. A drag WITHOUT Ctrl falls through untouched
+      // (tiles move, the group drags/resizes as before).
+      const zoomExcluded = (target) =>
+        !!(target?.closest && target.closest('button, input, select, textarea, .tile-edit-controls, .tile-resize'));
+      const ZOOM_DRAG_THRESHOLD = 4; // px before a Ctrl press becomes a zoom drag
+      container.addEventListener(
+        'mousedown',
+        (e) => {
+          if (e.button !== 0 || !(e.ctrlKey || e.metaKey)) return;
+          if (zoomExcluded(e.target)) return;
+          // Block BOTH the tile move/resize (deeper capture) and gridstack's
+          // drag handle (bubble). The click-vs-drag decision happens below.
+          e.stopPropagation();
+          e.preventDefault();
+          const startX = e.clientX;
+          const startY = e.clientY;
+          const tile = e.target.closest?.('.group-tile') || null;
+          let zooming = false;
+          // Track the pending listeners so a widget destroy mid-gesture (mode
+          // switch, page change) tears them down too — no leak, no stale
+          // handler on document.
+          const pendingCleanup = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            if (zoomCleanup === pendingCleanup) zoomCleanup = null;
+          };
+          const onMove = (ev) => {
+            if (zooming) return;
+            if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < ZOOM_DRAG_THRESHOLD) return;
+            zooming = true;
+            pendingCleanup();
+            const update = startZoom(startX, startY, ev.clientX, ev.clientY);
+            update(ev); // apply the threshold-crossing move immediately
+          };
+          const onUp = () => {
+            pendingCleanup();
+            if (zooming) return;
+            // A Ctrl+CLICK (no movement): keep the multi-selection toggle that
+            // the tile's own capture handler would otherwise have run.
+            const id = tile?.dataset?.buttonId;
+            const button = id ? buttons.find((b) => b.id === id) : null;
+            if (button) toggleSelect(button, true);
+          };
+          zoomCleanup = pendingCleanup;
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        },
+        true
+      );
+      container.addEventListener(
+        'dblclick',
+        (e) => {
+          if (!(e.ctrlKey || e.metaKey)) return;
+          if (zoomExcluded(e.target)) return;
+          resetZoom(e);
+        },
+        true
+      );
+    }
 
     // The catalogue may resolve AFTER the group was first rendered (tolerant
     // async load): redraw the tiles with the real element names/icons.
@@ -562,9 +1044,10 @@ export const group = {
         raf = requestAnimationFrame(() => {
           raf = 0;
           const next = measureStep(container, item);
-          if (Math.abs(next - step) > 0.25) {
-            step = next;
-            canvas.style.setProperty('--group-step', `${next}px`);
+          if (Math.abs(next - baseStep) > 0.25) {
+            baseStep = next;
+            step = baseStep * zoom;
+            canvas.style.setProperty('--group-step', `${step}px`);
             renderTiles();
           }
         });
@@ -580,6 +1063,11 @@ export const group = {
       clearDeleteTimers();
       disposeTiles();
       dragCleanup?.();
+      zoomCleanup?.();
+      hideZoomBadge();
+      if (selectionKeyHandler) document.removeEventListener('keydown', selectionKeyHandler);
+      selectionBar?.remove();
+      selectionBar = null;
     };
   },
 };
@@ -621,6 +1109,36 @@ const TITLE_VISIBILITIES = new Set(['always', 'hover', 'never']);
 /** Tolerant titleVisibility coercion: unknown/missing → 'always'. */
 function normalizeTitleVisibility(raw) {
   return TITLE_VISIBILITIES.has(raw) ? raw : 'always';
+}
+
+/**
+ * Tolerant group zoom coercion (mirror of the server): a finite number inside
+ * [0.5, 3] is kept (snapped to the 0.05 step); anything missing, non-numeric
+ * or out of range (e.g. 99 or "abc") falls back to 1. Applied to config.zoom
+ * at render time so a stale/hand-edited config never distorts the group.
+ */
+function normalizeGroupZoom(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < GROUP_ZOOM_MIN || n > GROUP_ZOOM_MAX) return GROUP_ZOOM_DEFAULT;
+  return snapZoom(n);
+}
+
+/** Clamp + snap a LIVE zoom value to the documented [0.5, 3] × 0.05 grid. */
+function clampZoom(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return GROUP_ZOOM_DEFAULT;
+  return snapZoom(Math.min(GROUP_ZOOM_MAX, Math.max(GROUP_ZOOM_MIN, n)));
+}
+
+/** Snap to the 0.05 zoom step, clamped to the range, rounded to 2 decimals. */
+function snapZoom(n) {
+  const stepped = Math.round(n / GROUP_ZOOM_STEP) * GROUP_ZOOM_STEP;
+  return Number(Math.min(GROUP_ZOOM_MAX, Math.max(GROUP_ZOOM_MIN, stepped)).toFixed(2));
+}
+
+/** Human zoom readout, e.g. 1 → « 1.00× », 1.25 → « 1.25× ». */
+function zoomText(z) {
+  return `${Number(z).toFixed(2)}\u00d7`;
 }
 
 /** Round to the nearest even internal-cell value (tile sizes are {2,4}). */

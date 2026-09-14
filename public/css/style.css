@@ -1177,6 +1177,10 @@ body[data-bg-active] .grid-stack-item-content {
 .group-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, var(--group-step, 22.5px));
+  /* Implicit columns/rows share the SAME step: when the zoomed content exceeds
+     the group box, tiles placed beyond the auto-fill tracks keep the exact
+     square unit instead of falling back to an auto-sized track. */
+  grid-auto-columns: var(--group-step, 22.5px);
   grid-auto-rows: var(--group-step, 22.5px);
   align-content: start;
   justify-content: start;
@@ -1204,7 +1208,16 @@ body[data-bg-active] .grid-stack-item-content {
       var(--group-line-minor) 0 1px, transparent 1px var(--group-step));
 }
 
-/* ---------- Button tiles (matrix of variants) ---------- */
+/* ---------- Button tiles (matrix of variants) ----------
+   The TILE IS THE SURFACE. Its background/border/radius are driven by per-tile
+   CSS custom properties set inline by applyTileSurface() (elements/button.js):
+     --tile-surface-color  explicit background (fallback: theme elevation)
+     --tile-surface-op     background opacity 0..100 % (fallback 100 %)
+     --tile-surface-inset  margin INSIDE the grid cell (fallback 0) — two
+                           adjacent tiles get a regular 2×inset separation
+     --tile-surface-radius 8px (rounded) | 0px (square)
+   Defaults reproduce the historical look EXACTLY (opaque theme surface, 8px
+   radius, no margin), so a button without these options is unchanged. */
 .group-tile {
   position: relative;
   display: flex;
@@ -1212,15 +1225,28 @@ body[data-bg-active] .grid-stack-item-content {
   min-width: 0;
   min-height: 0;
   padding: 3px;
-  border-radius: 8px;
+  margin: var(--tile-surface-inset, 0px);
+  border-radius: var(--tile-surface-radius, 8px);
   border: 1px solid var(--border);
-  background: var(--bg-elev-2);
+  background: color-mix(in srgb,
+    var(--tile-surface-color, var(--bg-elev-2)) var(--tile-surface-op, 100%),
+    transparent);
   color: var(--text);
   overflow: hidden;
   font-size: 12px;
   /* The tile is its OWN size container so the compact-typography @container
      queries below measure the TILE (not the enclosing widget/group). */
   container-type: size;
+}
+/* surfaceOpacity:0 → the tile surface must be PERFECTLY invisible: no
+   background, no border, no shadow, no backdrop blur. Specificity (0,2,0) beats
+   the plain .group-tile rule (0,1,0). */
+.group-tile[data-surface-off] {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 /* Advanced option « allow icon overflow »: let the icon spill instead of clip. */
 .group-tile.allow-overflow { overflow: visible; }
@@ -1237,7 +1263,9 @@ body[data-bg-active] .grid-stack-item-content {
   padding: 2px;
   color: inherit;
   text-decoration: none;
-  border-radius: 6px;
+  /* Follow the tile surface shape (2px smaller than the tile radius, never
+     negative so `square` really is square). */
+  border-radius: max(0px, calc(var(--tile-surface-radius, 8px) - 2px));
   overflow: hidden; /* content can never escape its own main zone */
 }
 .tile-main:not(.tile-main-static):hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
@@ -1504,6 +1532,98 @@ body.tile-dragging .report-tile.tile-editable { cursor: grabbing; }
 .group-tile.tile-editable:hover { outline: 1px dashed var(--accent); outline-offset: 1px; }
 body.tile-dragging { user-select: none; -webkit-user-select: none; }
 body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
+
+/* ---------- Group zoom (Ctrl+drag, edit mode) ----------
+   A UNIFORM content scale stored in config.zoom and applied by multiplying the
+   base --group-step: the trame AND the tiles scale together, so tiles stay
+   square and the group never moves/resizes on the global grid. The readout is a
+   transient badge (body-appended, position:fixed) shown WHILE adjusting — it is
+   never clipped by the group's overflow:hidden and never swallows the gesture. */
+body.group-zoom-dragging { user-select: none; -webkit-user-select: none; cursor: ew-resize; }
+body.group-zoom-dragging .group-tile.tile-editable { cursor: ew-resize; }
+.group-zoom-badge {
+  position: fixed;
+  z-index: 400;
+  transform: translate(12px, 12px);
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--bg-elev-2) 92%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.group-zoom-badge.reset { border-color: var(--text-muted); color: var(--text-muted); }
+/* Multi-selection (lot 4): a clear 2px accent ring + a soft halo, independent
+   from the hover outline so a selected tile stays obvious while hovered.
+   Placed AFTER the [data-surface-off] rule so a selected invisible-surface tile
+   still shows its ring (same specificity, later wins). */
+.group-tile.tile-selected {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent);
+  z-index: 5;
+}
+
+/* ---------- Multi-selection action bar (edit mode) ----------
+   Floating panel (appended to <body>, position:fixed) shown when ≥1 tile is
+   selected: edits the COMMON surface options on every selected tile at once. */
+.group-selection-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 200;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  max-width: min(860px, calc(100vw - 24px));
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elev-2) 94%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  backdrop-filter: blur(10px) saturate(1.15);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+  font-size: 12px;
+  color: var(--text);
+}
+.group-selection-bar .sel-count { font-weight: 600; white-space: nowrap; }
+.group-selection-bar .sel-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.group-selection-bar .sel-field > span:first-child { color: var(--text-muted); }
+.group-selection-bar input[type='range'] {
+  width: 110px;
+  height: 20px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.group-selection-bar input[type='range']::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: var(--border); }
+.group-selection-bar input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 15px; height: 15px; margin-top: -5.5px;
+  border: 0; border-radius: 50%; background: var(--accent);
+}
+.group-selection-bar input[type='range']::-moz-range-track { height: 4px; border-radius: 999px; background: var(--border); }
+.group-selection-bar input[type='range']::-moz-range-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: var(--accent); }
+.group-selection-bar input[type='color'] {
+  width: 26px; height: 22px; padding: 0; border: 1px solid var(--border);
+  border-radius: 5px; background: none; cursor: pointer;
+}
+.group-selection-bar .sel-val { min-width: 34px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+.group-selection-bar .sel-mixed { color: var(--warning, #e0a800); font-size: 11px; }
+.group-selection-bar .sel-clear { margin-left: auto; }
 
 .tile-edit-controls {
   position: absolute;

@@ -74,6 +74,30 @@ export function normalizeTitleVisibility(raw) {
   return TITLE_VISIBILITIES.has(raw) ? raw : 'always';
 }
 
+// Per-group ZOOM (uniform scale of the group CONTENT: tiles + trame). The step
+// is 0.05 so the slider and Ctrl+drag agree; the range is bounded so the trame
+// stays usable. MUST stay in sync with GROUP_ZOOM_* in
+// public/js/elements/group.js and with the `zoom` field of the group
+// settingsSchema (defined in public/js/elements/group.js, mirrored in
+// server/routes/widgets.routes.js — enforced by scripts/check-schema-sync.mjs).
+const GROUP_ZOOM_MIN = 0.5;
+const GROUP_ZOOM_MAX = 3;
+const GROUP_ZOOM_DEFAULT = 1;
+const GROUP_ZOOM_STEP = 0.05;
+
+/**
+ * Tolerant group `zoom` coercion: a finite number inside [0.5, 3] (snapped to
+ * the 0.05 step) is kept; anything missing, non-numeric or out of range (e.g.
+ * 99 or "abc") falls back to 1 so a hand-edited / stale config can never
+ * distort the group. Mirrors normalizeGroupZoom() in elements/group.js.
+ */
+export function normalizeGroupZoom(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < GROUP_ZOOM_MIN || n > GROUP_ZOOM_MAX) return GROUP_ZOOM_DEFAULT;
+  const stepped = Math.round(n / GROUP_ZOOM_STEP) * GROUP_ZOOM_STEP;
+  return Number(Math.min(GROUP_ZOOM_MAX, Math.max(GROUP_ZOOM_MIN, stepped)).toFixed(2));
+}
+
 export class LayoutService {
   constructor(store) {
     this.store = store;
@@ -283,9 +307,11 @@ export class LayoutService {
       if (entry) {
         entry.config = { ...(entry.config || {}), ...(config || {}) };
         // Tolerant normalization on write: a group's titleVisibility can only
-        // ever be stored as one of always|hover|never (unknown → always).
+        // ever be stored as one of always|hover|never (unknown → always) and
+        // its zoom as a finite number in [0.5, 3] (unknown/out-of-range → 1).
         if (entry.type === 'group') {
           entry.config.titleVisibility = normalizeTitleVisibility(entry.config.titleVisibility);
+          entry.config.zoom = normalizeGroupZoom(entry.config.zoom);
         }
         this._persist();
         return entry;
@@ -387,12 +413,17 @@ function clampColumns(value, fallback) {
 
 /**
  * Group config normalization on load/write: the `titleVisibility` key is
- * coerced to one of always|hover|never (unknown/missing → always). Every other
+ * coerced to one of always|hover|never (unknown/missing → always) and `zoom`
+ * to a finite number in [0.5, 3] (unknown/out-of-range → 1). Every other
  * config key passes through untouched (tolerance: never drops user data).
  */
 export function normalizeGroupConfig(config) {
   const c = config && typeof config === 'object' && !Array.isArray(config) ? config : {};
-  return { ...c, titleVisibility: normalizeTitleVisibility(c.titleVisibility) };
+  return {
+    ...c,
+    titleVisibility: normalizeTitleVisibility(c.titleVisibility),
+    zoom: normalizeGroupZoom(c.zoom),
+  };
 }
 
 /**
@@ -441,6 +472,16 @@ const ICON_SIZE_DEFAULT = 55;
 const ICON_SIZE_STEP = 0.5;
 const ICON_SIZE_PRESETS = { S: 40, M: 55, L: 70, XL: 85, Fill: 100 };
 const LABEL_POSITIONS = new Set(['bottom', 'top', 'left', 'right']);
+// Per-tile SURFACE options — mirror of layout.routes.js / elements/button.js.
+const SURFACE_OPACITY_MIN = 0;
+const SURFACE_OPACITY_MAX = 100;
+const SURFACE_OPACITY_DEFAULT = 100;
+const SURFACE_INSET_MIN = 0;
+const SURFACE_INSET_MAX = 8;
+const SURFACE_INSET_DEFAULT = 0;
+const SURFACE_SHAPES = new Set(['rounded', 'square']);
+const SURFACE_SHAPE_DEFAULT = 'rounded';
+const SURFACE_COLOR_RE = /^(#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\([0-9a-zA-Z.,%\s/]+\)|[a-zA-Z]{3,20})$/;
 
 // Report-tile geometry bounds (INTERNAL trame cells). Reports have a FREE size
 // (no button-variant minima): 2 cells minimum, up to a generous cap. MUST stay
@@ -465,7 +506,32 @@ function normOptions(raw) {
     iconSize: normIconSize(o.iconSize),
     labelPosition: LABEL_POSITIONS.has(o.labelPosition) ? o.labelPosition : 'bottom',
     allowIconOverflow: bool(o.allowIconOverflow, false),
+    surfaceOpacity: normSurfaceOpacity(o.surfaceOpacity),
+    surfaceInset: normSurfaceInset(o.surfaceInset),
+    surfaceShape: SURFACE_SHAPES.has(o.surfaceShape) ? o.surfaceShape : SURFACE_SHAPE_DEFAULT,
+    surfaceColor: normSurfaceColor(o.surfaceColor),
   };
+}
+
+/** Clamp a surface opacity to an integer percentage in [0,100] (default 100). */
+function normSurfaceOpacity(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SURFACE_OPACITY_DEFAULT;
+  return Math.min(SURFACE_OPACITY_MAX, Math.max(SURFACE_OPACITY_MIN, Math.round(n)));
+}
+
+/** Clamp a surface inset to an integer px value in [0,8] (default 0). */
+function normSurfaceInset(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SURFACE_INSET_DEFAULT;
+  return Math.min(SURFACE_INSET_MAX, Math.max(SURFACE_INSET_MIN, Math.round(n)));
+}
+
+/** Tolerant surface colour coercion: a plausible CSS colour, else '' (theme). */
+function normSurfaceColor(raw) {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s || s.length > 64) return '';
+  return SURFACE_COLOR_RE.test(s) ? s : '';
 }
 
 /** Tolerant icon-size coercion on LOAD (see layout.routes.js for the contract). */

@@ -4,11 +4,17 @@ import {
   normalizeButton,
   minSizeForVariant,
   normalizeIconSize,
+  normalizeSurfaceColor,
   ICON_SIZE_MIN,
   ICON_SIZE_MAX,
   ICON_SIZE_STEP,
   ICON_SIZE_PRESETS,
   LABEL_POSITIONS,
+  SURFACE_OPACITY_MIN,
+  SURFACE_OPACITY_MAX,
+  SURFACE_INSET_MIN,
+  SURFACE_INSET_MAX,
+  SURFACE_SHAPES,
   buildIconNode,
 } from './button.js';
 import { toast } from '../ui/toast.js';
@@ -88,6 +94,13 @@ const CONFIRM_MS = 3000; // 2-step delete: window before the arm reverts
 
 // Human labels for the 4 label-position crans.
 const LABEL_POS_LABEL = { bottom: 'Bottom', top: 'Top', left: 'Left', right: 'Right' };
+
+// Human labels for the 2 surface shapes.
+const SURFACE_SHAPE_LABEL = { rounded: 'Rounded', square: 'Square' };
+
+// Swatch shown by the colour input while the surface uses the theme default
+// (an <input type=color> cannot display "empty").
+const SURFACE_SWATCH_FALLBACK = '#3a4150';
 
 /** Pretty icon-size percentage (drops a trailing « .0 »). */
 const fmtIconSize = (n) => String(Math.round(Number(n) * 10) / 10);
@@ -171,6 +184,9 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
 
     // Icon appearance.
     body.appendChild(buildIconGroup());
+
+    // Surface (background box) — opacity / inset / shape / colour.
+    body.appendChild(buildSurfaceGroup());
 
     // Danger zone.
     body.appendChild(buildDanger());
@@ -349,6 +365,107 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
     if (!iconOn) overflow.title = 'Enable “Icon” first';
     overflow.append(cb, text);
     group.appendChild(overflow);
+    return group;
+  }
+
+  /**
+   * A labelled range row for one surface option, applied LIVE. Reads/writes
+   * the panel's working copy so the tile re-renders immediately; the value
+   * badge always shows the current cran.
+   */
+  function buildRangeRow({ label, key, min, max, step, unit }) {
+    const row = el('div', 'icon-size-row');
+    row.appendChild(el('span', 'opt-switch-label', label));
+    const slider = el('input', 'icon-size-slider', null, {
+      type: 'range',
+      min: String(min),
+      max: String(max),
+      step: String(step),
+      'aria-label': label,
+    });
+    slider.value = String(work.options[key]);
+    const valueEl = el('span', 'icon-size-value', `${work.options[key]}${unit}`);
+    slider.addEventListener('input', () => {
+      work.options[key] = Number(slider.value);
+      valueEl.textContent = `${work.options[key]}${unit}`;
+      onUpdate?.(normalizeButton(work));
+    });
+    row.append(slider, valueEl);
+    return row;
+  }
+
+  /**
+   * PER-TILE SURFACE group: background colour (+ « Theme » reset), opacity,
+   * inset (the retrait that lets two tiles sit side by side with a regular
+   * gap) and shape (rounded | square). Every control applies LIVE through
+   * onUpdate, exactly like the other option controls.
+   */
+  function buildSurfaceGroup() {
+    const o = work.options;
+    const group = el('div', 'opt-group');
+    group.appendChild(el('div', 'opt-group-title', 'Surface'));
+
+    // Background colour + a « Theme » reset (clears the explicit colour).
+    const colorRow = el('div', 'icon-size-row');
+    colorRow.appendChild(el('span', 'opt-switch-label', 'Color'));
+    const color = el('input', 'opt-surface-color', null, {
+      type: 'color',
+      'aria-label': 'Surface color',
+      title: 'Tile background color',
+    });
+    color.value = o.surfaceColor || SURFACE_SWATCH_FALLBACK;
+    color.addEventListener('input', () => {
+      o.surfaceColor = normalizeSurfaceColor(color.value);
+      onUpdate?.(normalizeButton(work));
+    });
+    const theme = el('button', 'btn', 'Theme', {
+      type: 'button',
+      title: 'Use the theme default background color',
+    });
+    theme.addEventListener('click', () => {
+      o.surfaceColor = '';
+      onUpdate?.(normalizeButton(work));
+      paint();
+    });
+    colorRow.append(color, theme);
+    group.appendChild(colorRow);
+
+    group.appendChild(
+      buildRangeRow({
+        label: 'Opacity',
+        key: 'surfaceOpacity',
+        min: SURFACE_OPACITY_MIN,
+        max: SURFACE_OPACITY_MAX,
+        step: 1,
+        unit: '%',
+      })
+    );
+    group.appendChild(
+      buildRangeRow({
+        label: 'Inset',
+        key: 'surfaceInset',
+        min: SURFACE_INSET_MIN,
+        max: SURFACE_INSET_MAX,
+        step: 1,
+        unit: 'px',
+      })
+    );
+
+    const shapeRow = el('div', 'segmented');
+    for (const shape of SURFACE_SHAPES) {
+      const active = o.surfaceShape === shape;
+      const b = el('button', 'segmented-item' + (active ? ' active' : ''), SURFACE_SHAPE_LABEL[shape] || shape, {
+        type: 'button',
+        title: shape === 'square' ? 'Square corners (no rounding)' : 'Rounded corners',
+      });
+      b.addEventListener('click', () => {
+        o.surfaceShape = shape;
+        onUpdate?.(normalizeButton(work));
+        paint();
+      });
+      shapeRow.appendChild(b);
+    }
+    group.appendChild(shapeRow);
     return group;
   }
 
