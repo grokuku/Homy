@@ -38,6 +38,7 @@ export const APPEARANCE_FIELDS = [
   { key: 'bgColor', label: 'Background color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
   { key: 'bgOpacity', label: 'Background opacity', type: 'range', default: 100, min: 0, max: 100, step: 1, unit: '%', help: 'Requires a background color' },
   { key: 'borderColor', label: 'Border color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
+  { key: 'borderOpacity', label: 'Border opacity', type: 'range', default: 100, min: 0, max: 100, step: 1, unit: '%', help: 'Border alpha — 0 hides the frame even when the background is transparent' },
   { key: 'showBorder', label: 'Show border', type: 'toggle', default: true, help: 'Hide to remove this widget\u2019s frame border' },
   { key: 'textColor', label: 'Text color', type: 'color', default: '', help: 'Leave empty to use the theme default' },
 ];
@@ -59,11 +60,11 @@ export function getSettingsSchema(type) {
 }
 
 /**
- * Apply per-widget appearance (bgColor/bgOpacity/borderColor/showBorder/
- * textColor) via inline CSS custom properties on the widget container. Called
- * from renderWidget() so it runs on every render (initial, config save,
- * view/edit switch, page reload). Always resets the 5 vars first because the
- * container element persists between re-renders — without a reset a previously
+ * Apply per-widget appearance (bgColor/bgOpacity/borderColor/borderOpacity/
+ * showBorder/textColor) via inline CSS custom properties on the widget
+ * container. Called from renderWidget() so it runs on every render (initial,
+ * config save, view/edit switch, page reload). Always resets the 6 vars first,
+ * because the container element persists between re-renders — without a reset a previously
  * applied custom style would linger after the config is cleared.
  *
  * Lot 3: when the user set a bgColor, the per-widget appearance is ALWAYS
@@ -76,16 +77,18 @@ export function applyAppearance(container, config) {
   const bgColor = (c.bgColor || '').trim();
   const bgOpacity = Number(c.bgOpacity);
   const borderColor = (c.borderColor || '').trim();
+  const borderOpacity = Number(c.borderOpacity);
   const textColor = (c.textColor || '').trim();
   // Border visibility is opt-OUT: legacy configs have no key at all and must
   // keep the current theme border. Only an explicit false (or the string
   // "false" from a hand-edited config) zeroes the width.
   const borderHidden = c.showBorder === false || c.showBorder === 'false';
 
-  // Reset all 5 vars first (container persists between re-renders).
+  // Reset all 6 vars first (container persists between re-renders).
   container.style.removeProperty('--widget-bg-color');
   container.style.removeProperty('--widget-bg-op');
   container.style.removeProperty('--widget-border-color');
+  container.style.removeProperty('--widget-border-op');
   container.style.removeProperty('--widget-border-width');
   container.style.removeProperty('--widget-text-color');
   delete container.dataset.surfaceOff;
@@ -94,10 +97,11 @@ export function applyAppearance(container, config) {
     container.style.setProperty('--widget-bg-color', bgColor);
     // Opacity only applies when a background color is set. Any finite value
     // (100 included) is applied explicitly so it keeps priority over the
-    // global --surface-alpha token. At EXACTLY 0 % the whole widget surface
-    // must vanish — not just its background: the residual border and the
-    // backdrop-filter would otherwise leave a visible ghost rectangle over the
-    // dashboard, so `data-surface-off` neutralizes them too.
+    // global --surface-alpha token. At EXACTLY 0 % the BACKGROUND and the
+    // backdrop-filter must vanish (the blurred ghost rectangle fix), so
+    // `data-surface-off` neutralizes them — but NOT the border any more: a
+    // border is a legitimate « frame only, invisible fill » surface and its
+    // own alpha is governed by --widget-border-op (borderOpacity).
     if (Number.isFinite(bgOpacity)) {
       const op = Math.max(0, Math.min(100, bgOpacity));
       container.style.setProperty('--widget-bg-op', `${op}%`);
@@ -105,6 +109,14 @@ export function applyAppearance(container, config) {
     }
   }
   if (borderColor) container.style.setProperty('--widget-border-color', borderColor);
+  // Border alpha: any finite 0..100 value is applied (default 100 % keeps the
+  // historical opaque frame). At 0 % the border blends fully into transparent,
+  // so a widget with bgOpacity:0 AND borderOpacity:0 has no visible surface at
+  // all, while bgOpacity:0 + borderOpacity:100 keeps a crisp frame.
+  if (Number.isFinite(borderOpacity)) {
+    const bop = Math.max(0, Math.min(100, borderOpacity));
+    container.style.setProperty('--widget-border-op', `${bop}%`);
+  }
   // When hidden, force the border width to 0. The CSS keeps
   // var(--widget-border-width, 1px) as the fallback so a widget without the
   // setting (or with it on) is unchanged.

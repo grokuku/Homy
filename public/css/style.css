@@ -1007,7 +1007,12 @@ body.bg-to-view #homy-bg-layer {
      setting (legacy configs). */
   border-style: solid;
   border-width: var(--widget-border-width, 1px);
-  border-color: var(--widget-border-color, var(--border));
+  /* Border alpha is a per-widget setting (borderOpacity, 0..100, default
+     100 %). color-mix() lets the SAME rule honour --widget-border-color (or
+     the theme --border) while scaling its alpha, so a widget with
+     `bgOpacity: 0` + `borderOpacity: 100` keeps a crisp frame (legitimate
+     « frame only, invisible fill ») and `borderOpacity: 0` hides it. */
+  border-color: color-mix(in srgb, var(--widget-border-color, var(--border)) var(--widget-border-op, 100%), transparent);
   color: var(--text);
   color: var(--widget-text-color, var(--text));
   border-radius: var(--radius);
@@ -1022,11 +1027,13 @@ body.bg-to-view #homy-bg-layer {
 .grid-stack > .grid-stack-item > .grid-stack-item-content {
   overflow: hidden;
 }
-/* bgOpacity:0 → the widget surface must be PERFECTLY invisible: no background,
-   no border, no backdrop blur, no shadow. Without this, the 1px frame (and the
-   backdrop-filter when a dashboard background is active) left a ghost rounded
-   rectangle over the dashboard even though the background colour was already
-   transparent.
+/* bgOpacity:0 → the widget BACKGROUND must be PERFECTLY invisible: no
+   background, no backdrop blur, no shadow (without this, the backdrop-filter
+   left a ghost rounded rectangle over the dashboard even though the background
+   colour was already transparent). The BORDER is deliberately NOT neutralized
+   here any more: its own alpha is governed by --widget-border-op
+   (borderOpacity), so a « frame only, invisible fill » widget stays legible and
+   `borderOpacity: 0` is the way to remove the frame.
 
    SPECIFICITY (measured bug fix): the glass rule below is
    `body[data-bg-active] .grid-stack-item-content` → (0,2,1). The plain
@@ -1039,7 +1046,6 @@ body.bg-to-view #homy-bg-layer {
 .grid-stack-item-content[data-surface-off],
 body[data-bg-active] .grid-stack-item-content[data-surface-off] {
   background: transparent;
-  border-color: transparent;
   box-shadow: none;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -1213,9 +1219,11 @@ body[data-bg-active] .grid-stack-item-content {
    CSS custom properties set inline by applyTileSurface() (elements/button.js):
      --tile-surface-color  explicit background (fallback: theme elevation)
      --tile-surface-op     background opacity 0..100 % (fallback 100 %)
-     --tile-surface-inset  margin INSIDE the grid cell (fallback 0) — two
-                           adjacent tiles get a regular 2×inset separation
      --tile-surface-radius 8px (rounded) | 0px (square)
+   The tile MARGIN (the regular gap around every tile) is driven by the
+   GROUP-level setting config.tileInset, published once as the inherited
+   `--group-tile-inset` var by elements/group.js — a residual per-tile
+   `--tile-surface-inset` is deliberately ignored.
    Defaults reproduce the historical look EXACTLY (opaque theme surface, 8px
    radius, no margin), so a button without these options is unchanged. */
 .group-tile {
@@ -1225,7 +1233,7 @@ body[data-bg-active] .grid-stack-item-content {
   min-width: 0;
   min-height: 0;
   padding: 3px;
-  margin: var(--tile-surface-inset, 0px);
+  margin: var(--group-tile-inset, 0px);
   border-radius: var(--tile-surface-radius, 8px);
   border: 1px solid var(--border);
   background: color-mix(in srgb,

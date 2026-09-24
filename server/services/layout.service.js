@@ -85,6 +85,16 @@ const GROUP_ZOOM_MAX = 3;
 const GROUP_ZOOM_DEFAULT = 1;
 const GROUP_ZOOM_STEP = 0.05;
 
+// Per-group TILE INSET (px): the ONE regular gap kept around every tile inside
+// the group frame. Promoted from the former per-tile `surfaceInset` option so
+// the whole trame spacing is homogeneous. MUST stay in sync with TILE_INSET_*
+// in public/js/elements/group.js and the `tileInset` field of the group
+// settingsSchema (mirrored in server/routes/widgets.routes.js — enforced by
+// scripts/check-schema-sync.mjs).
+const TILE_INSET_MIN = 0;
+const TILE_INSET_MAX = 8;
+const TILE_INSET_DEFAULT = 4;
+
 /**
  * Tolerant group `zoom` coercion: a finite number inside [0.5, 3] (snapped to
  * the 0.05 step) is kept; anything missing, non-numeric or out of range (e.g.
@@ -96,6 +106,20 @@ export function normalizeGroupZoom(raw) {
   if (!Number.isFinite(n) || n < GROUP_ZOOM_MIN || n > GROUP_ZOOM_MAX) return GROUP_ZOOM_DEFAULT;
   const stepped = Math.round(n / GROUP_ZOOM_STEP) * GROUP_ZOOM_STEP;
   return Number(Math.min(GROUP_ZOOM_MAX, Math.max(GROUP_ZOOM_MIN, stepped)).toFixed(2));
+}
+
+/**
+ * Tolerant group `tileInset` coercion: an integer px value inside [0, 8] is
+ * kept; anything missing, non-numeric or out of range (e.g. 99, -1 or "abc")
+ * falls back to the 4 px default — a stale / hand-edited config can never
+ * collapse or distort the trame. Mirrors normalizeTileInset() in
+ * public/js/elements/group.js.
+ */
+export function normalizeTileInset(raw) {
+  if (raw === null || raw === undefined) return TILE_INSET_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < TILE_INSET_MIN || n > TILE_INSET_MAX) return TILE_INSET_DEFAULT;
+  return Math.round(n);
 }
 
 export class LayoutService {
@@ -312,6 +336,7 @@ export class LayoutService {
         if (entry.type === 'group') {
           entry.config.titleVisibility = normalizeTitleVisibility(entry.config.titleVisibility);
           entry.config.zoom = normalizeGroupZoom(entry.config.zoom);
+          entry.config.tileInset = normalizeTileInset(entry.config.tileInset);
         }
         this._persist();
         return entry;
@@ -413,8 +438,9 @@ function clampColumns(value, fallback) {
 
 /**
  * Group config normalization on load/write: the `titleVisibility` key is
- * coerced to one of always|hover|never (unknown/missing → always) and `zoom`
- * to a finite number in [0.5, 3] (unknown/out-of-range → 1). Every other
+ * coerced to one of always|hover|never (unknown/missing → always), `zoom`
+ * to a finite number in [0.5, 3] (unknown/out-of-range → 1) and `tileInset`
+ * to an integer px value in [0, 8] (unknown/out-of-range → 4). Every other
  * config key passes through untouched (tolerance: never drops user data).
  */
 export function normalizeGroupConfig(config) {
@@ -423,6 +449,7 @@ export function normalizeGroupConfig(config) {
     ...c,
     titleVisibility: normalizeTitleVisibility(c.titleVisibility),
     zoom: normalizeGroupZoom(c.zoom),
+    tileInset: normalizeTileInset(c.tileInset),
   };
 }
 

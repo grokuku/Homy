@@ -8,8 +8,6 @@ import {
   normalizeSurfaceColor,
   SURFACE_OPACITY_MIN,
   SURFACE_OPACITY_MAX,
-  SURFACE_INSET_MIN,
-  SURFACE_INSET_MAX,
   SURFACE_SHAPES,
 } from './button.js';
 import {
@@ -83,6 +81,18 @@ const GROUP_ZOOM_STEP = 0.05;
 // Ctrl+drag sensitivity: how many px of (horizontal) travel change the zoom by
 // 1.0. 200px ≈ the full 0.5→3 sweep, fine enough for a live, precise feel.
 const GROUP_ZOOM_PX_PER_UNIT = 200;
+// Per-group TILE INSET (px): the ONE regular gap kept around EVERY tile of the
+// group, promoted from the former per-tile `surfaceInset` option so the whole
+// trame spacing is homogeneous. The frame↔tile gap equals this value; two
+// ADJACENT tiles (each carrying the margin) therefore get 2× it. Computed ONCE
+// per group and published through the inherited CSS var `--group-tile-inset`
+// (see style.css); a tile's residual `surfaceInset` option is ignored. Range /
+// default MUST stay in sync with TILE_INSET_* in server/services/layout.service.js
+// and the `tileInset` settingsSchema field (server/routes/widgets.routes.js —
+// enforced by scripts/check-schema-sync.mjs).
+const TILE_INSET_MIN = 0;
+const TILE_INSET_MAX = 8;
+const TILE_INSET_DEFAULT = 4;
 const ADD_DEFAULT_OPTIONS = {
   icon: true,
   label: true,
@@ -94,7 +104,6 @@ const ADD_DEFAULT_OPTIONS = {
   labelPosition: 'bottom',
   allowIconOverflow: false,
   surfaceOpacity: 100,
-  surfaceInset: 0,
   surfaceShape: 'rounded',
   surfaceColor: '',
 };
@@ -134,6 +143,17 @@ export const group = {
         unit: '\u00d7',
         help: 'Uniform scale of the group content (tiles + grid), keeping tiles square. Also adjustable with Ctrl+drag on the group in edit mode; Ctrl+double-click resets to 1.',
       },
+      {
+        key: 'tileInset',
+        label: 'Tile inset',
+        type: 'range',
+        default: 4,
+        min: 0,
+        max: 8,
+        step: 1,
+        unit: 'px',
+        help: 'Regular gap kept around every tile inside the frame (frame-to-tile spacing and between adjacent tiles). Applied to all tiles of the group.',
+      },
     ],
   },
 
@@ -152,6 +172,15 @@ export const group = {
     // NOT rendered at all, so no title can appear in VIEW as well as EDIT.
     const titleVisibility = normalizeTitleVisibility(config?.titleVisibility);
     container.dataset.titleVisibility = titleVisibility;
+
+    // ---- per-group TILE INSET -----------------------------------------------
+    // ONE value shared by every tile, published through the inherited CSS var
+    // consumed by `.group-tile` (margin, see style.css). The former PER-TILE
+    // `surfaceInset` option is no longer applied (a residual value on a stored
+    // button is tolerated and ignored — the group value always wins).
+    const tileInset = normalizeTileInset(config?.tileInset);
+    container.style.setProperty('--group-tile-inset', `${tileInset}px`);
+    const applyButtonMetrics = (tile, button, stepPx) => applyTileMetrics(tile, button, stepPx, tileInset);
 
     // ---- floating TITLE chip (overlay, pointer-events:none) ----------------
     // The chip reserves NO space: it is absolutely positioned and `.group-board`
@@ -259,7 +288,7 @@ export const group = {
       tileEls.clear();
       for (const button of buttons) {
         const element = catalog.get(button.elementId);
-        const { el: tile, dispose } = renderButtonTile({ button, element, step });
+        const { el: tile, dispose } = renderButtonTile({ button, element, step, inset: tileInset });
         tileDisposers.add(dispose);
         tileEls.set(button.id, tile);
         if (editable) decorateTile(tile, button);
@@ -446,7 +475,7 @@ export const group = {
 
       const resize = el('div', 'tile-resize', null, { title: 'Resize', 'aria-hidden': 'true' });
       resize.addEventListener('mousedown', (e) =>
-        startResize(e, tile, button, allTiles(), applyTileMetrics, {
+        startResize(e, tile, button, allTiles(), applyButtonMetrics, {
           minW: Math.max(2, minSizeForVariant(button.options).min.w),
           minH: Math.max(2, minSizeForVariant(button.options).min.h),
           maxW: MAX_TILE_CELLS,
@@ -480,7 +509,7 @@ export const group = {
         (e) => {
           if (e.button !== 0) return;
           if (e.target.closest('button, input, select, textarea, .tile-resize, .tile-edit-controls')) return;
-          startMove(e, tile, button, allTiles(), applyTileMetrics, {
+          startMove(e, tile, button, allTiles(), applyButtonMetrics, {
             // A mousedown that does NOT move is a SELECTION click; Ctrl/Cmd toggles
             // the tile in/out of the selection. A real move keeps the drag path.
             onClick: () => toggleSelect(button, e.ctrlKey || e.metaKey),
@@ -672,7 +701,7 @@ export const group = {
       for (const b of list) {
         b.options[key] = value;
         const tile = tileEls.get(b.id);
-        if (tile) applyTileMetrics(tile, b, step);
+        if (tile) applyButtonMetrics(tile, b, step);
       }
       persist();
     }
@@ -743,7 +772,7 @@ export const group = {
       if (shape === undefined) shapeField.appendChild(el('span', 'sel-mixed', 'mixed'));
       bar.appendChild(shapeField);
 
-      // Opacity + inset.
+      // Opacity (Inset is now a GROUP-level setting — see config.tileInset).
       bar.appendChild(
         buildBarRange({
           label: 'Opacity',
@@ -752,16 +781,6 @@ export const group = {
           max: SURFACE_OPACITY_MAX,
           step: 1,
           unit: '%',
-        })
-      );
-      bar.appendChild(
-        buildBarRange({
-          label: 'Inset',
-          key: 'surfaceInset',
-          min: SURFACE_INSET_MIN,
-          max: SURFACE_INSET_MAX,
-          step: 1,
-          unit: 'px',
         })
       );
 
@@ -819,7 +838,7 @@ export const group = {
         const tile = children[i];
         const obj = list[i];
         if (!tile || !obj) continue;
-        if ('options' in obj) applyTileMetrics(tile, obj, step);
+        if ('options' in obj) applyButtonMetrics(tile, obj, step);
         else applyReportMetrics(tile, obj, step);
       }
     };
@@ -1065,6 +1084,7 @@ export const group = {
       dragCleanup?.();
       zoomCleanup?.();
       hideZoomBadge();
+      container.style.removeProperty('--group-tile-inset');
       if (selectionKeyHandler) document.removeEventListener('keydown', selectionKeyHandler);
       selectionBar?.remove();
       selectionBar = null;
@@ -1128,6 +1148,19 @@ function clampZoom(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return GROUP_ZOOM_DEFAULT;
   return snapZoom(Math.min(GROUP_ZOOM_MAX, Math.max(GROUP_ZOOM_MIN, n)));
+}
+
+/**
+ * Tolerant group tile-inset coercion (mirror of the server): an integer px
+ * value inside [0, 8] is kept; anything missing, non-numeric or out of range
+ * (e.g. 99 or "abc") falls back to the 4 px default so a stale/hand-edited
+ * config never collapses the trame or distorts it.
+ */
+function normalizeTileInset(raw) {
+  if (raw === null || raw === undefined) return TILE_INSET_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < TILE_INSET_MIN || n > TILE_INSET_MAX) return TILE_INSET_DEFAULT;
+  return Math.round(n);
 }
 
 /** Snap to the 0.05 zoom step, clamped to the range, rounded to 2 decimals. */

@@ -8,6 +8,7 @@ import {
   PAGE_NAME_MAX,
   normalizeGroupConfig,
   normalizeGroupZoom,
+  normalizeTileInset,
 } from '../services/layout.service.js';
 import { WIDGET_MANIFEST_FINAL } from './widgets.routes.js';
 
@@ -366,13 +367,15 @@ function sanitizeItem(item) {
 
   if (isGroup) {
     // Tolerant config normalization (the WRITE path): titleVisibility is
-    // coerced to always|hover|never (unknown → always) and zoom to a finite
-    // number in [0.5, 3] (invalid / out-of-range → 1) so a hand-edited or
-    // stale config can never persist an unhandled value. Other keys pass
-    // through. normalizeGroupConfig already covers both; the explicit zoom
-    // call documents the write-side contract and stays idempotent.
+    // coerced to always|hover|never (unknown → always), zoom to a finite
+    // number in [0.5, 3] and tileInset to an integer px value in [0, 8]
+    // (invalid / out-of-range → 4) so a hand-edited or stale config can never
+    // persist an unhandled value. Other keys pass through. normalizeGroupConfig
+    // already covers all three; the explicit calls document the write-side
+    // contract and stay idempotent.
     clean.config = normalizeGroupConfig(clean.config);
     clean.config.zoom = normalizeGroupZoom(clean.config.zoom);
+    clean.config.tileInset = normalizeTileInset(clean.config.tileInset);
     const { error, buttons } = sanitizeButtons(item.buttons);
     if (error) return { error };
     clean.buttons = buttons;

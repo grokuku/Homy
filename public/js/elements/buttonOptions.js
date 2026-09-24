@@ -12,8 +12,6 @@ import {
   LABEL_POSITIONS,
   SURFACE_OPACITY_MIN,
   SURFACE_OPACITY_MAX,
-  SURFACE_INSET_MIN,
-  SURFACE_INSET_MAX,
   SURFACE_SHAPES,
   buildIconNode,
 } from './button.js';
@@ -395,10 +393,11 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
   }
 
   /**
-   * PER-TILE SURFACE group: background colour (+ « Theme » reset), opacity,
-   * inset (the retrait that lets two tiles sit side by side with a regular
-   * gap) and shape (rounded | square). Every control applies LIVE through
-   * onUpdate, exactly like the other option controls.
+   * PER-TILE SURFACE group: background colour (+ « Theme » reset), opacity and
+   * shape (rounded | square). Every control applies LIVE through onUpdate,
+   * exactly like the other option controls. The tile INSET is no longer a
+   * per-tile option — it is a GROUP-level setting (config.tileInset) rendered
+   * by the group's own config modal.
    */
   function buildSurfaceGroup() {
     const o = work.options;
@@ -438,16 +437,6 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
         max: SURFACE_OPACITY_MAX,
         step: 1,
         unit: '%',
-      })
-    );
-    group.appendChild(
-      buildRangeRow({
-        label: 'Inset',
-        key: 'surfaceInset',
-        min: SURFACE_INSET_MIN,
-        max: SURFACE_INSET_MAX,
-        step: 1,
-        unit: 'px',
       })
     );
 

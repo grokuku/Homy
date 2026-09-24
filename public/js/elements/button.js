@@ -68,8 +68,10 @@ export const LABEL_POSITION_DEFAULT = 'bottom';
 // Per-tile SURFACE options — the tile's own background box (independent from
 // the widget-level appearance applied to the whole group container).
 //   - surfaceOpacity : 0..100 (%) opacity of the tile background;
-//   - surfaceInset   : 0..8 px margin of the surface INSIDE its cell — two
-//                      adjacent tiles get a regular 2×inset separation;
+//   - surfaceInset   : DEPRECATED (kept only for back-compat coercion) — the
+//                      regular gap around tiles is now a GROUP setting
+//                      (config.tileInset, see elements/group.js); a residual
+//                      per-tile value is tolerated but ignored at render time;
 //   - surfaceShape   : 'rounded' (default, theme radius) | 'square' (no radius);
 //   - surfaceColor   : explicit background colour ('' → theme default).
 // All are tolerant: unknown / out-of-range values fall back to the default so a
@@ -238,7 +240,7 @@ export function normalizeButton(raw) {
  * global cell). Returns the tile element (grid placement is set inline so the
  * group's CSS grid slots it at its col/row/w/h).
  */
-export function renderButtonTile({ button, element, step = 22.5 } = {}) {
+export function renderButtonTile({ button, element, step = 22.5, inset } = {}) {
   const b = normalizeButton(button);
   const o = b.options;
   const stepPx = Number.isFinite(Number(step)) && Number(step) > 0 ? Number(step) : 22.5;
@@ -269,7 +271,7 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
     'data-label-pos': o.labelPosition,
     'data-element-id': b.elementId,
   });
-  applyTileMetrics(root, b, stepPx);
+  applyTileMetrics(root, b, stepPx, inset);
   if (o.allowIconOverflow) root.classList.add('allow-overflow');
 
   const target = dockyTargetOf(def);
@@ -436,8 +438,13 @@ export function renderButtonTile({ button, element, step = 22.5 } = {}) {
  * so a tile dragged or resized by half a global cell keeps its icon correctly
  * re-fitted instead of keeping the icon size computed for its old footprint.
  * Never throws; `step` is the group's internal cell size in px.
+ *
+ * `insetPx` is the GROUP-level tile inset (config.tileInset) — the surface
+ * margin is no longer a per-tile option, so the group passes its single value
+ * here. When omitted (a legacy caller) the tile's residual `surfaceInset`
+ * option is used, so nothing regresses.
  */
-export function applyTileMetrics(tileEl, rawButton, step = 22.5) {
+export function applyTileMetrics(tileEl, rawButton, step = 22.5, insetPx) {
   if (!tileEl) return;
   const b = normalizeButton(rawButton);
   const o = b.options;
@@ -452,7 +459,7 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5) {
     hasControls: o.controls,
     labelPosition: o.labelPosition,
     iconSize: o.iconSize,
-    surfaceInset: o.surfaceInset,
+    surfaceInset: insetPx === undefined ? o.surfaceInset : insetPx,
   });
   tileEl.style.gridColumn = `${b.col + 1} / span ${b.w}`;
   tileEl.style.gridRow = `${b.row + 1} / span ${b.h}`;
@@ -469,8 +476,12 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5) {
  *
  *   --tile-surface-color   explicit background (removed → theme default)
  *   --tile-surface-op      background opacity, 0..100 %
- *   --tile-surface-inset   margin of the surface inside its cell, in px
  *   --tile-surface-radius  8px (rounded) | 0px (square)
+ *
+ * The surface MARGIN (inset) is NOT set here any more: it is a GROUP-level
+ * setting (config.tileInset) published once as the inherited `--group-tile-inset`
+ * by elements/group.js. A residual per-tile `surfaceInset` option is normalized
+ * for back-compat but deliberately ignored at render time.
  *
  * At opacity 0 the `data-surface-off` attribute neutralizes the residual
  * border / shadow / backdrop-filter (same contract as the widget appearance)
@@ -483,13 +494,14 @@ export function applyTileSurface(tileEl, options) {
   if (o.surfaceColor) tileEl.style.setProperty('--tile-surface-color', o.surfaceColor);
   else tileEl.style.removeProperty('--tile-surface-color');
   tileEl.style.setProperty('--tile-surface-op', `${o.surfaceOpacity}%`);
-  tileEl.style.setProperty('--tile-surface-inset', `${o.surfaceInset}px`);
+  // Clear any inset left by a previous build (now group-driven).
+  tileEl.style.removeProperty('--tile-surface-inset');
   tileEl.style.setProperty('--tile-surface-radius', o.surfaceShape === 'square' ? '0px' : '8px');
   if (o.surfaceOpacity === 0) tileEl.dataset.surfaceOff = '';
   else delete tileEl.dataset.surfaceOff;
   tileEl.dataset.surfaceShape = o.surfaceShape;
   tileEl.dataset.surfaceOpacity = String(o.surfaceOpacity);
-  tileEl.dataset.surfaceInset = String(o.surfaceInset);
+  delete tileEl.dataset.surfaceInset;
 }
 
 // ---- pieces -----------------------------------------------------------------
