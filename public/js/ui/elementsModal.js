@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { toast } from './toast.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
 import { catalog } from '../elements/catalog.js';
-import { buildIconNode } from '../elements/button.js';
+import { buildIconNode, normalizeSurfaceColor } from '../elements/button.js';
 import { buildField, collect } from './settingsModal.js';
 import { openIconsPicker } from './iconsPicker.js';
 import { buildDockyTargetField } from './dockyTarget.js';
@@ -48,6 +48,11 @@ import { buildDockyTargetField } from './dockyTarget.js';
 
 const MAX_ELEMENTS = 200; // MUST mirror MAX_ELEMENTS in server/services/elements.service.js
 const CONFIRM_MS = 3000; // 2-step delete: window before the arm reverts
+
+// Neutral swatch shown by a colour input while the value is « inherited » (the
+// <input type=color> always carries a concrete colour; `cleared` records the
+// theme-default state). Same value as the tile surfaces' fallback.
+const SWATCH_FALLBACK = '#3a4150';
 
 // MUST mirror API_KEY_SENTINEL in server/services/reports.service.js. The form
 // sends this in place of `apiKey` when the user edits an element whose key is
@@ -440,6 +445,8 @@ export function openElementsModal() {
     row.dataset.id = item.id;
 
     const iconBox = el('div', 'elements-icon-box elements-row-icon');
+    const rowColor = normalizeSurfaceColor(item.iconColor);
+    if (rowColor) iconBox.style.color = rowColor;
     iconBox.appendChild(buildIconNode(item.icon, item.name));
 
     const main = el('div', 'elements-row-main');
@@ -565,19 +572,64 @@ export function openElementFormModal(element, onSaved) {
   }
   controls.name.input.setAttribute('data-holaf-autofocus', '1');
 
-  // Live icon preview, rendered with the SAME node a tile uses.
+  // ---- Icon colour (ELEMENT-level, shared by EVERY tile) --------------------
+  // '' = inherited / theme default. `cleared` remembers the « Theme » reset so
+  // the field can round-trip an empty value even though <input type=color>
+  // always carries a concrete swatch. Only monochrome / currentColor glyphs
+  // follow it; multicolour / raster / emoji icons keep their own colours.
+  let iconColorCleared = !normalizeSurfaceColor(element?.iconColor);
+  const iconColorInput = el('input', 'opt-surface-color', null, {
+    type: 'color',
+    'aria-label': 'Icon color',
+    title: 'Icon color (monochrome icons only)',
+  });
+  iconColorInput.value = normalizeSurfaceColor(element?.iconColor) || SWATCH_FALLBACK;
+  const iconColorRow = el('div', 'color-field');
+  const iconColorThemeBtn = el('button', 'btn', 'Theme', {
+    type: 'button',
+    title: 'Use the theme default icon color',
+  });
+  iconColorRow.append(iconColorInput, iconColorThemeBtn);
+  const iconColorField = el('div', 'field');
+  iconColorField.appendChild(el('span', 'field-label', 'Icon color'));
+  iconColorField.appendChild(iconColorRow);
+  iconColorField.appendChild(
+    el(
+      'small',
+      'field-help',
+      'Colour of this element\u2019s icon on every tile (monochrome / currentColor icons only). \u201cTheme\u201d restores the default.'
+    )
+  );
+
+  // Live icon preview, rendered with the SAME node a tile uses, reflecting the
+  // chosen element colour.
   const previewBox = el('div', 'elements-icon-box elements-icon-preview');
-  const renderPreview = () =>
+  const applyPreviewColor = () => {
+    const color = iconColorCleared ? '' : normalizeSurfaceColor(iconColorInput.value);
+    previewBox.style.color = color || '';
+  };
+  const renderPreview = () => {
     previewBox.replaceChildren(
       buildIconNode(controls.icon.input.value.trim(), controls.name.input.value.trim())
     );
+    applyPreviewColor();
+  };
   renderPreview();
   const previewField = el('div', 'field');
   previewField.appendChild(el('span', 'field-label', 'Icon preview'));
   previewField.appendChild(previewBox);
-  controls.icon.input.closest('.field').after(previewField);
+  controls.icon.input.closest('.field').after(previewField, iconColorField);
   controls.icon.input.addEventListener('input', renderPreview);
   controls.name.input.addEventListener('input', renderPreview);
+  iconColorInput.addEventListener('input', () => {
+    iconColorCleared = false;
+    applyPreviewColor();
+  });
+  iconColorThemeBtn.addEventListener('click', () => {
+    iconColorCleared = true;
+    iconColorInput.value = SWATCH_FALLBACK;
+    applyPreviewColor();
+  });
 
   // « Browse icons » opens the lot-7 icon library picker; picking OR installing
   // an icon fills this field with `local:<slug>` and refreshes the preview.
@@ -640,6 +692,7 @@ export function openElementFormModal(element, onSaved) {
     const payload = {
       name: v.name,
       icon: v.icon || '',
+      iconColor: iconColorCleared ? '' : normalizeSurfaceColor(iconColorInput.value),
       url: v.url || '',
       description: v.description || '',
       healthCheck: healthResult.healthCheck,

@@ -171,12 +171,9 @@ export function normalizeOptions(raw) {
     surfaceInset: normalizeSurfaceInset(o.surfaceInset),
     surfaceShape: normalizeSurfaceShape(o.surfaceShape),
     surfaceColor: normalizeSurfaceColor(o.surfaceColor),
-    // Per-tile ICON colour ('' = inherited / theme default). Validated with the
-    // same SAFE single-property coercion as surfaceColor, so a hand-edited
-    // config can never smuggle a second declaration. Only monochrome /
-    // `currentColor` glyphs are recoloured (multicolour raster icons keep their
-    // own colours) — documented limitation.
-    iconColor: normalizeSurfaceColor(o.iconColor),
+    // NB: the icon colour is an ELEMENT-level setting now (element.iconColor,
+    // see elementsModal.js). A residual per-tile `iconColor` option is dropped
+    // here (tolerated: ignored at render time, never a crash).
   };
 }
 
@@ -246,7 +243,7 @@ export function normalizeButton(raw) {
  * global cell). Returns the tile element (grid placement is set inline so the
  * group's CSS grid slots it at its col/row/w/h).
  */
-export function renderButtonTile({ button, element, step = 22.5, inset } = {}) {
+export function renderButtonTile({ button, element, step = 22.5, inset, editable = false } = {}) {
   const b = normalizeButton(button);
   const o = b.options;
   const stepPx = Number.isFinite(Number(step)) && Number(step) > 0 ? Number(step) : 22.5;
@@ -254,6 +251,10 @@ export function renderButtonTile({ button, element, step = 22.5, inset } = {}) {
   const name = def ? String(def.name || '') : b.elementId ? 'Unknown element' : '';
   const iconValue = def ? String(def.icon || '') : '';
   const url = def && isValidHttpUrl(def.url) ? def.url : null;
+  // ELEMENT-level icon colour (shared by EVERY tile of this element). '' = the
+  // theme default (`var(--text)`); only monochrome / `currentColor` glyphs are
+  // recoloured (multicolour/emoji/raster icons keep their own colours).
+  const elementIconColor = def ? normalizeSurfaceColor(def.iconColor) : '';
 
   const hasIcon = o.icon && !!iconValue;
   const hasLabel = o.label && !!name;
@@ -278,6 +279,7 @@ export function renderButtonTile({ button, element, step = 22.5, inset } = {}) {
     'data-element-id': b.elementId,
   });
   applyTileMetrics(root, b, stepPx, inset);
+  if (elementIconColor) root.style.setProperty('--tile-icon-color', elementIconColor);
   if (o.allowIconOverflow) root.classList.add('allow-overflow');
 
   const target = dockyTargetOf(def);
@@ -321,12 +323,21 @@ export function renderButtonTile({ button, element, step = 22.5, inset } = {}) {
   };
 
   // ---- main zone (the `shortcut` clickable area wraps the visible content) ---
+  // The tile's clickable zone is a real <a href> WITHOUT `target` in VIEW: a
+  // LEFT click follows it in the CURRENT tab (right click = new tab, see
+  // wireViewNavigation). In EDIT mode the group's capture-phase guard neutralizes
+  // the navigation (selection/drag win), so this stays inert there.
+  let linkEl = null;
   if (hasContent) {
     const clickable = o.shortcut && url;
-    const main = clickable
-      ? el('a', 'tile-main', null, { href: url, target: '_blank', rel: 'noopener noreferrer' })
-      : el('div', 'tile-main');
-    if (!clickable) main.classList.add('tile-main-static');
+    let main;
+    if (clickable) {
+      linkEl = el('a', 'tile-main', null, { href: url, rel: 'noopener noreferrer' });
+      main = linkEl;
+    } else {
+      main = el('div', 'tile-main');
+      main.classList.add('tile-main-static');
+    }
 
     // Icon + label are wrapped in a `.tile-core` box so the LABEL POSITION
     // (bottom/top/left/right) can flip their axis WITHOUT moving the sibling
@@ -353,15 +364,17 @@ export function renderButtonTile({ button, element, step = 22.5, inset } = {}) {
     root.appendChild(main);
   } else if (o.shortcut && url) {
     // Nothing to display but shortcut is on: keep a clickable (empty) zone.
-    root.appendChild(
-      el('a', 'tile-main tile-main-empty', null, {
-        href: url,
-        target: '_blank',
-        rel: 'noopener noreferrer',
-        'aria-label': name || 'Open link',
-      })
-    );
+    linkEl = el('a', 'tile-main tile-main-empty', null, {
+      href: url,
+      rel: 'noopener noreferrer',
+      'aria-label': name || 'Open link',
+    });
+    root.appendChild(linkEl);
   }
+
+  // VIEW-mode navigation contract (LEFT = current tab, RIGHT = new tab, MIDDLE
+  // = native new tab, Enter/Space = LEFT). EDIT mode wires nothing here.
+  wireViewNavigation(root, linkEl, url, editable);
 
   // ---- controls zone (second clickable area — live start/stop/restart) ------
   if (hasControls) {
@@ -439,6 +452,37 @@ export function renderButtonTile({ button, element, step = 22.5, inset } = {}) {
 }
 
 /**
+ * Wire the VIEW-mode navigation of a button tile. Contract:
+ *   - LEFT click   → the <a href> (no `target`) follows the url in the CURRENT
+ *                    tab (native browser behavior);
+ *   - RIGHT click  → opens the url in a NEW tab AND suppresses the native
+ *                    context menu on the whole tile (except its controls zone);
+ *   - MIDDLE click → kept NATIVE (browsers already open a new tab);
+ *   - Enter / Space on the focused link → identical to a LEFT click (current
+ *                    tab; Space does not activate a link by default).
+ * In EDIT mode nothing is wired: the group's capture-phase guard owns the
+ * pointer (selection/drag) and the native context menu is left untouched.
+ * A tile whose element has NO url attaches nothing (no navigation, no menu
+ * hijack — the degraded state stays inert).
+ */
+function wireViewNavigation(root, linkEl, url, editable) {
+  if (editable || !url) return;
+  root.addEventListener('contextmenu', (e) => {
+    // Never hijack the controls (start/stop/restart) zone's own context menu.
+    if (e.target && e.target.closest && e.target.closest('.tile-controls')) return;
+    e.preventDefault();
+    window.open(url, '_blank', 'noopener');
+  });
+  if (!linkEl) return;
+  linkEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      linkEl.click();
+    }
+  });
+}
+
+/**
  * Apply a button's LIVE grid geometry + icon metrics to an already-built tile.
  * Shared by renderButtonTile (initial paint) and lot 4's in-trame move/resize,
  * so a tile dragged or resized by half a global cell keeps its icon correctly
@@ -489,6 +533,10 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5, insetPx) {
  * by elements/group.js. A residual per-tile `surfaceInset` option is normalized
  * for back-compat but deliberately ignored at render time.
  *
+ * The ICON colour is NO LONGER a per-tile option: it is an ELEMENT-level setting
+ * (element.iconColor) applied ONCE by renderButtonTile, so this live editor
+ * never touches `--tile-icon-color`.
+ *
  * At opacity 0 the `data-surface-off` attribute neutralizes the residual
  * border / shadow / backdrop-filter (same contract as the widget appearance)
  * so the surface becomes PERFECTLY invisible. Shared by the initial paint, the
@@ -503,11 +551,6 @@ export function applyTileSurface(tileEl, options) {
   // Clear any inset left by a previous build (now group-driven).
   tileEl.style.removeProperty('--tile-surface-inset');
   tileEl.style.setProperty('--tile-surface-radius', o.surfaceShape === 'square' ? '0px' : '8px');
-  // Per-tile ICON colour: consumed by `.tile-icon` (color: var(--tile-icon-color,
-  // inherit)); the inline monochrome SVGs use `currentColor`, so they follow it.
-  // A multicolour / raster icon keeps its own colours (unaffected).
-  if (o.iconColor) tileEl.style.setProperty('--tile-icon-color', o.iconColor);
-  else tileEl.style.removeProperty('--tile-icon-color');
   if (o.surfaceOpacity === 0) tileEl.dataset.surfaceOff = '';
   else delete tileEl.dataset.surfaceOff;
   tileEl.dataset.surfaceShape = o.surfaceShape;

@@ -537,9 +537,10 @@ function normOptions(raw) {
     surfaceInset: normSurfaceInset(o.surfaceInset),
     surfaceShape: SURFACE_SHAPES.has(o.surfaceShape) ? o.surfaceShape : SURFACE_SHAPE_DEFAULT,
     surfaceColor: normSurfaceColor(o.surfaceColor),
-    // Per-tile icon colour ('' = inherited / theme default), same safe
-    // single-property coercion as surfaceColor (invalid → '').
-    iconColor: normSurfaceColor(o.iconColor),
+    // NB: a residual per-tile `iconColor` option (from the former per-tile icon
+    // colour) is deliberately NOT carried over any more: the icon colour is now
+    // an ELEMENT-level setting (element.iconColor). The unknown key is dropped
+    // on load/save (tolerated, never a crash, PUT stays 200).
   };
 }
 

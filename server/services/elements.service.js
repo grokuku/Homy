@@ -24,6 +24,10 @@ import {
  *   - name         trimmed, 1..60 chars, required;
  *   - icon         string ≤ 256 chars, empty allowed (emoji / `holaf:<name>` /
  *                  http(s) URL / future `local:<slug>`);
+ *   - iconColor    '' (theme default) or a plausible, SAFE single-property CSS
+ *                  colour recolorable on monochrome/`currentColor` glyphs. A
+ *                  value with `;`, quotes or `url(` is rejected/normalized to ''
+ *                  so it can never smuggle a second declaration;
  *   - url          empty, or a valid http/https URL;
  *   - healthUrl    null or a valid http/https URL (custom health pill source);
  *                  only meaningful when `healthCheck` is true (see
@@ -51,6 +55,7 @@ export const ELEMENTS_VERSION = 1;
 export const MAX_ELEMENTS = 200;
 export const ELEMENT_NAME_MAX = 60;
 export const ELEMENT_ICON_MAX = 256;
+export const ELEMENT_ICON_COLOR_MAX = 64;
 export const ELEMENT_URL_MAX = 2048;
 export const ELEMENT_HEALTH_URL_MAX = 2048;
 export const ELEMENT_DESCRIPTION_MAX = 300;
@@ -199,6 +204,16 @@ function validateFields(input, { partial, existing = null }) {
       out.icon = icon;
     }
   } else if (!partial) out.icon = '';
+
+  // iconColor — '' (theme default) or a plausible, SAFE single-property CSS
+  // colour. The regex only accepts hex / rgb()/hsl() functional / a named
+  // colour, so a semicolon, a quote or `url(` can NEVER smuggle a second
+  // declaration; anything unusable degrades to '' (never a 400).
+  if (has('iconColor')) {
+    if (input.iconColor === null) out.iconColor = '';
+    else if (typeof input.iconColor !== 'string') throw new ElementsValidationError('iconColor must be a string');
+    else out.iconColor = normalizeIconColor(input.iconColor);
+  } else if (!partial) out.iconColor = '';
 
   // url — empty or a valid http/https URL.
   if (has('url')) {
@@ -357,6 +372,24 @@ function validateDockyPart(value, max, field) {
   return trimmed;
 }
 
+/**
+ * Tolerant, SAFE coercion of an element icon colour: '' (theme default / any
+ * unusable value) or a plausible single-property CSS colour. The accepted
+ * charset rejects `;`, quotes and `url(` so a hand-edited elements.json can
+ * never inject a second declaration through style.setProperty. Shared by the
+ * write path (validateFields) AND the tolerant load path (coerceStored).
+ */
+export function normalizeIconColor(raw) {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s || s.length > ELEMENT_ICON_COLOR_MAX) return '';
+  return ICON_COLOR_RE.test(s) ? s : '';
+}
+
+// Safe, single-property colour value (hex / rgb()/hsl() functional / named).
+// MUST stay in sync with normalizeSurfaceColor in the front-end
+// (public/js/elements/button.js) and server/routes/layout.routes.js.
+const ICON_COLOR_RE = /^(#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\([0-9a-zA-Z.,%\s/]+\)|[a-zA-Z]{3,20})$/;
+
 function isHttpUrl(value) {
   try {
     const url = new URL(value);
@@ -378,6 +411,7 @@ function coerceStored(raw) {
     id: typeof raw.id === 'string' && raw.id ? raw.id : randomUUID(),
     name,
     icon: typeof raw.icon === 'string' ? raw.icon.trim().slice(0, ELEMENT_ICON_MAX) : '',
+    iconColor: normalizeIconColor(raw.iconColor),
     url: typeof raw.url === 'string' ? raw.url.trim().slice(0, ELEMENT_URL_MAX) : '',
     healthUrl: coerceHealthUrl(raw.healthUrl),
     description: typeof raw.description === 'string' ? raw.description.trim().slice(0, ELEMENT_DESCRIPTION_MAX) : '',

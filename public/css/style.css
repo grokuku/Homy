@@ -1354,9 +1354,9 @@ body[data-bg-active] .grid-stack-item-content {
   font-size: var(--tile-icon-px, 24px);
   line-height: 1;
   flex: 0 1 auto;
-  /* Per-tile icon colour (button option `iconColor`, applied inline by
-     applyTileSurface as --tile-icon-color). `var(--text)` when unset keeps the
-     historical look. Only monochrome / currentColor glyphs follow it;
+  /* ELEMENT-level icon colour: `element.iconColor` is applied inline by
+     renderButtonTile as --tile-icon-color on the tile. `var(--text)` when unset
+     keeps the historical look. Only monochrome / currentColor glyphs follow it;
      multicolour / raster icons keep their own colours. */
   color: var(--tile-icon-color, var(--text));
   overflow: hidden;

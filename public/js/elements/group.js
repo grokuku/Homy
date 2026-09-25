@@ -106,8 +106,6 @@ const ADD_DEFAULT_OPTIONS = {
   surfaceOpacity: 100,
   surfaceShape: 'rounded',
   surfaceColor: '',
-  // '' = inherited / theme default icon colour.
-  iconColor: '',
 };
 
 // Human labels / swatch fallback for the multi-selection surface bar.
@@ -290,7 +288,7 @@ export const group = {
       tileEls.clear();
       for (const button of buttons) {
         const element = catalog.get(button.elementId);
-        const { el: tile, dispose } = renderButtonTile({ button, element, step, inset: tileInset });
+        const { el: tile, dispose } = renderButtonTile({ button, element, step, inset: tileInset, editable });
         tileDisposers.add(dispose);
         tileEls.set(button.id, tile);
         if (editable) decorateTile(tile, button);
@@ -754,32 +752,6 @@ export const group = {
 
       const count = selected.size;
       bar.appendChild(el('span', 'sel-count', `${count} tile${count > 1 ? 's' : ''} selected`));
-
-      // Icon colour (+ theme reset). Same « common value / mixed » contract as
-      // the surface colour below; only monochrome / currentColor glyphs follow.
-      const iconColor = commonValue('iconColor');
-      const iconColorField = el('div', 'sel-field');
-      iconColorField.appendChild(el('span', null, 'Icon color'));
-      const iconInput = el('input', null, null, {
-        type: 'color',
-        'aria-label': 'Selected tiles icon color',
-      });
-      iconInput.value = iconColor || SURFACE_SWATCH_FALLBACK;
-      iconInput.addEventListener('input', () =>
-        applyToSelection('iconColor', normalizeSurfaceColor(iconInput.value))
-      );
-      iconColorField.appendChild(iconInput);
-      const iconThemeBtn = el('button', 'btn', 'Theme', {
-        type: 'button',
-        title: 'Use the theme default icon color on all selected tiles',
-      });
-      iconThemeBtn.addEventListener('click', () => {
-        applyToSelection('iconColor', '');
-        renderSelectionBar();
-      });
-      iconColorField.appendChild(iconThemeBtn);
-      if (iconColor === undefined) iconColorField.appendChild(el('span', 'sel-mixed', 'mixed'));
-      bar.appendChild(iconColorField);
 
       // Shape.
       const shape = commonValue('surfaceShape');

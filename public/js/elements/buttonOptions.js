@@ -348,34 +348,10 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
     }
     group.appendChild(row2);
 
-    // Icon colour + a « Theme » reset (clears the explicit colour). Applies
-    // LIVE and only affects monochrome / currentColor glyphs (multicolour or
-    // raster icons keep their own colours).
-    const colorRow = el('div', 'icon-size-row');
-    colorRow.appendChild(el('span', 'opt-switch-label', 'Icon color'));
-    const color = el('input', 'opt-surface-color', null, {
-      type: 'color',
-      'aria-label': 'Icon color',
-      title: 'Icon color (monochrome icons only)',
-    });
-    color.value = work.options.iconColor || SURFACE_SWATCH_FALLBACK;
-    color.disabled = !iconOn;
-    color.addEventListener('input', () => {
-      work.options.iconColor = normalizeSurfaceColor(color.value);
-      onUpdate?.(normalizeButton(work));
-    });
-    const theme = el('button', 'btn', 'Theme', {
-      type: 'button',
-      title: 'Use the theme default icon color',
-    });
-    theme.disabled = !iconOn;
-    theme.addEventListener('click', () => {
-      work.options.iconColor = '';
-      onUpdate?.(normalizeButton(work));
-      paint();
-    });
-    colorRow.append(color, theme);
-    group.appendChild(colorRow);
+    // NB: the icon colour is NO LONGER a per-tile option — it is now an
+    // ELEMENT-level setting, edited from the « Edit element » modal (see
+    // ui/elementsModal.js). The panel intentionally exposes no icon-colour
+    // control, so there is a single source of truth.
 
     // Advanced: allow the icon to overflow its tile (default OFF).
     const overflow = el('label', 'opt-switch' + (iconOn ? '' : ' disabled'));
