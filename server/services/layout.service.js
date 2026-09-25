@@ -537,6 +537,9 @@ function normOptions(raw) {
     surfaceInset: normSurfaceInset(o.surfaceInset),
     surfaceShape: SURFACE_SHAPES.has(o.surfaceShape) ? o.surfaceShape : SURFACE_SHAPE_DEFAULT,
     surfaceColor: normSurfaceColor(o.surfaceColor),
+    // Per-tile icon colour ('' = inherited / theme default), same safe
+    // single-property coercion as surfaceColor (invalid → '').
+    iconColor: normSurfaceColor(o.iconColor),
   };
 }
 

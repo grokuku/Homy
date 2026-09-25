@@ -921,6 +921,53 @@ body { background: transparent; transition: background 0.2s; }
   }
 }
 
+/* ---------- Page switch transition (arrows slide / tab-click cross-fade) ----
+   A fixed layer clipped to the grid area hosts a two-pane track holding
+   snapshots of the outgoing and incoming pages (see main.js runPageAnim). The
+   LIVE grid is hidden while .page-anim is on so the wallpaper (not the new
+   grid) shows through the panes' transparent gaps; both pages are therefore
+   visible simultaneously during the slide without ever overlapping. The layer
+   is removed (and .page-anim cleared) at the end: no residual node/class.
+   Durations live here (read LIVE by main.js); the easing reuses --mode-ease. */
+#dashboard-view {
+  --page-slide-dur: 340ms;
+  --page-fade-dur: 220ms;
+}
+/* Hide ONLY the live grid (child of .dashboard-body) — the snapshots in the
+   layer are .grid-wrap clones OUTSIDE .dashboard-body and must stay visible. */
+#dashboard-view.page-anim .dashboard-body .grid-wrap { visibility: hidden; }
+.page-anim-layer {
+  position: fixed;
+  overflow: hidden;
+  z-index: 60;
+  pointer-events: none;
+}
+.page-anim-track {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  will-change: transform;
+}
+.page-anim-pane {
+  position: relative;
+  flex: 0 0 100%;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+/* The cloned .grid-wrap fills its pane exactly (the pane box == the measured
+   grid rect), so both snapshots render at the SAME geometry as the live grid. */
+.page-anim-pane > .grid-wrap {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+/* Cross-fade: the two panes stack in the same box and only opacity animates. */
+.page-anim-layer.fade .page-anim-track { display: block; }
+.page-anim-layer.fade .page-anim-pane { position: absolute; inset: 0; }
+
 /* ---------- Background layers (lot 3) ---------- */
 /* ONE fixed full-viewport wrapper hosts every layer: keeping the layers at
    VIEWPORT geometry in BOTH modes is what makes the VIEW↔EDIT transition
@@ -1307,7 +1354,11 @@ body[data-bg-active] .grid-stack-item-content {
   font-size: var(--tile-icon-px, 24px);
   line-height: 1;
   flex: 0 1 auto;
-  color: var(--text);
+  /* Per-tile icon colour (button option `iconColor`, applied inline by
+     applyTileSurface as --tile-icon-color). `var(--text)` when unset keeps the
+     historical look. Only monochrome / currentColor glyphs follow it;
+     multicolour / raster icons keep their own colours. */
+  color: var(--tile-icon-color, var(--text));
   overflow: hidden;
 }
 /* Advanced option « allow icon overflow »: let the icon spill instead of clip.

@@ -113,7 +113,7 @@ function buildTab(page, edit) {
       startRename(page, tab);
       return;
     }
-    hooks.onSwitch?.(page.id);
+    hooks.onSwitch?.(page.id, { via: 'click' });
   });
   return tab;
 }
@@ -136,7 +136,7 @@ function buildAddButton() {
       const res = await api.post('/api/layout/pages');
       // The new page becomes active through the standard switch flow
       // (PUT /api/layout/active returns its (empty) items + fresh page list).
-      hooks.onSwitch?.(res.id);
+      hooks.onSwitch?.(res.id, { via: 'click' });
     } catch (err) {
       toast(err.message || 'Failed to create page', 'error');
     } finally {

@@ -709,6 +709,10 @@ function setMode(mode, { animate = false } = {}) {
   // Any rebuild cancels a pending/running transition and scrubs its classes:
   // the new grid must never inherit a stale transform/fade (fast re-toggle).
   stopModeAnim();
+  // A PAGE transition is cancelled by any rebuild EXCEPT the one switchPage()
+  // runs as part of the switch itself (pageAnimPreparing): that rebuild is the
+  // page that transition is about to animate.
+  if (pageAnimActive && !pageAnimPreparing) stopPageAnim();
   state.mode = mode;
   const view = $('dashboard-view');
   // Mode state drives the topbar choreography (resting geometry + per-state
@@ -827,6 +831,215 @@ function saveLayout(items) {
     .catch((err) => toast(err.message || 'Failed to save layout', 'error'));
 }
 
+// ---- Page switch transition (keyboard slide / click cross-fade) -------------
+// A page switch REBUILDS the grid (destroyGrid → initEditor/renderViewer), so the
+// outgoing DOM is gone the moment the new page is built. To animate a transition
+// where both pages are visible at once we therefore:
+//   1. snapshot the CURRENT `#grid-wrap` (deep clone, inline styles included)
+//      BEFORE the rebuild — captured, not yet inserted, so the await stays
+//      invisible (the live DOM is unchanged until setMode runs);
+//   2. let switchPage rebuild the grid at final geometry;
+//   3. build a fixed, clipped LAYER over the grid rect holding a two-pane TRACK:
+//      [outgoing snapshot | incoming snapshot] (adjacent, never overlapping);
+//      the live grid is hidden for the duration so the wallpaper (not the new
+//      grid) shows through the panes' transparent gaps;
+//   4. translate the track (slide) or cross-fade the two stacked panes (click).
+// At the end the layer is removed and the live grid revealed — no residual node,
+// no residual class. A generation counter invalidates the cleanup timer so a fast
+// re-navigation can never leave a stale layer behind.
+//
+// DIRECTION (arrows): ArrowRight ⇒ outgoing slides LEFT while the incoming enters
+// from the RIGHT (track 0 → −100 %); ArrowLeft is the exact mirror (track −100 % → 0).
+// NOTE: the track is `inset:0` so its own box is ONE pane wide while its flex
+// content is two panes (each `flex:0 0 100%`). A translate of −100 % therefore
+// moves it by exactly one pane — a −50 % would only shift half a page and snap.
+// CLICK on a tab ⇒ opacity-only cross-fade (no translation).
+// prefers-reduced-motion ⇒ no animation at all (instant switch, no layer).
+//
+// The duration is read LIVE from the CSS tokens --page-slide-dur / --page-fade-dur
+// (like --mode-dur) so the JS cleanup timer and the CSS transition can never drift.
+const PAGE_SLIDE_DUR = 340; // ms — fallback, mirrors --page-slide-dur
+const PAGE_FADE_DUR = 220; // ms — fallback, mirrors --page-fade-dur
+
+let pageAnimId = 0; // generation counter (invalidates stale timers)
+let pageAnimTimer = 0;
+let pageAnimLayer = null; // fixed clip layer currently in the DOM
+let pageAnimActive = false; // a page transition is armed or in flight
+let pageAnimPreparing = false; // setMode() is the rebuild OF an ongoing switch
+
+/** Live transition duration (ms) for a kind ('slide' | 'fade'). */
+function pageDurMs(kind) {
+  const raw = getComputedStyle($('dashboard-view'))
+    .getPropertyValue(kind === 'fade' ? '--page-fade-dur' : '--page-slide-dur')
+    .trim();
+  const m = /^([\d.]+)ms$/.exec(raw);
+  if (m) return parseFloat(m[1]);
+  return kind === 'fade' ? PAGE_FADE_DUR : PAGE_SLIDE_DUR;
+}
+
+/**
+ * Snapshot `#grid-wrap` (deep clone) + its measured rect. The clone keeps the
+ * inline custom props main.js pinned (--canvas-w/h, --preview-scale) so it
+ * renders EXACTLY like the live page; its `id` is dropped to avoid a duplicate
+ * (the layer is appended AFTER #dashboard-body, so getElementById keeps
+ * returning the live nodes even while the clone is inserted). Never throws.
+ */
+function capturePageSnapshot() {
+  const wrap = $('grid-wrap');
+  if (!wrap) return { clone: null, rect: null };
+  const rect = wrap.getBoundingClientRect();
+  const clone = wrap.cloneNode(true);
+  clone.removeAttribute('id');
+  return { clone, rect };
+}
+
+/**
+ * Remove every page-transition artefact (layer, classes, generation bump).
+ * Idempotent and safe to call from any rebuild; leaves the live grid visible
+ * and the dashboard with no residual node/transform/opacity.
+ */
+function stopPageAnim() {
+  pageAnimId += 1;
+  if (pageAnimTimer) {
+    clearTimeout(pageAnimTimer);
+    pageAnimTimer = 0;
+  }
+  pageAnimLayer?.remove();
+  pageAnimLayer = null;
+  $('dashboard-view').classList.remove('page-anim');
+  pageAnimActive = false;
+}
+
+/**
+ * Build + play the transition layer for a finished page switch.
+ * `snapshot`/`rect` come from capturePageSnapshot() BEFORE the rebuild; the
+ * incoming page is snapshotted from the freshly-built live grid here.
+ */
+function runPageAnim(snapshot, rect, meta) {
+  const view = $('dashboard-view');
+  const wrap = $('grid-wrap');
+  stopPageAnim(); // scrub anything stale, then capture a fresh generation id
+  if (!snapshot || !rect || !wrap) return;
+  const id = pageAnimId;
+
+  const incoming = wrap.cloneNode(true);
+  incoming.removeAttribute('id');
+
+  const layer = document.createElement('div');
+  layer.className = 'page-anim-layer' + (meta.kind === 'fade' ? ' fade' : '');
+  layer.setAttribute('aria-hidden', 'true');
+  layer.style.left = `${rect.left}px`;
+  layer.style.top = `${rect.top}px`;
+  layer.style.width = `${rect.width}px`;
+  layer.style.height = `${rect.height}px`;
+
+  const track = document.createElement('div');
+  track.className = 'page-anim-track';
+  const paneOld = document.createElement('div');
+  paneOld.className = 'page-anim-pane';
+  paneOld.appendChild(snapshot);
+  const paneNew = document.createElement('div');
+  paneNew.className = 'page-anim-pane';
+  paneNew.appendChild(incoming);
+  // Slide: the pair is adjacent — outgoing first for a NEXT move (dir>=0),
+  // reversed for PREV so the incoming genuinely comes from the other side.
+  if (meta.kind === 'fade' || meta.dir >= 0) track.append(paneOld, paneNew);
+  else track.append(paneNew, paneOld);
+  layer.appendChild(track);
+  view.appendChild(layer);
+  view.classList.add('page-anim'); // hides the LIVE grid for the duration
+  pageAnimLayer = layer;
+  pageAnimActive = true;
+
+  const dur = pageDurMs(meta.kind);
+  const ease = 'var(--mode-ease, cubic-bezier(0.4, 0, 0.2, 1))';
+
+  // Phase 1 — paint the START state WITHOUT a transition so it snaps.
+  if (meta.kind === 'fade') {
+    paneOld.style.opacity = '1';
+    paneNew.style.opacity = '0';
+  } else {
+    track.style.transition = 'none';
+    track.style.transform = meta.dir >= 0 ? 'translateX(0)' : 'translateX(-100%)';
+  }
+  void track.offsetWidth; // flush layout so the start value is committed
+
+  // Phase 2 — enable the transition and set the target.
+  if (meta.kind === 'fade') {
+    paneOld.style.transition = `opacity ${dur}ms ${ease}`;
+    paneNew.style.transition = `opacity ${dur}ms ${ease}`;
+    paneOld.style.opacity = '0';
+    paneNew.style.opacity = '1';
+  } else {
+    track.style.transition = `transform ${dur}ms ${ease}`;
+    track.style.transform = meta.dir >= 0 ? 'translateX(-100%)' : 'translateX(0)';
+  }
+
+  pageAnimTimer = setTimeout(() => {
+    pageAnimTimer = 0;
+    if (id !== pageAnimId) return; // a newer transition superseded us
+    stopPageAnim();
+  }, dur + 80);
+}
+
+/** True when a keyboard event must NOT be captured (text entry). */
+function isTextEntryTarget(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.isContentEditable) return true;
+  return !!(
+    node.closest &&
+    node.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]')
+  );
+}
+
+/** True while ANY HolafModal overlay is open (settings, elements, icons, …). */
+function isOverlayOpen() {
+  return !!document.querySelector('.holaf-modal-overlay');
+}
+
+/** True when the add-widget palette is a FLOATING overlay (small-screen fallback). */
+function isPaletteOverlayOpen() {
+  const pal = $('editor-palette');
+  if (!pal || pal.classList.contains('hidden')) return false;
+  return getComputedStyle(pal).position === 'fixed';
+}
+
+/** True while a gridstack / in-trame drag, resize or group-zoom gesture runs. */
+function isInteractionActive() {
+  if (document.body.classList.contains('tile-dragging')) return true;
+  if (document.body.classList.contains('group-zoom-dragging')) return true;
+  return !!document.querySelector('.ui-draggable-dragging, .ui-resizable-resizing, .grid-stack-dragging');
+}
+
+/** Move to the previous/next page (no wrap). Shared by the arrow-key handler. */
+function navigatePage(dir) {
+  const pages = state.pages || [];
+  if (pages.length < 2) return;
+  const idx = pages.findIndex((p) => p.id === state.activePageId);
+  if (idx < 0) return;
+  const target = idx + dir;
+  if (target < 0 || target >= pages.length) return; // clamp: no loop
+  switchPage(pages[target].id, { via: 'keys', dir });
+}
+
+/**
+ * Global arrow-key navigation between dashboard pages. Guarded so it never
+ * steals keys from a text field, an open modal/palette, an in-flight drag/
+ * resize, a running transition, or outside the dashboard (login/setup).
+ */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  if (e.defaultPrevented) return;
+  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  if ($('dashboard-view').classList.contains('hidden')) return;
+  if (isTextEntryTarget(e.target) || isTextEntryTarget(document.activeElement)) return;
+  if (isOverlayOpen() || isPaletteOverlayOpen()) return;
+  if (isInteractionActive()) return;
+  if (switchingPage || pageAnimActive) return; // single transition at a time
+  e.preventDefault();
+  navigatePage(e.key === 'ArrowRight' ? 1 : -1);
+});
+
 // ---- Page switching (multiple pages, lot C+D) -------------------------------
 /**
  * Switch the active dashboard page. Allowed in BOTH modes (view + edit);
@@ -849,13 +1062,27 @@ function saveLayout(items) {
  *      coordinates (columns is global to the file) and a joined page may
  *      still be stored in 12-column coordinates.
  *   updatePreviewScale() + syncBackgroundScope() run inside setMode, and
- *   renderTabs() refreshes the active-tab highlight. NO animation: the
- *   geometry must be final from the first frame (gridstack reads the
- *   container size right after init).
+ *   renderTabs() refreshes the active-tab highlight.
+ *
+ * The transition is applied AFTER this rebuild (runPageAnim): the grid is
+ * always built at FINAL geometry (gridstack reads the container size right
+ * after init) and only the fixed animation LAYER — two snapshots in a clipped
+ * track — is translated/faded. The live grid stays put (hidden for the swap),
+ * so the slide/cross-fade can never feed gridstack a stale size.
  */
-async function switchPage(pageId) {
-  if (!pageId || switchingPage) return;
+async function switchPage(pageId, opts = {}) {
+  if (!pageId || switchingPage || pageAnimActive) return;
   if (pageId === state.activePageId) return; // re-click the active tab: no-op
+  const via = opts.via === 'keys' ? 'keys' : 'click';
+  const dir = opts.dir === -1 ? -1 : 1;
+  // Reduced motion: instant switch, no snapshot, no layer.
+  const animate = !prefersReducedMotion();
+  let snapshot = null;
+  let rect = null;
+  if (animate) {
+    ({ clone: snapshot, rect } = capturePageSnapshot());
+    pageAnimActive = true; // blocks a second navigation while the await runs
+  }
   switchingPage = true;
   try {
     // 1) flush (awaitable — saveLayout resolves after the PUT settles; it
@@ -871,9 +1098,23 @@ async function switchPage(pageId) {
     if (Array.isArray(res.pages)) state.pages = res.pages;
     state.layout = Array.isArray(res.items) ? res.items : [];
     if (Number(res.columns) > 0) state.layoutColumns = Number(res.columns);
-    // 3+4) teardown + rebuild (same normalization path as initial load).
+    // 3+4) teardown + rebuild (same normalization path as initial load). The
+    // flag tells setMode() this rebuild is PART of the switch, not an external
+    // cancellation of it.
+    pageAnimPreparing = true;
     setMode(state.mode);
+    pageAnimPreparing = false;
+    // 5) play the transition now that the incoming grid exists at final
+    // geometry: directional slide for arrow keys, cross-fade for a tab click.
+    if (animate && snapshot) {
+      runPageAnim(snapshot, rect, { kind: via === 'keys' ? 'slide' : 'fade', dir });
+    } else {
+      pageAnimActive = false;
+    }
   } catch (err) {
+    // A failed switch leaves no layer/flag behind (the grid was never rebuilt).
+    pageAnimPreparing = false;
+    if (animate) stopPageAnim();
     toast(err.message || 'Failed to switch page', 'error');
   } finally {
     switchingPage = false;
@@ -931,6 +1172,7 @@ $('logout-btn').addEventListener('click', async () => {
   // Cancel any in-flight VIEW↔EDIT transition: its timer must never rebuild a
   // grid (or re-add classes) on the now-hidden dashboard after logout.
   stopModeAnim();
+  stopPageAnim(); // drop any page-transition layer / timer too
   destroyGrid();
   catalog.clear(); // drop the element cache (next session re-fetches)
   clearLocalIconCache(); // drop inlined local-icon SVGs
@@ -941,6 +1183,9 @@ $('logout-btn').addEventListener('click', async () => {
 });
 
 $('toggle-mode').addEventListener('click', () => {
+  // A page switch is rebuilding/animation: ignore the mode toggle so it can
+  // never race the switch's setMode().
+  if (switchingPage || pageAnimActive) return;
   if (state.mode === 'edit' && !prefersReducedMotion()) {
     // Animate the current edit DOM toward view, THEN rebuild (see playExitEdit).
     playExitEdit();
@@ -1000,7 +1245,7 @@ window.addEventListener('homy:group-reports', (e) => {
 //    already runs destroyGrid + updatePreviewScale + syncBackgroundScope +
 //    renderTabs in the right order.
 initTabs({
-  onSwitch: (pageId) => switchPage(pageId),
+  onSwitch: (pageId, opts) => switchPage(pageId, opts),
   onFlush: () => grid?.flush?.(),
   onRebuild: () => setMode(state.mode),
 });
@@ -1053,6 +1298,7 @@ window.addEventListener('auth:expired', () => {
   api.setToken(null);
   state.user = null;
   stopModeAnim(); // drop any pending mode-transition timer/rAF (see logout)
+  stopPageAnim(); // drop any page-transition layer / timer (see logout)
   destroyGrid();
   catalog.clear(); // drop the element cache (same as an explicit logout)
   clearLocalIconCache(); // drop inlined local-icon SVGs (same as logout)

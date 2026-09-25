@@ -171,6 +171,12 @@ export function normalizeOptions(raw) {
     surfaceInset: normalizeSurfaceInset(o.surfaceInset),
     surfaceShape: normalizeSurfaceShape(o.surfaceShape),
     surfaceColor: normalizeSurfaceColor(o.surfaceColor),
+    // Per-tile ICON colour ('' = inherited / theme default). Validated with the
+    // same SAFE single-property coercion as surfaceColor, so a hand-edited
+    // config can never smuggle a second declaration. Only monochrome /
+    // `currentColor` glyphs are recoloured (multicolour raster icons keep their
+    // own colours) — documented limitation.
+    iconColor: normalizeSurfaceColor(o.iconColor),
   };
 }
 
@@ -497,6 +503,11 @@ export function applyTileSurface(tileEl, options) {
   // Clear any inset left by a previous build (now group-driven).
   tileEl.style.removeProperty('--tile-surface-inset');
   tileEl.style.setProperty('--tile-surface-radius', o.surfaceShape === 'square' ? '0px' : '8px');
+  // Per-tile ICON colour: consumed by `.tile-icon` (color: var(--tile-icon-color,
+  // inherit)); the inline monochrome SVGs use `currentColor`, so they follow it.
+  // A multicolour / raster icon keeps its own colours (unaffected).
+  if (o.iconColor) tileEl.style.setProperty('--tile-icon-color', o.iconColor);
+  else tileEl.style.removeProperty('--tile-icon-color');
   if (o.surfaceOpacity === 0) tileEl.dataset.surfaceOff = '';
   else delete tileEl.dataset.surfaceOff;
   tileEl.dataset.surfaceShape = o.surfaceShape;

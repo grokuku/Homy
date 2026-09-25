@@ -514,6 +514,10 @@ function normalizeButtonOptions(raw) {
     surfaceInset: normalizeSurfaceInset(o.surfaceInset),
     surfaceShape: SURFACE_SHAPES.has(o.surfaceShape) ? o.surfaceShape : SURFACE_SHAPE_DEFAULT,
     surfaceColor: normalizeSurfaceColor(o.surfaceColor),
+    // Per-tile icon colour ('' = inherited / theme default). Same SAFE
+    // single-property coercion as surfaceColor: a semicolon / quote / url()
+    // can never smuggle a second declaration; invalid → ''.
+    iconColor: normalizeSurfaceColor(o.iconColor),
   };
 }
 
