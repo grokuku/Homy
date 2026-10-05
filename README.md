@@ -35,11 +35,13 @@ admin user/password (first-run setup).
 | `PORT` | `3000` | HTTP port |
 | `DATA_DIR` | `server/data` | JSON storage directory |
 | `JWT_SECRET` | auto-generated | JWT signing secret (persisted to `data/config.json`) |
-| `JWT_EXPIRES_IN` | `7d` | JWT expiration (e.g. `1h`, `7d`) |
+| `JWT_EXPIRES_IN` | `30d` | Session token lifetime. The session is **sliding**: while the dashboard is used, the token is rotated before it expires, so an active session never ends. A session left idle expires after this delay. Use e.g. `365d` to (almost) never log in again, or `1h`/`12h`/`7d` for a stricter policy. |
 | `BCRYPT_ROUNDS` | `12` | bcrypt cost factor |
 | `TRUST_PROXY` | `false` | Set to `true` ONLY when running behind a reverse proxy you control (e.g. nginx/traefik/Caddy). When enabled, the rate-limit resolver reads the client IP from the `x-forwarded-for` header instead of the TCP peer address. Leave `false`/unset otherwise so the limit cannot be bypassed by spoofing that header. |
 
 > **JWT_SECRET rotation.** The signing secret is persisted to `data/config.json` on first run, and the persisted value wins over `JWT_SECRET` afterwards. To rotate it: **either** set `JWT_SECRET` (env) *before* the very first start, **or** edit/delete the `jwtSecret` field inside `data/config.json` (rotating invalidates all previously issued tokens).
+
+> **Session lifetime & sliding renewal.** Tokens are stateless JWTs carried in the `Authorization: Bearer …` header (the client stores the value in `localStorage`, key `hp_token`). The default lifetime is `30d`; on top of that, the server **rotates** the token on an authenticated response once it has consumed more than half of its lifetime, and the client swaps it in transparently (`X-Refreshed-Token` response header). Consequence: as long as you keep using the dashboard you stay logged in, and the session is only re-issued by *actual use*. A token that is never used still expires on schedule — an abandoned browser is not kept alive. There is no server-side session store, so revocation is by lifetime only: a *stolen* token stays valid until it expires (or the `jwtSecret` is rotated, which invalidates everything at once). Set a shorter `JWT_EXPIRES_IN` if that matters to you.
 
 ## API overview
 
@@ -199,7 +201,7 @@ docker run -d --name homy \
 | `PORT` | `3000` | HTTP port inside the container |
 | `DATA_DIR` | `/data` | Set by the image |
 | `JWT_SECRET` | auto-generated | Persisted to `/data/config.json` on first run — set it only to inject your own |
-| `JWT_EXPIRES_IN` | `7d` | Token lifetime |
+| `JWT_EXPIRES_IN` | `30d` | Session token lifetime (sliding: rotated while the dashboard is used) |
 | `BCRYPT_ROUNDS` | `12` | bcrypt cost factor |
 
 Build metadata is embedded as OCI labels (`version`, `git_commit`) and as `/app/version.txt`

@@ -45,6 +45,12 @@ export const api = {
   },
 
   async _handle(res, path = '') {
+    // Sliding session: the server returns a freshly rotated token once the
+    // current one nears its expiry. Swap it in transparently so an active
+    // session is never dropped. Never logged.
+    const rotated = res.headers.get('X-Refreshed-Token');
+    if (rotated) this.setToken(rotated);
+
     if (res.status === 401 && !this._authPath(path)) {
       window.dispatchEvent(new CustomEvent('auth:expired'));
     }
@@ -84,6 +90,8 @@ export const api = {
     const headers = {};
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
     const res = await fetch(path, { method: 'GET', headers });
+    const rotated = res.headers.get('X-Refreshed-Token');
+    if (rotated) this.setToken(rotated);
     if (!res.ok) {
       if (res.status === 401 && !this._authPath(path)) {
         window.dispatchEvent(new CustomEvent('auth:expired'));

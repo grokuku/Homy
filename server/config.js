@@ -11,7 +11,7 @@ const env = {
   PORT: Number(process.env.PORT || 3000),
   DATA_DIR: process.env.DATA_DIR || path.join(__dirname, 'data'),
   JWT_SECRET: process.env.JWT_SECRET || '',
-  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
+  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '30d',
   BCRYPT_ROUNDS: Number(process.env.BCRYPT_ROUNDS || 12),
   ICONS_API_BASE: process.env.ICONS_API_BASE || 'https://api.iconify.design',
   ICONS_TIMEOUT_MS: Number(process.env.ICONS_TIMEOUT_MS || 8000),
@@ -72,6 +72,20 @@ function saveConfig(config) {
 
 const config = loadConfig();
 
+// ---- JWT lifetime migration ------------------------------------------------
+// The default session lifetime was lengthened from 7d to 30d. An explicit
+// JWT_EXPIRES_IN env value always wins (see serverConfig below); otherwise an
+// install still carrying the legacy persisted default is upgraded in place so
+// the longer session applies without hand-editing config.json.
+const LEGACY_JWT_EXPIRES_IN = '7d';
+if (
+  !process.env.JWT_EXPIRES_IN &&
+  (!config.jwtExpiresIn || config.jwtExpiresIn === LEGACY_JWT_EXPIRES_IN)
+) {
+  config.jwtExpiresIn = env.JWT_EXPIRES_IN;
+  saveConfig(config);
+}
+
 // Auto-generate a JWT secret on first run and persist it.
 if (!config.jwtSecret) {
   config.jwtSecret = env.JWT_SECRET || randomBytes(48).toString('hex');
@@ -82,7 +96,7 @@ export const serverConfig = {
   port: env.PORT,
   dataDir: env.DATA_DIR,
   jwtSecret: config.jwtSecret,
-  jwtExpiresIn: config.jwtExpiresIn || env.JWT_EXPIRES_IN,
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || config.jwtExpiresIn || env.JWT_EXPIRES_IN,
   bcryptRounds: env.BCRYPT_ROUNDS,
   // Icon library (lot 7): the ONLY external host the server will call for
   // icon search/install. Configurable so a mirror / test stub can be swapped in.

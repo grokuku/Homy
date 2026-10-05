@@ -1,8 +1,14 @@
-import { verifyToken } from '../services/auth.service.js';
+import { refreshedToken, verifyToken } from '../services/auth.service.js';
 
 /**
  * JWT guard. Protects /api/* except the public routes listed in `publicPaths`.
  * Reads the token from the `Authorization: Bearer <token>` header.
+ *
+ * Sliding session: when the presented token is past its refresh threshold
+ * (see REFRESH_RATIO), a fresh token is returned in the `X-Refreshed-Token`
+ * response header so the client can replace it. This travels only on
+ * already-authenticated responses, is never logged, and carries the user's own
+ * credential — the same value `POST /api/auth/login` returns.
  */
 export function authGuard(publicPaths = []) {
   return async (c, next) => {
@@ -24,6 +30,8 @@ export function authGuard(publicPaths = []) {
     }
 
     c.set('user', payload.sub);
-    return next();
+    const rotated = refreshedToken(payload);
+    await next();
+    if (rotated) c.header('X-Refreshed-Token', rotated);
   };
 }

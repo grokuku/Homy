@@ -28,8 +28,8 @@ export async function verifyCredentials(user, password) {
   return bcrypt.compare(password, authConfig.passwordHash);
 }
 
-export function signToken() {
-  return jwt.sign({ sub: authConfig.user }, serverConfig.jwtSecret, {
+export function signToken(sub = authConfig.user) {
+  return jwt.sign({ sub }, serverConfig.jwtSecret, {
     expiresIn: serverConfig.jwtExpiresIn,
   });
 }
@@ -40,6 +40,26 @@ export function verifyToken(token) {
   } catch {
     return null;
   }
+}
+
+// Sliding session: re-issue the token once its REMAINING lifetime drops below
+// this fraction of its total lifetime. Only token rotation tied to real use
+// keeps an active user logged in while an abandoned token still expires on
+// schedule (we never extend a token that is not being used).
+export const REFRESH_RATIO = 0.5;
+
+/**
+ * Return a freshly signed token when the presented payload is past the refresh
+ * threshold, otherwise null. Pure: no side effects, no logging. `nowMs` is
+ * injectable for tests.
+ */
+export function refreshedToken(payload, nowMs = Date.now()) {
+  if (!payload || typeof payload.exp !== 'number' || typeof payload.iat !== 'number') return null;
+  const ttlMs = (payload.exp - payload.iat) * 1000;
+  const remainingMs = payload.exp * 1000 - nowMs;
+  if (ttlMs <= 0 || remainingMs <= 0) return null;
+  if (remainingMs >= ttlMs * REFRESH_RATIO) return null;
+  return signToken(payload.sub ?? authConfig.user);
 }
 
 export async function changeCredentials(currentPassword, nextUser, nextPassword) {
