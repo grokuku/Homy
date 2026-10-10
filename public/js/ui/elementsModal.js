@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { toast } from './toast.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
 import { catalog } from '../elements/catalog.js';
-import { buildIconNode, normalizeSurfaceColor } from '../elements/button.js';
+import { buildIconNode, normalizeSurfaceColor, wireViewNavigation } from '../elements/button.js';
 import { buildField, collect } from './settingsModal.js';
 import { openIconsPicker } from './iconsPicker.js';
 import { buildDockyTargetField } from './dockyTarget.js';
@@ -452,13 +452,16 @@ export function openElementsModal() {
     const main = el('div', 'elements-row-main');
     main.appendChild(el('div', 'elements-row-name', item.name));
     if (item.url) {
-      main.appendChild(
-        el('a', 'elements-row-url', item.url, {
-          href: item.url,
-          target: '_blank',
-          rel: 'noopener noreferrer',
-        })
-      );
+      // Same navigation contract as a group tile: LEFT = current tab, RIGHT =
+      // new tab with the native menu suppressed. It is a DISPLAY link (not a
+      // tile): no `target="_blank"` residue, and the delegated surface handler
+      // is scoped to the link itself (the row's edit actions stay untouched).
+      const urlLink = el('a', 'elements-row-url', item.url, {
+        href: item.url,
+        rel: 'noopener noreferrer',
+      });
+      wireViewNavigation(urlLink, urlLink, item.url, false);
+      main.appendChild(urlLink);
     }
     if (item.description) main.appendChild(el('div', 'elements-row-desc muted', item.description));
 

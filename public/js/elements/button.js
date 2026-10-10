@@ -373,8 +373,11 @@ export function renderButtonTile({ button, element, step = 22.5, inset, editable
   }
 
   // VIEW-mode navigation contract (LEFT = current tab, RIGHT = new tab, MIDDLE
-  // = native new tab, Enter/Space = LEFT). EDIT mode wires nothing here.
-  wireViewNavigation(root, linkEl, url, editable);
+  // = native new tab, Enter/Space = LEFT). EDIT mode wires nothing here. A tile
+  // is a SHORTCUT only when it actually has a clickable main zone (i.e. the
+  // `shortcut` option is ON and the element has a url): passing `url` only then
+  // keeps a shortcut-disabled / url-less tile fully inert.
+  wireViewNavigation(root, linkEl, o.shortcut ? url : null, editable);
 
   // ---- controls zone (second clickable area — live start/stop/restart) ------
   if (hasControls) {
@@ -460,19 +463,56 @@ export function renderButtonTile({ button, element, step = 22.5, inset, editable
  *   - MIDDLE click → kept NATIVE (browsers already open a new tab);
  *   - Enter / Space on the focused link → identical to a LEFT click (current
  *                    tab; Space does not activate a link by default).
+ *
+ * The whole TILE SURFACE is the shortcut, not only the inner <a>: the tile box
+ * keeps a `3px` padding + `1px` border (see `.group-tile` in style.css), so a
+ * click landing on that padding/border must behave exactly like a click on the
+ * link. The anchor keeps the native semantics (hover, cursor, keyboard, native
+ * middle-click); the delegated `click`/`auxclick` handlers only act when the
+ * event did NOT target the anchor itself (or the live-controls zone).
+ *
  * In EDIT mode nothing is wired: the group's capture-phase guard owns the
  * pointer (selection/drag) and the native context menu is left untouched.
  * A tile whose element has NO url attaches nothing (no navigation, no menu
  * hijack — the degraded state stays inert).
+ *
+ * Exported so the catalogue modal can apply the EXACT same contract to the URL
+ * link it shows (one single source of truth, never two drifting behaviours).
  */
-function wireViewNavigation(root, linkEl, url, editable) {
+export function wireViewNavigation(root, linkEl, url, editable) {
   if (editable || !url) return;
+
+  // Right click on the whole tile → new tab, native menu suppressed. The live
+  // controls (start/stop/restart) keep their own context menu.
   root.addEventListener('contextmenu', (e) => {
-    // Never hijack the controls (start/stop/restart) zone's own context menu.
     if (e.target && e.target.closest && e.target.closest('.tile-controls')) return;
     e.preventDefault();
     window.open(url, '_blank', 'noopener');
   });
+
+  // A click that targets an interactive sub-element (the anchor itself, or the
+  // controls / an edit control) is left NATIVE: only the tile's own surface
+  // (padding, border, icon/label fallback) is delegated.
+  const isNativeSubTarget = (target) =>
+    !!(target && target.closest && target.closest('a[href], .tile-controls, button, input, select, textarea'));
+
+  // LEFT click on the tile surface (padding / border) → CURRENT tab, exactly
+  // like clicking the anchor.
+  root.addEventListener('click', (e) => {
+    if (e.defaultPrevented || (e.button !== 0 && e.button !== undefined)) return;
+    if (isNativeSubTarget(e.target)) return;
+    window.location.assign(url);
+  });
+
+  // MIDDLE click on the tile surface → NEW tab, mirroring the browser's native
+  // middle-click on a link.
+  root.addEventListener('auxclick', (e) => {
+    if (e.button !== 1 || e.defaultPrevented) return;
+    if (isNativeSubTarget(e.target)) return;
+    e.preventDefault();
+    window.open(url, '_blank', 'noopener');
+  });
+
   if (!linkEl) return;
   linkEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
