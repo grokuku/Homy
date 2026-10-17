@@ -3,6 +3,7 @@ import { state } from './state.js';
 import { renderViewer } from './grid/viewer.js';
 import { initEditor, renderPalette } from './grid/editor.js';
 import { createGroupLayer } from './grid/groups.js';
+import { createGroupEditor } from './grid/groupEditor.js';
 import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, CANVAS_ASPECT, CELL_ASPECT_TOLERANCE, computeCanvasFit } from './grid/config.js';
 import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js';
 import { applyBackground, setBackgroundHost } from './backgrounds/manager.js';
@@ -22,6 +23,14 @@ let grid = null; // current grid instance (viewer gridstack or editor handle)
 // Group BOX layer (layout v5, lot L2): owns the .group-layer (first child of
 // #grid-preview, under the grid) and the .overlay-layer (last child, EDIT only).
 const groupLayer = createGroupLayer($('grid-preview'));
+// Group editing engine (lot L4): selection, drag/resize, group-selection,
+// dissolve/delete + the minimal context bar. Selection STATE lives in
+// grid/selection.js; this only drives it and reads the live editor via getGrid.
+const groupEditor = createGroupEditor({
+  previewEl: $('grid-preview'),
+  groupLayer,
+  getGrid: () => grid,
+});
 let viewTopbarVisible = false; // VIEW-mode topbar state (right-click toggles; default hidden)
 let lastViewTopbarH = 0; // VIEW-mode topbar natural height (for the animated swap)
 let switchingPage = false; // page switch in flight (double-click guard on the tabs)
@@ -797,6 +806,12 @@ function setMode(mode, { animate = false } = {}) {
   groupLayer.reorder();
   groupLayer.render(state.layoutGroups, mode);
   groupLayer.syncCanvas($('grid-container'));
+  // Lot L4 — group editing engine: every rebuild (initial load, mode switch,
+  // page switch) drops any stale selection/handles, then re-arms the mode so
+  // the context bar + overlay handles follow the fresh DOM. reset() AFTER
+  // setMode() so the bar visibility reads the new mode.
+  groupEditor.setMode(mode);
+  groupEditor.reset();
 
   // Lot 4 — user-driven VIEW → EDIT swap plays the enter animation now that
   // the edit grid exists at its final geometry. Reduced-motion and every

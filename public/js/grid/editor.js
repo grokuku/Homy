@@ -377,6 +377,75 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     addObject,
     applyConfig,
     /**
+     * Live geometry of every object, straight from the engine nodes (the source
+     * of truth for the next PUT). Used by the L4 group engine to FREEZE the
+     * member list at drag start — `contains()` runs on these exact rects.
+     */
+    getObjectRects() {
+      return grid.engine.nodes.map((n) => {
+        const m = meta.get(n.id);
+        return {
+          id: n.id,
+          kind: m?.kind || 'widget',
+          x: n.x || 0,
+          y: n.y || 0,
+          w: n.w || 1,
+          h: n.h || 1,
+        };
+      });
+    },
+    /** Gridstack item element for an object id (L4 live member transform). */
+    getObjectElement(id) {
+      return grid.engine.nodes.find((n) => n.id === id)?.el || null;
+    },
+    /**
+     * Move objects to EXACT positions WITHOUT gridstack collision resolution.
+     *
+     * The L4 group drag translates every frozen member by the SAME delta, so the
+     * final arrangement has no member/member overlap — but a naive `grid.update()`
+     * per member would still push a not-yet-moved member whose ORIGINAL cell the
+     * moved one transiently crosses (gridstack resolves collisions on each call
+     * and `collideAll`'s skip is a single node, not a list). We therefore write
+     * the target geometry straight onto the engine nodes and re-render with
+     * gridstack's own `_writeAttr()` (the exact path a real drag uses). One
+     * debounced save is scheduled for the whole batch.
+     */
+    commitObjectRects(list) {
+      if (!Array.isArray(list) || !list.length) return;
+      let changed = false;
+      for (const entry of list) {
+        if (!entry || entry.id == null) continue;
+        const node = grid.engine.nodes.find((n) => n.id === entry.id);
+        if (!node) continue;
+        const x = Math.max(0, Math.floor(Number(entry.x)) || 0);
+        const y = Math.max(0, Math.floor(Number(entry.y)) || 0);
+        if (x === node.x && y === node.y) continue;
+        node.x = x;
+        node.y = y;
+        node._dirty = true;
+        if (typeof grid._writeAttr === 'function') grid._writeAttr(node.el, node);
+        else grid.update(node.el, { x, y });
+        changed = true;
+      }
+      if (changed) scheduleSave();
+    },
+    /**
+     * Remove objects from the live grid. Each gridstack `removeWidget` fires
+     * `removed`, which the debounce coalesces into ONE PUT carrying the
+     * remaining objects (used by L4 « Delete group + contents »).
+     */
+    removeObjects(ids) {
+      const set = new Set(Array.isArray(ids) ? ids : []);
+      if (!set.size) return;
+      for (const node of [...grid.engine.nodes]) {
+        if (!set.has(node.id)) continue;
+        const contentEl = node.el?.querySelector('.grid-stack-item-content');
+        if (contentEl) disposeWidget(contentEl);
+        grid.removeWidget(node.el, true);
+        meta.delete(node.id);
+      }
+    },
+    /**
      * Update the pinned row pitch (px) from main.js after a resize / geometry
      * change. With an explicit cellHeight gridstack no longer tracks
      * clientWidth (its auto ResizeObserver path is off), so the owner must

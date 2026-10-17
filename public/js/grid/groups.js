@@ -63,6 +63,28 @@ export function rectContains(rect, point) {
 }
 
 /**
+ * PURE membership test — STRICT containment (layout v5 contract): an object
+ * belongs to a group only when its whole rect fits inside the box. Mirrors
+ * `contains()` in server/services/layout.service.js; the server's
+ * DELETE ?withObjects=1 uses the exact same rule, so the front can predict
+ * which objects a delete will remove.
+ */
+export function contains(group, object) {
+  if (!group || !object) return false;
+  const g = groupRect(group);
+  const x = Math.floor(Number(object.x)) || 0;
+  const y = Math.floor(Number(object.y)) || 0;
+  const w = Math.floor(Number(object.w)) || 0;
+  const h = Math.floor(Number(object.h)) || 0;
+  return x >= g.x && y >= g.y && x + w <= g.x + g.w && y + h <= g.y + g.h;
+}
+
+/** Strict rect intersection (aire > 0) — used by the non-overlap clamps. */
+export function rectsIntersect(a, b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+/**
  * PURE hit-test: `point` is in FINE units. Iterates the groups LAST → FIRST
  * (topmost first) and returns the first whose rect contains the point, or null.
  */
@@ -85,7 +107,14 @@ export function hitGroups(groups, point) {
  *   syncCanvas(container)     — pin --unit-w/--unit-h + the layer box from the
  *                               LIVE canvas box (VIEW fit / EDIT logical box).
  *   pointerMove(clientX, clientY) — hover hit-test; returns the hit group|null.
+ *   unitsFromClient(cx, cy)   — client point → { x, y, u, v } fine units+scale.
  *   clearHover()              — drop any .group-hover (mouseleave).
+ *   findGroup(id)             — group object by id (L4 drag/resize).
+ *   getGroups()               — the live group array (same ref as state).
+ *   getHoveredId()            — id of the currently hovered group (L4 handles).
+ *   setSelectedGroup(id)      — ring the selected group box.
+ *   placeGroup(id)            — re-place one box after an in-place rect change.
+ *   flashAlert(id)            — ~120 ms contact alert ring (L4 clamp refusal).
  *   reorder()                 — re-assert the layer order after a grid rebuild.
  *   destroy()                 — detach both layers.
  */
@@ -100,6 +129,9 @@ export function createGroupLayer(previewEl) {
   let rectsDirty = true;
   let mode = 'view';
   let hoveredId = null;
+  let selectedId = null;
+  let alertId = null;
+  let alertTimer = 0;
 
   function invalidate() {
     rectsDirty = true;
@@ -199,6 +231,53 @@ export function createGroupLayer(previewEl) {
     }
     hoveredId = null;
     invalidate();
+    // The selected ring must survive a full re-render (config save, group add).
+    applySelectedClass();
+  }
+
+  /** Re-assert `.group-selected` on the boxes from the stored id. */
+  function applySelectedClass() {
+    for (const node of layer.children) {
+      const on = selectedId != null && node.dataset && node.dataset.groupId === String(selectedId);
+      node.classList.toggle('group-selected', on);
+    }
+  }
+
+  function findGroup(id) {
+    if (id == null) return null;
+    return groups.find((g) => g && String(g.id) === String(id)) || null;
+  }
+
+  /** Mark (or clear) the selected group box — ring + hit-test target for L4. */
+  function setSelectedGroup(id) {
+    selectedId = id == null ? null : String(id);
+    applySelectedClass();
+  }
+
+  /** Re-place a single box after its rect was mutated in place (L4 drag/resize). */
+  function placeGroup(id) {
+    const g = findGroup(id);
+    if (!g) return;
+    const box = boxFor(g.id);
+    if (box) place(box, g);
+    invalidate();
+  }
+
+  /**
+   * Flash the contact alert ring (~120 ms) on a box. Used by the L4 drag/resize
+   * clamps when a candidate position/size is refused on a group collision.
+   */
+  function flashAlert(id) {
+    const gid = id == null ? null : String(id);
+    if (alertTimer) clearTimeout(alertTimer);
+    alertTimer = setTimeout(() => {
+      alertTimer = 0;
+      if (alertId != null) boxFor(alertId)?.classList.remove('group-alert');
+      alertId = null;
+    }, 120);
+    if (alertId != null && alertId !== gid) boxFor(alertId)?.classList.remove('group-alert');
+    alertId = gid;
+    if (gid != null) boxFor(gid)?.classList.add('group-alert');
   }
 
   /**
@@ -248,6 +327,21 @@ export function createGroupLayer(previewEl) {
     return hit;
   }
 
+  /**
+   * Convert a CLIENT point into FINE units through the live rendered layer rect
+   * (transform-aware: EDIT dezoom included). Returns `{ x, y, u, v }` where
+   * `u`/`v` are the px-per-fine-unit of the two axes — the L4 gestures need the
+   * pixel scale to turn a mouse delta into units and to translate the member
+   * item DOM. Returns null when the layer is not measurable.
+   */
+  function unitsFromClient(clientX, clientY) {
+    const rect = layer.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return null;
+    const u = rect.width / GRID_COLUMNS;
+    const v = rect.height / GRID_ROWS;
+    return { x: (clientX - rect.left) / u, y: (clientY - rect.top) / v, u, v };
+  }
+
   function clearHover() {
     setHover(null);
   }
@@ -259,6 +353,8 @@ export function createGroupLayer(previewEl) {
   function destroy() {
     previewEl.removeEventListener('mousemove', onMouseMove);
     previewEl.removeEventListener('mouseleave', clearHover);
+    if (alertTimer) clearTimeout(alertTimer);
+    alertTimer = 0;
     layer.remove();
     overlay.remove();
     cache = [];
@@ -271,7 +367,14 @@ export function createGroupLayer(previewEl) {
     reorder,
     syncCanvas,
     pointerMove,
+    unitsFromClient,
     clearHover,
+    getGroups: () => groups,
+    findGroup,
+    getHoveredId: () => hoveredId,
+    setSelectedGroup,
+    placeGroup,
+    flashAlert,
     destroy,
     layer,
     overlay,

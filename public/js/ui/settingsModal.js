@@ -15,7 +15,9 @@ import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
  * number input (retro-compatible).
  *
  * On save it PATCHes `/api/layout/objects/:id/config`, then calls `onSaved` with
- * the new config so the caller can re-render the widget.
+ * the new config so the caller can re-render the widget. Callers that persist
+ * somewhere else (e.g. a GROUP box, PATCH /api/layout/groups/:id) pass an
+ * optional `save(value)` override — the form/validation/UI stay identical.
  *
  * Shell : HolafModal (brique holaf-lib) sert de coque (pile, focus trap,
  * scroll-lock, ARIA, Échap, clic overlay). Homy garde le settingsSchema, la
@@ -31,8 +33,13 @@ import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
  */
 let modalSeq = 0; // unique <form> ids when several modals are alive
 
-export function openSettingsModal({ itemId, title, schema, config, onSaved }) {
+export function openSettingsModal({ itemId, title, schema, config, onSaved, save }) {
   const fields = Array.isArray(schema?.fields) ? schema.fields : [];
+  // Default write path (widget/object config); the group editor passes its own.
+  const persist =
+    typeof save === 'function'
+      ? save
+      : (value) => api.patch(`/api/layout/objects/${itemId}/config`, { config: value });
 
   const form = el('form', 'config-form');
   // The Save button lives OUTSIDE the <form> (in the modal footer) but is
@@ -84,7 +91,7 @@ export function openSettingsModal({ itemId, title, schema, config, onSaved }) {
     const saveBtn = ctrl.el.querySelector('.holaf-modal-footer button[type="submit"]');
     if (saveBtn) saveBtn.disabled = true;
     try {
-      await api.patch(`/api/layout/objects/${itemId}/config`, { config: result.value });
+      await persist(result.value);
       onSaved?.(result.value);
       toast('Settings saved', 'success');
       ctrl.close();

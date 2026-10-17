@@ -1329,6 +1329,92 @@ body[data-bg-active] .group-layer .group-box[data-group-blur] {
    cursor must live on the grid underneath). */
 #grid-preview.group-hovering #grid-container { cursor: move; }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   Group editing (layout v5, lot L4) — handles, alert, object ring, bar
+   ═══════════════════════════════════════════════════════════════════════ */
+/* Contact alert ring (~120 ms, toggled by grid/groups.js flashAlert): a refused
+   drag position / a resize stopped at the first group contact. Sits after the
+   `.group-selected` rule so it wins the cascade while it is on. */
+.group-layer .group-box.group-alert {
+  box-shadow: 0 0 0 2px var(--danger, #e5484d), 0 0 0 5px color-mix(in srgb, var(--danger, #e5484d) 30%, transparent);
+}
+
+/* A single handle set per visible group (selected and/or hovered). The wrapper
+   is a pure fine-unit box inside `.overlay-layer` (same coordinate space as the
+   `.group-box`es); its children opt back into pointer events. */
+.overlay-layer .group-handle-set {
+  position: absolute;
+  pointer-events: none;
+  z-index: 6;
+}
+/* 4px grab frame glued INSIDE the box border. Four strips (not one ring) so the
+   group stays grabbable along its edges while the interior remains click-through
+   for the objects on top of it. */
+.overlay-layer .group-handle-set .group-edge {
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.overlay-layer .group-handle-set .group-edge[data-edge='n'] { left: 0; right: 0; top: 0; height: 4px; border-width: 0 0 1px 0; }
+.overlay-layer .group-handle-set .group-edge[data-edge='s'] { left: 0; right: 0; bottom: 0; height: 4px; border-width: 1px 0 0 0; }
+.overlay-layer .group-handle-set .group-edge[data-edge='w'] { top: 0; bottom: 0; left: 0; width: 4px; border-width: 0 1px 0 0; }
+.overlay-layer .group-handle-set .group-edge[data-edge='e'] { top: 0; bottom: 0; right: 0; width: 4px; border-width: 0 0 0 1px; }
+/* SE resize handle, 12×12, glued INSIDE the bottom-right corner (above the two
+   strips so the nwse cursor wins there). Overrides the default .group-handle
+   geometry from the L2 block. */
+.overlay-layer .group-handle-set .group-handle[data-handle='se'] {
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  z-index: 2;
+  cursor: nwse-resize;
+  border-radius: 2px;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Selected OBJECT ring (L4 minimal multi-selection). The item content is inset
+   8px by gridstack's margin, so an outline on the cell box reads as a clean
+   halo around the object. */
+.grid-stack-item.grid-object-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: calc(var(--radius) + 2px);
+}
+
+/* Minimal contextual bar (L4): revealed in EDIT only, when a group is selected
+   or ≥ 2 objects are selected. The full floating multi-selection bar is L6. */
+.group-context-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+}
+.group-context-bar.hidden { display: none; }
+.group-context-bar .btn { font-size: 13px; }
+.group-context-bar .btn.confirm {
+  background: var(--danger, #e5484d);
+  border-color: var(--danger, #e5484d);
+  color: #fff;
+}
+
+/* While a group gesture runs, keep the grabbing cursor and kill text selection. */
+body.group-dragging,
+body.group-dragging * { cursor: grabbing !important; user-select: none; }
+
 /* ---------- Button tiles (matrix of variants) ----------
    The TILE IS THE SURFACE. Its background/border/radius are driven by per-tile
    CSS custom properties set inline by applyTileSurface() (elements/button.js):
