@@ -161,24 +161,6 @@ export function layoutRoutes(storeOrService, options = {}) {
     return c.json({ ok: true, removedObjects: result.removedObjects });
   });
 
-  // ---- Deprecated aliases (ex-/items) — kept so an existing front keeps working.
-  routes.post('/items', (c) => addObject(c, layout, elementExists));
-  routes.patch('/items/:id/config', async (c) => {
-    const parsed = await parseBody(c);
-    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
-    if (!parsed.body.config || typeof parsed.body.config !== 'object') {
-      return c.json({ error: 'config object required' }, 400);
-    }
-    const entry = layout.updateObject(c.req.param('id'), { config: parsed.body.config });
-    if (!entry) return c.json({ error: 'Not found' }, 404);
-    return c.json(entry);
-  });
-  routes.delete('/items/:id', (c) => {
-    const ok = layout.removeObject(c.req.param('id'));
-    if (!ok) return c.json({ error: 'Not found' }, 404);
-    return c.json({ ok: true });
-  });
-
   // ---- Pages (tabs) ---------------------------------------------------------
 
   routes.get('/pages/:id', (c) => {

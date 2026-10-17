@@ -806,21 +806,26 @@ function setMode(mode, { animate = false } = {}) {
   }
 }
 
-function saveLayout(items) {
-  state.layout = items;
-  // ⚠️ L1 (layout v5) — editing PERSISTENCE is temporarily disabled: the drag/
-  // resize/add/delete path still serializes the old v4 grid shape while the v5
-  // editor lands in lots L2→L6. Widget config edits keep persisting through
-  // their own PATCH /api/layout/objects/:id/config (settings modal, notes).
-  warnEditPersistDisabled();
-  return Promise.resolve();
-}
-
-let _editWarned = false;
-function warnEditPersistDisabled() {
-  if (_editWarned) return;
-  _editWarned = true;
-  console.warn('[layout] v5 migration in progress: drag/resize/add/delete persistence is disabled until the L2+ editor lands');
+function saveLayout(objects) {
+  // Optimistic: keep the client state in sync immediately so a subsequent
+  // render (mode switch / page rebuild) shows the edit before the PUT settles.
+  // The server response then replaces it with the canonical, coerced list.
+  state.layout = objects;
+  if (!state.activePageId) return Promise.resolve();
+  // Full-page PUT of the ACTIVE page's objects (layout v5, lossless: editor.js
+  // serializes kind/elementId/options/config of every object). `groups` are NOT
+  // sent — the server only replaces `objects`, so moving or deleting an object
+  // can never drop its group box. The 500 ms debounce / one-mutation-per-gesture
+  // lives in editor.js; this function only performs the request.
+  return api
+    .put('/api/layout', { objects, pageId: state.activePageId })
+    .then((res) => {
+      if (Array.isArray(res?.objects)) state.layout = res.objects;
+      if (Array.isArray(res?.pages)) state.pages = res.pages;
+    })
+    .catch((err) => {
+      toast(err.message || 'Failed to save layout', 'error');
+    });
 }
 
 // ---- Page switch transition (keyboard slide / click cross-fade) -------------
@@ -1188,7 +1193,7 @@ $('toggle-mode').addEventListener('click', () => {
 
 // ---- Widget config changes outside the ⚙ modal (review C4) -----------------
 // Widgets may persist config changes themselves (notes: inline textarea →
-// PATCH /api/layout/items/:id/config). Broadcast via 'homy:widget-config'
+// PATCH /api/layout/objects/:id/config). Broadcast via 'homy:widget-config'
 // (see widgets/notes.js), this keeps BOTH sources of truth in sync so a later
 // full-layout PUT can never overwrite the fresh config with a stale copy:
 //  - state.layout: the next initEditor/renderViewer must show the new text;
@@ -1200,31 +1205,6 @@ window.addEventListener('homy:widget-config', (e) => {
   const item = state.layout.find((i) => i.id === id);
   if (item) item.config = { ...(item.config || {}), ...config };
   grid?.applyConfig?.(id, config);
-});
-
-// ---- Group tile edits outside the ⚙ modal (lot 4) --------------------------
-// The group widget owns no save path: after any tile mutation (add / options /
-// move / resize / delete) it broadcasts the fresh `buttons` here. We keep
-// state.layout in sync AND hand the batch to the editor, which debounces the
-// PUT /api/layout exactly like a widget drag (its destroy/switch flush covers
-// tile edits for free).
-window.addEventListener('homy:group-buttons', (e) => {
-  const { id, buttons } = e.detail || {};
-  if (!id || !Array.isArray(buttons)) return;
-  const item = state.layout.find((i) => i.id === id);
-  if (item) item.buttons = buttons;
-  grid?.applyButtons?.(id, buttons);
-});
-
-// ---- Group report tile edits (lot 8) ---------------------------------------
-// Same contract as `homy:group-buttons`: the group broadcasts its fresh report
-// tiles; we keep state.layout in sync and let the editor debounce the PUT.
-window.addEventListener('homy:group-reports', (e) => {
-  const { id, reports } = e.detail || {};
-  if (!id || !Array.isArray(reports)) return;
-  const item = state.layout.find((i) => i.id === id);
-  if (item) item.reports = reports;
-  grid?.applyReports?.(id, reports);
 });
 
 // ---- Dashboard pages tab strip (multiple pages, lot C+D) --------------------

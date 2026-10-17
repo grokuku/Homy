@@ -41,7 +41,7 @@ export const notes = {
       // lost everything the user typed. Failures surface as toasts (review
       // C3) — a silent .catch(() => {}) here meant data loss without a trace.
       const save = debounce((value) => {
-        api.patch(`/api/layout/items/${itemId}/config`, { config: { text: value } }).catch(
+        api.patch(`/api/layout/objects/${itemId}/config`, { config: { text: value } }).catch(
           (err) => toast(err.message || 'Failed to save notes', 'error')
         );
       }, 600);

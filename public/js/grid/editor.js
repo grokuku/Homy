@@ -1,56 +1,50 @@
 import { renderWidget, disposeWidget, getWidget, getDefaultSize, getSettingsSchema } from '../widgets/registry.js';
 import { openSettingsModal } from '../ui/settingsModal.js';
 import { toast } from '../ui/toast.js';
-import { api } from '../api.js';
 import { uuid, el } from '../util.js';
 import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, normalizeItems } from './config.js';
 
-// A `group` occupies at least 2×2 GLOBAL cells (10.8 §B.2 / layout.routes.js
-// MIN_GROUP). Enforced on the gridstack resize handles so the UI can never
-// dip under the minimum the server would reject on save.
-const GROUP_MIN_CELLS = 2;
+// Per-kind geometry minimums (layout v5). MUST mirror the server bounds in
+// server/services/layout.service.js: every object is at least 2×2 fine units,
+// an element (button) is capped at 4×4, a report may grow to the full canvas.
+const MIN_OBJECT_SIZE = 2;
+const MAX_ELEMENT_SIZE = 4;
 
 /**
- * Editable grid (edit mode): interactive gridstack + per-widget controls +
+ * Editable grid (edit mode): interactive gridstack + per-object controls +
  * generic config modal. Persists changes via the `onSave` callback (debounced).
  *
- * Grid canvas: 32×18, square cells (cellHeight 'auto' → cell height = cell
- * width, and 32/18 = 16/9 so 18 rows fill a 16:9 viewport). `columns` is the
- * column count the incoming items were saved with (12 for legacy layouts):
- * the grid is initialized at that count, items are loaded, then — when it
- * differs from 32 — gridstack's native `column(32, 'moveScale')` reflow
- * rescales every x/w client-side. The caller must persist the result (the
- * 'change' event fired by column() plus the explicit save below).
+ * Canvas (layout v5): 64×36 FINE units (1 unit = ½ global cell, 64/36 = 16/9),
+ * so cells stay square with `cellHeight: 'auto'`. The grid is a single
+ * gridstack hosting EVERY object (widgets, element placements, reports);
+ * group boxes are NOT grid items — they live in the decorative background
+ * layer owned by grid/groups.js. The persisted model is a flat v5 list:
  *
- * float: true = FREE VERTICAL PLACEMENT (review C7 fix): an item dropped in
- * the lower rows STAYS there, voluntary vertical holes are preserved (no
- * compaction toward the top) and the drag placeholder follows the real mouse
- * position (with float:false it stayed pinned to the compacted top row, which
- * read as a dark « shadow zone » glued to the top of the edit area). View mode
- * uses the same flag (viewer.js) so the rendered layout is IDENTICAL to the
- * saved positions. gridstack still forbids overlaps in both modes (collision
- * push). margin must stay a single symmetric value (square-cell contract),
- * see config.js (review C8).
+ *   widget : { id, kind:'widget', type, x, y, w, h, config }
+ *   element: { id, kind:'element', elementId, x, y, w, h, options }
+ *   report : { id, kind:'report', elementId, x, y, w, h }
+ *
+ * `serialize()` reproduces EXACTLY that shape from the live engine nodes,
+ * preserving kind/elementId/options/config — a full PUT can never drop an
+ * element/report's identity. It must never emit the legacy v4 keys
+ * (type/config for an element, `buttons`/`reports`, …).
+ *
+ * float: true = FREE VERTICAL PLACEMENT: an item dropped in the lower rows
+ * STAYS there, voluntary vertical holes are preserved (no compaction toward
+ * the top) and the drag placeholder follows the real mouse position. gridstack
+ * still forbids overlaps (collision push): a drop on an occupied cell PUSHES
+ * the occupant. View mode uses the same flag (viewer.js) so the rendered
+ * layout is IDENTICAL to the saved positions. margin must stay a single
+ * symmetric value (square-cell contract), see config.js.
  */
 export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, cellHeight = 'auto' } = {}) {
-  const meta = new Map(); // id -> { type, config, buttons? }
+  const meta = new Map(); // id -> normalized v5 object ({ kind, type|elementId, config|options })
   // normalizeItems MUST run before the meta cache is populated: it is the load
-  // correction shared with the viewer (geometry hardening, search h:1→h:2 and
-  // the lot-6 group tile min-size raise — see config.js). Feeding the CORRECTED
-  // items to meta means the very next save persists exactly what is rendered
-  // (a raw `buttons[]` in meta would silently re-save the under-min geometry).
+  // correction shared with the viewer (geometry hardening, search h→4 and the
+  // element/report 2×2 minimum — see config.js). Feeding the CORRECTED items to
+  // meta means the very next save persists exactly what is rendered.
   const loaded = normalizeItems(items);
-  // `buttons` is carried through for `group` items only: the editor MUST
-  // persist them unchanged on a widget drag, otherwise the group's whole
-  // content would be dropped.
-  loaded.forEach((i) =>
-    meta.set(i.id, {
-      type: i.type,
-      config: i.config || {},
-      buttons: i.type === 'group' && Array.isArray(i.buttons) ? i.buttons : undefined,
-      reports: i.type === 'group' && Array.isArray(i.reports) ? i.reports : undefined,
-    })
-  );
+  for (const i of loaded) meta.set(i.id, toMeta(i));
 
   // Class hook for the edit-mode-only grid lines (see style.css): the visual
   // grid must never appear in view mode nor on the login view.
@@ -66,10 +60,10 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
       cellHeight: Number.isFinite(cellHeight) && cellHeight > 0 ? cellHeight : 'auto',
       margin: 8, // INSIDE the cell: items snap to multiples of the cell width,
       // so the CSS grid lines (also at multiples) align with item edges.
-      column: columns, // saved column count (12 for legacy) — migrated below if ≠ 32
-      minRow: GRID_ROWS, // fixed 18-row canvas: gridstack's inline height stays 18*cellH
+      column: columns, // saved column count (12 for legacy) — migrated below if ≠ 64
+      minRow: GRID_ROWS, // fixed 36-row canvas: gridstack's inline height stays 36*cellH
       maxRow: GRID_ROWS, // …and content can never exceed it → exact 16:9 fill
-      float: true, // free vertical placement (review C7) — holes are preserved
+      float: true, // free vertical placement — holes are preserved
       resizable: { handles: 'all' },
       draggable: { handle: '.grid-stack-item-content' },
     },
@@ -77,12 +71,10 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
   );
 
   grid.removeAll(false);
-  // `loaded` (normalized above, before the meta cache) is used here so the
-  // 12→32 column reflow only ever sees corrected geometry. The native reflow
-  // scales x/w by 32/columns (±1 rounding); y only moves when an overlap must
-  // be resolved (h is untouched) — with float:true saved rows are NEVER
-  // compacted upward (measured on gridstack v13, see the migration comment
-  // above grid.column()).
+  // `loaded` (normalized above) is used here so the 12→64 column reflow only
+  // ever sees corrected geometry. Per-kind min/max geometry is enforced on the
+  // gridstack nodes themselves, so the UI can never produce a layout the server
+  // would refuse to save (element > 4×4, object < 2×2).
   grid.load(
     loaded.map((item) => ({
       id: item.id,
@@ -90,10 +82,7 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
       y: item.y,
       w: item.w,
       h: item.h,
-      // A group can never be resized below its 2×2 GLOBAL minimum (the server
-      // rejects it too) — enforce it on the resize handles themselves so the
-      // UI cannot produce a layout the server would refuse to save.
-      ...(item.type === 'group' ? { minW: GROUP_MIN_CELLS, minH: GROUP_MIN_CELLS } : {}),
+      ...gridLimits(objectKind(item)),
       // Gridstack's default renderCB assigns `content` via textContent, so any
       // markup here would surface as literal text. Widgets render themselves
       // into .grid-stack-item-content, so keep this empty.
@@ -101,15 +90,14 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     }))
   );
 
-  // ---- legacy column migration (12 → 32), BEFORE widgets are rendered so the
+  // ---- legacy column migration (12 → 64), BEFORE objects are rendered so the
   // DOM node list is already final (columnChanged re-adds the same elements).
   const migrated = columns !== GRID_COLUMNS;
   if (migrated) {
-    // Native reflow: scales x/w by 32/columns with rounding (±1 cell possible).
+    // Native reflow: scales x/w by 64/columns with rounding (±1 cell possible).
     // Row heights are unchanged by the migration (h is untouched); y only
     // moves when the rescaled footprint collides with a neighbour (engine
-    // collision resolution) — no upward compaction with float:true (measured
-    // on gridstack v13), matching the free-placement rule (review C7 fix).
+    // collision resolution) — no upward compaction with float:true.
     grid.column(GRID_COLUMNS, 'moveScale');
   }
 
@@ -118,14 +106,47 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     const contentEl = node.el.querySelector('.grid-stack-item-content');
     if (item && contentEl) {
       renderWidget(contentEl, item, { editable: true });
-      attachControls(node.el, item.id);
+      attachControls(node.el, item.id, { config: objectKind(item) === 'widget' });
+    }
+  }
+
+  // ---- snapping: widgets live on the 2-fine-unit parity grid ----
+  // Applied AFTER gridstack resolved the drop (the `change` event fires at
+  // dragstop/resizestop), never during the gesture. `applyingSnap` guards the
+  // re-entrancy triggered by our own grid.update() calls so x ↔ x±1 can never
+  // oscillate; update() is only issued for values that actually change.
+  let applyingSnap = false;
+  function snapWidgets() {
+    if (applyingSnap || !grid.engine) return;
+    const updates = [];
+    for (const n of grid.engine.nodes) {
+      const m = meta.get(n.id);
+      if (!m || m.kind !== 'widget') continue;
+      const x = n.x || 0;
+      const y = n.y || 0;
+      const w = n.w || 1;
+      const h = n.h || 1;
+      const sx = x - (x % 2);
+      const sy = y - (y % 2);
+      const sw = Math.max(MIN_OBJECT_SIZE, w - (w % 2));
+      const sh = Math.max(MIN_OBJECT_SIZE, h - (h % 2));
+      if (sx !== x || sy !== y || sw !== w || sh !== h) {
+        updates.push({ el: n.el, x: sx, y: sy, w: sw, h: sh });
+      }
+    }
+    if (!updates.length) return;
+    applyingSnap = true;
+    try {
+      for (const u of updates) grid.update(u.el, { x: u.x, y: u.y, w: u.w, h: u.h });
+    } finally {
+      applyingSnap = false;
     }
   }
 
   // ---- persistence (debounced, CANCELLABLE) ----
   // Unlike the shared debounce() helper, the timer is kept in a handle so a
   // page switch can FLUSH synchronously and CANCEL the pending tick: a stale
-  // tick firing after the switch would re-send the old page's items (the
+  // tick firing after the switch would re-send the old page's objects (the
   // gridstack race guard would usually catch it, but cancellation removes the
   // race window entirely).
   let ready = false;
@@ -133,20 +154,26 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
   let saveTimer = 0;
   // Serialize from the LIVE engine nodes — NOT from grid.save(). gridstack's
   // removeInternalForSave() strips `w`/`h` whenever they equal 1, so a
-  // grid.save()-based body silently dropped the geometry of every 1-cell item
-  // and the server re-inflated it (review A1). node.w/node.h are always
-  // defined here (gridstack defaults missing values at load/add time); the
-  // `|| 1` guards are belt-and-braces for hand-crafted nodes.
+  // grid.save()-based body silently dropped the geometry of every 1-cell item.
+  // node.w/node.h are always defined here; the `|| 1` guards are belt-and-braces.
   const serialize = () =>
-    grid.engine.nodes.map((n) => {
-      const m = meta.get(n.id) || { type: '', config: {} };
-      const entry = { id: n.id, x: n.x, y: n.y, w: n.w || 1, h: n.h || 1, type: m.type, config: m.config };
-      if (m.type === 'group') {
-        entry.buttons = Array.isArray(m.buttons) ? m.buttons : [];
-        entry.reports = Array.isArray(m.reports) ? m.reports : [];
-      }
-      return entry;
-    });
+    grid.engine.nodes
+      .map((n) => {
+        const m = meta.get(n.id);
+        if (!m) return null;
+        const x = n.x || 0;
+        const y = n.y || 0;
+        const w = n.w || 1;
+        const h = n.h || 1;
+        if (m.kind === 'element') {
+          return { id: n.id, kind: 'element', elementId: m.elementId, x, y, w, h, options: m.options || {} };
+        }
+        if (m.kind === 'report') {
+          return { id: n.id, kind: 'report', elementId: m.elementId, x, y, w, h };
+        }
+        return { id: n.id, kind: 'widget', type: m.type, x, y, w, h, config: m.config || {} };
+      })
+      .filter(Boolean);
   const runSave = () => {
     saveTimer = 0;
     pendingSave = false;
@@ -178,8 +205,18 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     if (ready && grid.engine) return onSave(serialize());
   };
 
-  grid.on('change', scheduleSave);
-  grid.on('added', scheduleSave);
+  // ONE mutation per gesture: gridstack fires `change` once the drag/resize
+  // settles (dragstop/resizestop), `added`/`removed` once per add/delete.
+  // Snap first (widget parity), then arm the debounce so the persisted body
+  // carries the SNAPPED geometry.
+  grid.on('change', () => {
+    snapWidgets();
+    scheduleSave();
+  });
+  grid.on('added', () => {
+    snapWidgets();
+    scheduleSave();
+  });
   grid.on('removed', scheduleSave);
   ready = true;
 
@@ -188,67 +225,68 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
   // listeners were attached, so save explicitly (the debounce coalesces).
   if (migrated) scheduleSave();
 
-  // ---- add widget ----
-  function addWidget(type) {
-    // Client-side cap (review C3): mirrors the server's MAX_ITEMS so a full
+  // ---- add object ----
+  /**
+   * Add an object to the grid. `draft` is a v5 object (kind + geometry +
+   * type/config for widgets, elementId/options for elements, elementId for
+   * reports). Per-kind min/max geometry is applied to the gridstack node so
+   * resize can never leave the bounds. Returns the created object, or null
+   * when the layout is full.
+   */
+  function addObject(draft) {
+    // Client-side cap: mirrors the server's MAX_OBJECTS_PER_PAGE so a full
     // layout fails LOUDLY here instead of at PUT time (silent divergence).
     if (grid.engine.nodes.length >= MAX_ITEMS) {
-      toast(`Cannot add widget: layout is full (max ${MAX_ITEMS} items)`, 'error');
+      toast(`Cannot add object: layout is full (max ${MAX_ITEMS} objects)`, 'error');
       return null;
     }
-    const size = getDefaultSize(type);
-    const id = uuid();
-    const isGroup = type === 'group';
+    const kind = objectKind(draft);
+    const limits = gridLimits(kind);
+    const id = typeof draft.id === 'string' && draft.id ? draft.id : uuid();
+    const w = clampSize(draft.w, limits.minW, limits.maxW);
+    const h = clampSize(draft.h, limits.minH, limits.maxH);
+    const x = Math.max(0, Math.floor(Number(draft.x)) || 0);
+    const y = Math.max(0, Math.floor(Number(draft.y)) || 0);
+    const item = { id, kind, x, y, w, h };
+    if (kind === 'widget') {
+      item.type = String(draft.type || '');
+      item.config = draft.config && typeof draft.config === 'object' ? draft.config : {};
+    } else {
+      item.elementId = String(draft.elementId || '');
+      if (kind === 'element') item.options = draft.options && typeof draft.options === 'object' ? draft.options : {};
+    }
     // gridstack v13 types addWidget() as `GridItemHTMLElement | undefined`:
     // it returns the item element, not a GridStackNode with `.id`/`.el`.
-    // Don't depend on the return value — resolve the item element from the
-    // engine via the id we control, and guard against a missing node.
-    grid.addWidget({
-      id,
-      x: 0,
-      y: 0,
-      w: size.w,
-      h: size.h,
-      ...(isGroup ? { minW: GROUP_MIN_CELLS, minH: GROUP_MIN_CELLS } : {}),
-      // See grid.load() above: content is assigned via textContent by gridstack.
-      content: '',
-    });
-    meta.set(id, { type, config: {}, buttons: isGroup ? [] : undefined, reports: isGroup ? [] : undefined });
+    // Resolve the item element from the engine via the id we control.
+    grid.addWidget({ id, x, y, w, h, ...limits, content: '' });
+    meta.set(id, toMeta(item));
     const itemEl = grid.engine.nodes.find((n) => n.id === id)?.el;
     const contentEl = itemEl?.querySelector('.grid-stack-item-content');
     if (itemEl && contentEl) {
-      // Pass the REAL geometry: the group derives its internal trame from w/h,
-      // so a missing w/h here would make it clamp tiles to a 1-cell trame.
-      renderWidget(
-        contentEl,
-        {
-          id,
-          type,
-          x: 0,
-          y: 0,
-          w: size.w,
-          h: size.h,
-          config: {},
-          buttons: isGroup ? [] : undefined,
-          reports: isGroup ? [] : undefined,
-        },
-        { editable: true }
-      );
-      attachControls(itemEl, id);
+      renderWidget(contentEl, item, { editable: true });
+      attachControls(itemEl, id, { config: kind === 'widget' });
     }
     scheduleSave();
-    return id;
+    return item;
+  }
+
+  /** Palette entry point: add a WIDGET by type at its manifest default size. */
+  function addWidget(type) {
+    const size = getDefaultSize(type);
+    const res = addObject({ kind: 'widget', type, x: 0, y: 0, w: size.w, h: size.h, config: {} });
+    return res ? res.id : null;
   }
 
   // ---- config modal (generic, schema-driven) ----
   function openConfig(id) {
     const m = meta.get(id);
-    const w = getWidget(m?.type);
+    if (!m || m.kind !== 'widget') return;
+    const w = getWidget(m.type);
     if (!w) return;
     openSettingsModal({
       itemId: id,
       title: `Edit ${w.name}`,
-      schema: getSettingsSchema(m?.type),
+      schema: getSettingsSchema(m.type),
       config: m.config || {},
       onSaved: (newConfig) => {
         m.config = newConfig;
@@ -257,20 +295,10 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
         if (contentEl) {
           renderWidget(
             contentEl,
-            {
-              id,
-              x: node?.x || 0,
-              y: node?.y || 0,
-              w: node?.w || 1,
-              h: node?.h || 1,
-              type: m.type,
-              config: newConfig,
-              buttons: m.type === 'group' ? m.buttons : undefined,
-              reports: m.type === 'group' ? m.reports : undefined,
-            },
+            { id, kind: 'widget', type: m.type, x: node?.x || 0, y: node?.y || 0, w: node?.w || 1, h: node?.h || 1, config: newConfig },
             { editable: true }
           );
-          attachControls(node.el, id);
+          attachControls(node.el, id, { config: true });
         }
         scheduleSave();
       },
@@ -283,73 +311,48 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     if (node) {
       const contentEl = node.el?.querySelector('.grid-stack-item-content');
       if (contentEl) disposeWidget(contentEl);
+      // gridstack fires `removed` → ONE debounced PUT carries the deletion.
+      // No dedicated DELETE call: a gesture must produce a SINGLE mutation, and
+      // the full PUT is the source of truth (it also keeps group boxes intact —
+      // a group is never an object and is never touched here).
       grid.removeWidget(node.el, true);
     }
     meta.delete(id);
-    // The deletion is also carried by the debounced full PUT below (the server
-    // replace() drops it) — this endpoint just reconciles faster. A failure is
-    // surfaced, never swallowed (review C3): the PUT remains the source of truth.
-    api.del(`/api/layout/items/${id}`).catch((err) => toast(err.message || 'Failed to delete item', 'error'));
-    scheduleSave();
   }
 
   /**
-   * Merge a config patch into the meta Map without touching geometry. Fed by
-   * main.js's 'homy:widget-config' listener (review C4): widgets that persist
-   * config changes outside the ⚙ modal (notes inline textarea) must keep this
-   * cache fresh, or the next full-layout PUT would rewrite the stale config
-   * and silently lose the user's text. Does NOT schedule a save: the widget's
-   * own PATCH persists the change; this only keeps the next full PUT correct.
+   * Merge a config patch into the meta cache without touching geometry. Fed by
+   * main.js's 'homy:widget-config' listener: widgets that persist config
+   * changes outside the ⚙ modal (notes inline textarea) must keep this cache
+   * fresh, or the next full-layout PUT would rewrite the stale config and
+   * silently lose the user's text. Does NOT schedule a save: the widget's own
+   * PATCH persists the change; this only keeps the next full PUT correct.
    */
   function applyConfig(id, config) {
     const m = meta.get(id);
-    if (m && config && typeof config === 'object') {
+    if (m && m.kind === 'widget' && config && typeof config === 'object') {
       m.config = { ...(m.config || {}), ...config };
     }
   }
 
-  /**
-   * Replace a group's `buttons[]` in the meta cache (lot 4). Fed by the
-   * `homy:group-buttons` event the group widget broadcasts after any tile
-   * mutation (add / options / move / resize / delete), so the next debounced
-   * full PUT serializes the fresh tiles. Schedules a save through the SAME
-   * cancellable debounce as a widget drag — the mode-change flush (destroy)
-   * and page-switch flush therefore cover tile edits too.
-   */
-  function applyButtons(id, buttons) {
-    const m = meta.get(id);
-    if (!m || m.type !== 'group' || !Array.isArray(buttons)) return;
-    m.buttons = buttons;
-    scheduleSave();
-  }
-
-  /**
-   * Replace a group's `reports[]` in the meta cache (lot 8). Fed by the
-   * `homy:group-reports` event the group widget broadcasts after any report
-   * tile mutation, through the SAME cancellable debounce as a widget drag.
-   */
-  function applyReports(id, reports) {
-    const m = meta.get(id);
-    if (!m || m.type !== 'group' || !Array.isArray(reports)) return;
-    m.reports = reports;
-    scheduleSave();
-  }
-
-  function attachControls(itemEl, id) {
+  function attachControls(itemEl, id, { config = true } = {}) {
     const contentEl = itemEl.querySelector('.grid-stack-item-content');
     if (!contentEl) return;
     const controls = el('div', 'widget-controls');
-    const editBtn = el('button', null, '⚙', { type: 'button', title: 'Edit', 'aria-label': 'Edit' });
     const delBtn = el('button', 'del', '✕', { type: 'button', title: 'Delete', 'aria-label': 'Delete' });
-    editBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openConfig(id);
-    });
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       removeWidget(id);
     });
-    controls.append(editBtn, delBtn);
+    if (config) {
+      const editBtn = el('button', null, '⚙', { type: 'button', title: 'Edit', 'aria-label': 'Edit' });
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openConfig(id);
+      });
+      controls.appendChild(editBtn);
+    }
+    controls.appendChild(delBtn);
     contentEl.appendChild(controls);
     itemEl.classList.add('editing');
     // Review C14: the vendored gridstack v13 drag engine has no
@@ -371,9 +374,8 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
 
   return {
     addWidget,
+    addObject,
     applyConfig,
-    applyButtons,
-    applyReports,
     /**
      * Update the pinned row pitch (px) from main.js after a resize / geometry
      * change. With an explicit cellHeight gridstack no longer tracks
@@ -402,6 +404,52 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
       grid.destroy();
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// v5 object helpers
+// ---------------------------------------------------------------------------
+
+/** The v5 discriminant of an object; anything that is not element/report is a widget. */
+function objectKind(item) {
+  return item && (item.kind === 'element' || item.kind === 'report') ? item.kind : 'widget';
+}
+
+/**
+ * gridstack min/max geometry per kind. Mirrors the server bounds:
+ * widget ≥ 2×2, element 2×2..4×4, report 2×2..64×36.
+ */
+function gridLimits(kind) {
+  if (kind === 'element') {
+    return { minW: MIN_OBJECT_SIZE, minH: MIN_OBJECT_SIZE, maxW: MAX_ELEMENT_SIZE, maxH: MAX_ELEMENT_SIZE };
+  }
+  if (kind === 'report') {
+    return { minW: MIN_OBJECT_SIZE, minH: MIN_OBJECT_SIZE, maxW: GRID_COLUMNS, maxH: GRID_ROWS };
+  }
+  return { minW: MIN_OBJECT_SIZE, minH: MIN_OBJECT_SIZE }; // widget
+}
+
+/** Normalized meta entry: the persisted identity fields of an object. */
+function toMeta(item) {
+  const kind = objectKind(item);
+  const base = { id: item.id, kind, x: item.x, y: item.y, w: item.w, h: item.h };
+  if (kind === 'element') {
+    return { ...base, elementId: String(item.elementId || ''), options: plainObject(item.options) };
+  }
+  if (kind === 'report') {
+    return { ...base, elementId: String(item.elementId || '') };
+  }
+  return { ...base, type: String(item.type || ''), config: plainObject(item.config) };
+}
+
+function clampSize(value, min, max) {
+  const n = Math.floor(Number(value));
+  const v = Number.isFinite(n) && n > 0 ? n : min;
+  return Math.min(max, Math.max(min, v));
+}
+
+function plainObject(v) {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
 }
 
 /**

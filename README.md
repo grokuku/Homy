@@ -56,7 +56,7 @@ Protected (JWT required):
 - `GET /api/auth/me`
 - `PUT /api/auth/credentials` — change user/password (current password required)
 - `GET /api/layout`, `PUT /api/layout`
-- `POST /api/layout/items`, `PATCH /api/layout/items/:id/config`, `DELETE /api/layout/items/:id`
+- `POST /api/layout/objects`, `PATCH /api/layout/objects/:id/config`, `DELETE /api/layout/objects/:id`
 - `GET /api/widgets` — widget type manifest (id, name, icon, category, defaultSize, settingsSchema)
 - `GET /api/weather?city=…&units=metric|imperial` — weather proxy (open-meteo, no API key, cached 10 min)
 - `GET /api/themes` — available themes (`['dark', 'light']`)
@@ -146,7 +146,7 @@ fills a 16:9 viewport exactly. Key contracts (see `public/js/grid/config.js` for
   (the fixed 18-row canvas), `columns` integer 1..32 (default/legacy = 12),
   unknown `type` rejected. Missing `w`/`h` on a PUT fall back to 1×1 —
   gridstack only ever omits them when the value IS 1 (see
-  `server/routes/layout.routes.js` for the rationale); `POST /api/layout/items`
+  `server/routes/layout.routes.js` for the rationale); `POST /api/layout/objects`
   instead falls back to the widget manifest's `defaultSize`.
 - `settings.json` — dashboard settings (`{ theme, background }`, lot 3)
 - `icons.json` — installed icon INDEX (`{ version, icons: [{ slug, id, name, collection,

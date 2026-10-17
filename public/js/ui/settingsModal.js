@@ -14,7 +14,7 @@ import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
  * value badge — the mock look of the Background modal. `number` stays a plain
  * number input (retro-compatible).
  *
- * On save it PATCHes `/api/layout/items/:id/config`, then calls `onSaved` with
+ * On save it PATCHes `/api/layout/objects/:id/config`, then calls `onSaved` with
  * the new config so the caller can re-render the widget.
  *
  * Shell : HolafModal (brique holaf-lib) sert de coque (pile, focus trap,
@@ -84,7 +84,7 @@ export function openSettingsModal({ itemId, title, schema, config, onSaved }) {
     const saveBtn = ctrl.el.querySelector('.holaf-modal-footer button[type="submit"]');
     if (saveBtn) saveBtn.disabled = true;
     try {
-      await api.patch(`/api/layout/items/${itemId}/config`, { config: result.value });
+      await api.patch(`/api/layout/objects/${itemId}/config`, { config: result.value });
       onSaved?.(result.value);
       toast('Settings saved', 'success');
       ctrl.close();
