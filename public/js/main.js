@@ -2,6 +2,7 @@ import { api } from './api.js';
 import { state } from './state.js';
 import { renderViewer } from './grid/viewer.js';
 import { initEditor, renderPalette } from './grid/editor.js';
+import { createGroupLayer } from './grid/groups.js';
 import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, CANVAS_ASPECT, CELL_ASPECT_TOLERANCE, computeCanvasFit } from './grid/config.js';
 import { getTheme, otherTheme, switchTheme, syncFromServer } from './ui/theme.js';
 import { applyBackground, setBackgroundHost } from './backgrounds/manager.js';
@@ -18,6 +19,9 @@ import { clearLocalIconCache } from './elements/button.js';
 const $ = (id) => document.getElementById(id);
 
 let grid = null; // current grid instance (viewer gridstack or editor handle)
+// Group BOX layer (layout v5, lot L2): owns the .group-layer (first child of
+// #grid-preview, under the grid) and the .overlay-layer (last child, EDIT only).
+const groupLayer = createGroupLayer($('grid-preview'));
 let viewTopbarVisible = false; // VIEW-mode topbar state (right-click toggles; default hidden)
 let lastViewTopbarH = 0; // VIEW-mode topbar natural height (for the animated swap)
 let switchingPage = false; // page switch in flight (double-click guard on the tabs)
@@ -191,6 +195,10 @@ function destroyGrid() {
   // inline style (CSS vars + fixed height) — both must go before the next init.
   container.classList.remove('editing-grid');
   container.removeAttribute('style');
+  // gridstack.destroy() removed its container; the fresh one is appended at the
+  // END of #grid-preview. Re-assert the L2 layer order: .group-layer first
+  // (boxes under the grid), .overlay-layer last (EDIT only, above the grid).
+  groupLayer.reorder();
 }
 
 // ---- Adaptive edit-preview dezoom (lot 1) ----------------------------------
@@ -782,6 +790,14 @@ function setMode(mode, { animate = false } = {}) {
   // the exact pinned pitch once (idempotent, keeps inline height == --canvas-h).
   applyGridCellHeight(cellHeight);
 
+  // Lot L2 — group boxes: rebuild the decorative background layer for the active
+  // page (VIEW: pure backdrop + click-through; EDIT: hover/selection), then pin
+  // the single conversion unit (--unit-w/--unit-h) and the layer box from the
+  // fresh canvas box. reorder() first: gridstack appended a new container.
+  groupLayer.reorder();
+  groupLayer.render(state.layoutGroups, mode);
+  groupLayer.syncCanvas($('grid-container'));
+
   // Lot 4 — user-driven VIEW → EDIT swap plays the enter animation now that
   // the edit grid exists at its final geometry. Reduced-motion and every
   // non-interactive rebuild (initial load, page switch) stay instant.
@@ -1309,6 +1325,8 @@ if (typeof ResizeObserver !== 'undefined') {
     // ResizeObserver only does that for the 'auto' mode), so a window resize
     // would otherwise keep the stale inline container height.
     applyGridCellHeight(state.mode === 'edit' ? editCellHeight : viewCellHeight);
+    // Re-pin the group-box conversion unit + layer box to the fresh canvas box.
+    groupLayer.syncCanvas($('grid-container'));
     syncBackgroundScope();
   }).observe($('dashboard-body'));
 }

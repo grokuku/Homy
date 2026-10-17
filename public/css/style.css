@@ -39,6 +39,7 @@
      see @property below and .grid-stack.editing-grid). */
   --grid-line-rgb: 255 255 255;
   --grid-minor-a: 0.07;
+  --grid-global-a: 0.12;
   --grid-major-a: 0.17;
   /* Widget surface alpha: 100% by default; relaxed when a background is
      active (image or procedural) so widgets become translucent glass. */
@@ -63,6 +64,7 @@
   /* Edit-mode grid lines — light-theme variants (kept readable on #eef1f6). */
   --grid-line-rgb: 15 23 42;
   --grid-minor-a: 0.1;
+  --grid-global-a: 0.15;
   --grid-major-a: 0.2;
 }
 
@@ -419,6 +421,11 @@ body { background: transparent; transition: background 0.2s; }
 .grid-wrap {
   flex: 1 1 auto;
   min-height: 0; /* allow shrinking below content size inside the flex column */
+  /* L2: positioned so the .group-layer (absolute, sibling of #grid-container
+     through the display:contents #grid-preview) gets a deterministic
+     containing block — .group-layer's inline left/top mirror the canvas
+     container's offsetLeft/offsetTop (see grid/groups.js syncCanvas). */
+  position: relative;
   padding: 20px;
   margin-left: 0;
   /* Review C2: on screens too small for a readable grid (see the 640px cell
@@ -611,6 +618,7 @@ body { background: transparent; transition: background 0.2s; }
      a class toggle on an ancestor that changes --guide-op is picked up — a
      derived token declared at :root would substitute --guide-op too early. */
   --grid-minor: rgb(var(--grid-line-rgb) / calc(var(--grid-minor-a) * var(--guide-op)));
+  --grid-global: rgb(var(--grid-line-rgb) / calc(var(--grid-global-a) * var(--guide-op)));
   --grid-major: rgb(var(--grid-line-rgb) / calc(var(--grid-major-a) * var(--guide-op)));
   --grid-center: color-mix(in srgb, var(--accent, #4f8cff) calc(65% * var(--guide-op)), transparent);
   /* Lot 2 — CONSTANT RENDERED THICKNESS: .editing-grid is scaled by
@@ -621,19 +629,32 @@ body { background: transparent; transition: background 0.2s; }
      var(..., 1) → f = 1 → identical to before. */
   --guide-major-w: calc(2px / var(--preview-scale, 1));
   --guide-minor-w: calc(1px / var(--preview-scale, 1));
+  /* L2 — the trame is now the v5 64×36 fine grid (was 32×18):
+       fine    = every 1 unit (every column / row);
+       global  = every 2 units (widget-alignment level, NEW);
+       major   = every 8 columns / 6 rows (keeps the pre-L2 visual rhythm:
+                 before it was every 4/32 = ⅛ col and every 3/18 = ⅙ row).
+     Vertical/global/major first (coarser), minor LAST so the finest lines
+     paint over the coarser ones, as before. */
   background-image:
-    /* major vertical: every 4 columns (x = 4, 8, … 28 — includes 16) */
+    /* major vertical: every 8 units (x = 8, 16, … 56 — includes 32) */
     repeating-linear-gradient(90deg,
-      var(--grid-major) 0 var(--guide-major-w), transparent var(--guide-major-w) calc(var(--gs-column-width, calc(100% / 32)) * 4)),
-    /* major horizontal: every 3 rows (y = 3, 6, 9, 12, 15 — includes 9) */
+      var(--grid-major) 0 var(--guide-major-w), transparent var(--guide-major-w) calc(var(--gs-column-width, calc(100% / 64)) * 8)),
+    /* major horizontal: every 6 units (y = 6, 12, … 30 — includes 18) */
     repeating-linear-gradient(0deg,
-      var(--grid-major) 0 var(--guide-major-w), transparent var(--guide-major-w) calc(var(--gs-cell-height, calc(100% / 18)) * 3)),
+      var(--grid-major) 0 var(--guide-major-w), transparent var(--guide-major-w) calc(var(--gs-cell-height, calc(100% / 36)) * 6)),
+    /* global vertical: every 2 units */
+    repeating-linear-gradient(90deg,
+      var(--grid-global) 0 var(--guide-minor-w), transparent var(--guide-minor-w) calc(var(--gs-column-width, calc(100% / 64)) * 2)),
+    /* global horizontal: every 2 units */
+    repeating-linear-gradient(0deg,
+      var(--grid-global) 0 var(--guide-minor-w), transparent var(--guide-minor-w) calc(var(--gs-cell-height, calc(100% / 36)) * 2)),
     /* minor vertical: every column boundary */
     repeating-linear-gradient(90deg,
-      var(--grid-minor) 0 var(--guide-minor-w), transparent var(--guide-minor-w) var(--gs-column-width, calc(100% / 32))),
+      var(--grid-minor) 0 var(--guide-minor-w), transparent var(--guide-minor-w) var(--gs-column-width, calc(100% / 64))),
     /* minor horizontal: every row boundary */
     repeating-linear-gradient(0deg,
-      var(--grid-minor) 0 var(--guide-minor-w), transparent var(--guide-minor-w) var(--gs-cell-height, calc(100% / 18)));
+      var(--grid-minor) 0 var(--guide-minor-w), transparent var(--guide-minor-w) var(--gs-cell-height, calc(100% / 36)));
 }
 /* Center axes (x = 16/32 = 50%, y = 9/18 = 50%) — accent-colored via
    --grid-center (color-mix). Isolated on ::before so a failure of color-mix
@@ -1150,116 +1171,163 @@ body[data-bg-active] .grid-stack-item-content {
 
 /* LOT 6: the shortcut widget was removed with its .shortcut-* styles. */
 
-/* ---------- Group container (lot 2) ----------
-   A group is a titled container whose internal TRAME is 2× finer than the
-   global grid: one internal cell = half a global cell. The internal step
-   (--group-step, set inline by elements/group.js from the LIVE global COLUMN
-   width — never from the cell height) drives BOTH the trame lines AND the tile
-   placement in BOTH axes, so they always line up AND stay perfectly square:
-   even when the parent canvas is stretched by the fill fit (cells up to ±20 %
-   anisotropic), the group content keeps 1:1 pixels (a 2×2 tile is a square, a
-   health dot is a circle, an SVG icon is not deformed). The tiles keep a
-   constant physical size (the step never derives from the group's own size);
-   overflow scrolls inside .group-board. */
-.group-widget { overflow: hidden; }
-/* The group title bar FLOATS over the top of the trame (absolute). It reserves
-   NO space whatsoever: `.group-board` fills the ENTIRE group interior (no
-   padding), so row 0 of the internal trame starts exactly at the top edge of
-   the content box (tile.top == board.top) — in EDIT as well as VIEW, and
-   identically whether the chip is shown or not. The chip is a small
-   TRANSLUCENT pill (max ~half the group, ellipsis) with pointer-events:none
-   (only its buttons, if any, are interactive) so a click/drag in its area
-   still reaches the trame underneath without ever masking it. Its visibility
-   is governed by [data-title-visibility] (see below). */
-.group-widget > .widget-header {
+/* ═══════════════════════════════════════════════════════════════════════
+   Group boxes (layout v5, lot L2) — the .group-layer
+   ═══════════════════════════════════════════════════════════════════════
+   A v5 group is a CONTENT-LESS box `{ id, x, y, w, h, config }`: fill + border +
+   title, no trame, no members of its own. The boxes live in a dedicated
+   `.group-layer` — the FIRST child of #grid-preview — so they paint UNDER the
+   gridstack items AND under the edit guides (the vendored gridstack CSS puts no
+   z-index on .grid-stack-item, so DOM order rules the stacking; see
+   grid/groups.js).
+
+   ONE conversion unit: main.js publishes `--unit-w = canvasW / 64` and
+   `--unit-h = canvasH / 36` on #grid-preview; every box is a pure multiple of
+   those (`calc(x * var(--unit-w))`). A box NEVER measures anything.
+
+   The layer mirrors #grid-container's layout box (left/top/width/height set by
+   groups.js syncCanvas) so the two siblings share one coordinate space,
+   including the EDIT dezoom (the scale is applied to BOTH in preview-active).
+   The whole layer is `pointer-events: none`: in VIEW a click on a group goes
+   straight THROUGH to the canvas / the object on top (boxes are purely
+   decorative). */
+.group-layer {
+  position: absolute;
+  pointer-events: none;
+}
+/* EDIT dezoom: the canvas (#grid-container.grid-stack.editing-grid) is scaled
+   by --preview-scale; the box layer must scale IDENTICALLY to stay aligned. The
+   transform is only applied in preview-active, so VIEW keeps a clean stacking /
+   backdrop-filter context. */
+#dashboard-view.preview-active .group-layer {
+  transform: scale(var(--preview-scale, 1));
+  transform-origin: top left;
+}
+
+/* The BOX. SAME appearance contract as .grid-stack-item-content: the per-widget
+   vars (--widget-bg-color/-op, --widget-border-color/-op, --widget-border-width,
+   --widget-text-color) are set by applyAppearance() (reused from
+   widgets/registry.js). The `.group-layer` prefix raises specificity above the
+   plain .grid-stack-item-content rules it mirrors. */
+.group-layer .group-box {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--widget-bg-color, var(--bg-elev)) var(--widget-bg-op, var(--surface-alpha)), transparent);
+  border-style: solid;
+  border-width: var(--widget-border-width, 1px);
+  border-color: color-mix(in srgb, var(--widget-border-color, var(--border)) var(--widget-border-op, 100%), transparent);
+  border-radius: var(--radius);
+  color: var(--widget-text-color, var(--text));
+}
+/* bgOpacity:0 → fill + backdrop-filter neutralized (no blurred ghost rectangle
+   — the regression already fixed for widgets, not reintroduced here), but the
+   BORDER survives: its own alpha is --widget-border-op (borderOpacity).
+   Specificity (0,3,0) > the (0,2,0) box rule; the second selector mirrors the
+   `body[data-bg-active]` glass rule so the blur can never win the cascade. */
+.group-layer .group-box[data-surface-off],
+body[data-bg-active] .group-layer .group-box[data-surface-off] {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* backdrop-filter ONLY when a background is active AND the box keeps an
+   explicit fill (groups.js sets [data-group-blur] for bgColor && bgOpacity>0) —
+   no useless GPU cost otherwise. */
+body[data-bg-active] .group-layer .group-box[data-group-blur] {
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+}
+
+/* Hover / selection affordances. The cursor is driven by the mousemove
+   hit-test (groups.js toggles #grid-preview.group-hovering) because the boxes
+   themselves are pointer-events:none — a :hover cursor could never fire. */
+.group-layer .group-box.group-hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.group-layer .group-box.group-selected {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 5px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* Title chip — FLOATING, reserves ZERO space (absolute; offset 0), never
+   interactive. `always` = shown; `hover` = opacity 0 until .group-hover (set by
+   the mousemove hit-test — NOT :hover, impossible on a pointer-events:none
+   element) OR in EDIT (always revealed); `never` = not rendered at all
+   (groups.js never creates the .group-header). */
+.group-layer .group-header {
   position: absolute;
   top: 0;
   left: 0;
-  right: auto;
-  z-index: 3;
-  flex: 0 0 auto;
-  /* HALF-WIDTH CHIP: the title no longer stretches across the whole group. A
-     short title keeps its natural width (`max-content`); a long one is bounded
-     to ~half the group and ellipsises. The bar stays pointer-events:none (only
-     its buttons are interactive) so it can never swallow a tile click/drag. */
-  width: max-content;
-  max-width: 50%;
-  box-sizing: border-box;
+  z-index: 1;
+  display: flex;
+  align-items: center;
   gap: 6px;
+  max-width: 50%;
+  width: max-content;
+  box-sizing: border-box;
   padding: 6px 10px;
   border-radius: var(--radius);
   border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
-  pointer-events: none;
-  /* TRANSLUCENT chip: a semi-transparent raised surface so whatever the chip
-     overlaps (e.g. a tile in row 0) stays perceptible. Deliberately NOT tied to
-     the per-widget background opacity — at bgOpacity:0 the title must stay
-     legible. The light backdrop-filter is consistent with the dashboard glass. */
   background: color-mix(in srgb, var(--bg-elev-2) 72%, transparent);
   -webkit-backdrop-filter: blur(6px) saturate(1.15);
   backdrop-filter: blur(6px) saturate(1.15);
+  color: var(--widget-text-color, var(--text));
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
   transition: opacity var(--mode-dur, 160ms) ease;
 }
-.group-widget > .widget-header .widget-title { flex: 0 1 auto; min-width: 2.5em; }
-.group-widget > .widget-header button { pointer-events: auto; }
-/* titleVisibility: always = chip shown (default); hover = hidden until the
-   group is hovered OR in EDIT (so a group stays identifiable while editing);
-   never = group.js does not even render the chip (nothing to hide). */
-.group-widget[data-title-visibility="hover"] > .widget-header { opacity: 0; }
-.group-widget[data-title-visibility="hover"]:hover > .widget-header,
-.group-widget.group-editing[data-title-visibility="hover"] > .widget-header { opacity: 1; }
-.group-board {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  /* NO reserved space: the floating title chip reserves nothing (see
-     .group-widget > .widget-header), so the internal trame fills the whole
-     interior — row 0 is flush with the top edge. */
-  /* slightly recessed surface so the trame reads as a container. Its tint is
-     scaled by the SAME effective surface opacity as the widget (per-widget
-     --widget-bg-op, else the global --surface-alpha): at opacity 0 the recessed
-     tint disappears entirely and the dashboard shows through unchanged. */
-  background: color-mix(in srgb,
-    color-mix(in srgb, var(--bg) 45%, transparent)
-    var(--widget-bg-op, var(--surface-alpha)), transparent);
+.group-layer .group-header .group-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-/* The internal canvas IS the internal grid (CSS grid slots the tiles by
-   col/row/w/h) AND carries the trame background. min-width/min-height:100%
-   keep it filling the board; content larger than the group grows it and the
-   board scrolls. */
-.group-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, var(--group-step, 22.5px));
-  /* Implicit columns/rows share the SAME step: when the zoomed content exceeds
-     the group box, tiles placed beyond the auto-fill tracks keep the exact
-     square unit instead of falling back to an auto-sized track. */
-  grid-auto-columns: var(--group-step, 22.5px);
-  grid-auto-rows: var(--group-step, 22.5px);
-  align-content: start;
-  justify-content: start;
-  min-width: 100%;
-  min-height: 100%;
-  --group-line-minor: color-mix(in srgb, var(--text) 7%, transparent);
-  --group-line-major: color-mix(in srgb, var(--text) 15%, transparent);
+.group-layer .group-box[data-title-visibility='hover'] > .group-header { opacity: 0; }
+.group-layer .group-box[data-title-visibility='hover'].group-hover > .group-header,
+.group-layer[data-mode='edit'] .group-box[data-title-visibility='hover'] > .group-header { opacity: 1; }
+
+/* prefers-reduced-motion: no chip fade. */
+@media (prefers-reduced-motion: reduce) {
+  .group-layer .group-header { transition: none; }
 }
-/* The trame (repere lines) is drawn ONLY in edit mode: group.js sets
-   .group-editing from the render context (editable) on the group container, so
-   VIEW mode renders the tiles alone (no guides). The step (--group-step) still
-   drives the tile placement in both modes — only the background layers are
-   gated. */
-.group-widget.group-editing .group-grid {
-  background-image:
-    /* major lines every 4 internal cells (= 2 global cells) */
-    repeating-linear-gradient(90deg,
-      var(--group-line-major) 0 1px, transparent 1px calc(var(--group-step) * 4)),
-    repeating-linear-gradient(0deg,
-      var(--group-line-major) 0 1px, transparent 1px calc(var(--group-step) * 4)),
-    /* minor lines every internal cell */
-    repeating-linear-gradient(90deg,
-      var(--group-line-minor) 0 1px, transparent 1px var(--group-step)),
-    repeating-linear-gradient(0deg,
-      var(--group-line-minor) 0 1px, transparent 1px var(--group-step));
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Overlay layer (lot L2; lasso / selection / group-resize handle — engine L4)
+   ═══════════════════════════════════════════════════════════════════════
+   LAST child of #grid-preview, EDIT only (groups.js removes it in VIEW): above
+   the grid items and the guides. The parent is pointer-events:none; ONLY the
+   interactive handles opt back in with pointer-events:auto. The layer mirrors
+   the canvas box exactly like .group-layer (same syncCanvas), so a handle
+   positioned in fine units lands on the matching box. */
+.overlay-layer {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
 }
+#dashboard-view.preview-active .overlay-layer {
+  transform: scale(var(--preview-scale, 1));
+  transform-origin: top left;
+}
+.overlay-layer .group-handle {
+  position: absolute;
+  pointer-events: auto;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-elev-2) 85%, transparent);
+}
+.overlay-layer .group-handle[data-handle='se'] { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.overlay-layer .group-marquee {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* Cursor feedback for the group hit-test (boxes are pointer-events:none, so the
+   cursor must live on the grid underneath). */
+#grid-preview.group-hovering #grid-container { cursor: move; }
 
 /* ---------- Button tiles (matrix of variants) ----------
    The TILE IS THE SURFACE. Its background/border/radius are driven by per-tile
@@ -1558,34 +1626,6 @@ body.tile-dragging .report-tile.tile-editable { cursor: grabbing; }
    bottom-right resize handle. All are position:absolute so they never change
    the tile's measured size (the compact-typography @container queries above
    still see the same box). */
-/* Edit-only group action bar: « + Add element » / « + Add report ». A SEPARATE
-   floating bar (NOT the title chip) so it stays reachable whatever
-   titleVisibility is, including `never`. Anchored top-right, just above the
-   gridstack ⚙/✕ controls (which start at top:26px) and clear of the top-left
-   title chip. */
-.group-actions {
-  position: absolute;
-  top: 2px;
-  right: 8px;
-  z-index: 4;
-  display: flex;
-  gap: 4px;
-  pointer-events: auto;
-}
-.group-add {
-  flex: 0 0 auto;
-  padding: 3px 8px;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: 6px;
-  border: 1px dashed var(--border);
-  /* translucent so a tile underneath stays perceptible */
-  background: color-mix(in srgb, var(--bg-elev-2) 82%, transparent);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.group-add:hover { border-color: var(--accent); color: var(--accent); }
-
 .group-tile.tile-editable { cursor: move; }
 .group-tile.tile-editable:hover { outline: 1px dashed var(--accent); outline-offset: 1px; }
 body.tile-dragging { user-select: none; -webkit-user-select: none; }
@@ -1599,64 +1639,6 @@ body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
   box-shadow: 0 0 0 2px var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent);
   z-index: 5;
 }
-
-/* ---------- Multi-selection action bar (edit mode) ----------
-   Floating panel (appended to <body>, position:fixed) shown when ≥1 tile is
-   selected: edits the COMMON surface options on every selected tile at once. */
-.group-selection-bar {
-  position: fixed;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  z-index: 200;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 14px;
-  max-width: min(860px, calc(100vw - 24px));
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--bg-elev-2) 94%, transparent);
-  -webkit-backdrop-filter: blur(10px) saturate(1.15);
-  backdrop-filter: blur(10px) saturate(1.15);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
-  font-size: 12px;
-  color: var(--text);
-}
-.group-selection-bar .sel-count { font-weight: 600; white-space: nowrap; }
-.group-selection-bar .sel-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-.group-selection-bar .sel-field > span:first-child { color: var(--text-muted); }
-.group-selection-bar input[type='range'] {
-  width: 110px;
-  height: 20px;
-  padding: 0;
-  margin: 0;
-  border: 0;
-  background: none;
-  -webkit-appearance: none;
-  appearance: none;
-  cursor: pointer;
-}
-.group-selection-bar input[type='range']::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: var(--border); }
-.group-selection-bar input[type='range']::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 15px; height: 15px; margin-top: -5.5px;
-  border: 0; border-radius: 50%; background: var(--accent);
-}
-.group-selection-bar input[type='range']::-moz-range-track { height: 4px; border-radius: 999px; background: var(--border); }
-.group-selection-bar input[type='range']::-moz-range-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: var(--accent); }
-.group-selection-bar input[type='color'] {
-  width: 26px; height: 22px; padding: 0; border: 1px solid var(--border);
-  border-radius: 5px; background: none; cursor: pointer;
-}
-.group-selection-bar .sel-val { min-width: 34px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
-.group-selection-bar .sel-mixed { color: var(--warning, #e0a800); font-size: 11px; }
-.group-selection-bar .sel-clear { margin-left: auto; }
 
 .tile-edit-controls {
   position: absolute;

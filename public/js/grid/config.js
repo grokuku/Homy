@@ -29,7 +29,6 @@
  * would skew every cell and desync the 18-row fill from the 16:9 aspect box.
  */
 import { getWidget } from '../widgets/registry.js';
-import { normalizeButton, minSizeForVariant } from '../elements/button.js';
 
 export const GRID_COLUMNS = 64;
 export const GRID_ROWS = 36;
@@ -103,14 +102,6 @@ export const MAX_ITEMS = 200;
  *  - missing or non-numeric w/h (hand-edited layout.json) fall back to 1,
  *    matching the non-destructive server fallback in layout.routes.js
  *    (gridstack omits w/h on save only when the value IS 1).
- *  - LOT 6: every `group` button is RAISED to the minimum of its display
- *    variant (minSizeForVariant, roadmap §A.7) so tiles seeded before the rule
- *    existed no longer truncate their content. Same « correct on load, persist
- *    on next save » philosophy as search h:1→h:2. A tile that cannot keep its
- *    grown footprint (out of the group trame or overlapping a neighbour) is
- *    relocated to the first free internal slot; if no slot exists the grown
- *    size is kept anyway (best-effort — the group's own 2×2 global minimum
- *    makes such a case impossible for a well-formed layout).
  *
  * x/y, ids, types and configs pass through untouched. Returns NEW objects —
  * callers keep their original item list untouched (meta/state stay valid).
@@ -159,97 +150,6 @@ export function normalizeItems(items) {
   }
   if (ignored.size) {
     console.warn(`[grid] ignoring unknown item type(s): ${[...ignored].join(', ')}`);
-  }
-  return out;
-}
-
-// Server-side per-button cap (internal cells) — mirrors BUTTON_CELLS_MAX in
-// layout.routes.js and MAX_TILE_CELLS in elements/group.js.
-const BUTTON_CELLS_MAX = 4;
-
-/**
- * Raise every button of a group to its variant minimum and keep the tiles
- * inside the group trame without overlap (lot 6 normalization, see
- * normalizeItems above). Order is preserved (document order wins the slot);
- * returns fresh, normalized button objects (id/elementId/options kept).
- */
-function normalizeGroupButtons(rawButtons, groupW, groupH) {
-  const groupCols = Math.max(2, (Number(groupW) || 1) * 2);
-  const groupRows = Math.max(2, (Number(groupH) || 1) * 2);
-  const placed = [];
-  const out = [];
-  for (const raw of Array.isArray(rawButtons) ? rawButtons : []) {
-    const b = normalizeButton(raw);
-    if (!b.elementId) continue; // group.js filters these out too
-    const { min } = minSizeForVariant(b.options);
-    // Grow to the variant minimum, capped by the server's per-button cap.
-    const w = Math.min(BUTTON_CELLS_MAX, Math.max(b.w, min.w));
-    const h = Math.min(BUTTON_CELLS_MAX, Math.max(b.h, min.h));
-    let { col, row } = b;
-    if (col + w > groupCols || row + h > groupRows || buttonOverlaps(placed, col, row, w, h)) {
-      const slot = firstFreeSlot(placed, groupCols, groupRows, w, h);
-      if (slot) {
-        col = slot.col;
-        row = slot.row;
-      }
-    }
-    const next = { ...b, col, row, w, h };
-    placed.push(next);
-    out.push(next);
-  }
-  return out;
-}
-
-/** AABB overlap test on the internal trame (mirrors elements/group.js). */
-function buttonOverlaps(list, col, row, w, h) {
-  return list.some(
-    (b) => !(col + w <= b.col || b.col + b.w <= col || row + h <= b.row || b.row + b.h <= row)
-  );
-}
-
-/** First free even-cell slot for a w×h tile, or null when the trame is full. */
-function firstFreeSlot(list, groupCols, groupRows, w, h) {
-  const maxCol = Math.max(0, groupCols - w);
-  const maxRow = Math.max(0, groupRows - h);
-  for (let row = 0; row <= maxRow; row += 2) {
-    for (let col = 0; col <= maxCol; col += 2) {
-      if (!buttonOverlaps(list, col, row, w, h)) return { col, row };
-    }
-  }
-  return null;
-}
-
-// Report-tile geometry bounds (internal cells) — MUST stay in sync with
-// reportTile.js / layout.routes.js. Reports have a FREE size (no button minima).
-const REPORT_CELLS_MIN = 2;
-const REPORT_CELLS_MAX = 64;
-
-/**
- * Tolerant normalization of a group's report tiles (lot 8). Unlike buttons,
- * reports have NO variant minimum: only [REPORT_CELLS_MIN, REPORT_CELLS_MAX] is
- * enforced and the tile is kept inside the group trame (with overlap tolerance
- * — a report tile never blocks the layout from rendering).
- */
-function normalizeGroupReports(rawReports, groupW, groupH) {
-  const groupCols = Math.max(2, (Number(groupW) || 1) * 2);
-  const groupRows = Math.max(2, (Number(groupH) || 1) * 2);
-  const out = [];
-  for (const raw of Array.isArray(rawReports) ? rawReports : []) {
-    if (!raw || typeof raw !== 'object') continue;
-    const elementId = typeof raw.elementId === 'string' ? raw.elementId : '';
-    if (!elementId) continue;
-    const w = Math.min(REPORT_CELLS_MAX, Math.max(REPORT_CELLS_MIN, Math.floor(Number(raw.w)) || REPORT_CELLS_MIN));
-    const h = Math.min(REPORT_CELLS_MAX, Math.max(REPORT_CELLS_MIN, Math.floor(Number(raw.h)) || REPORT_CELLS_MIN));
-    const col = Math.min(Math.max(0, Math.floor(Number(raw.col)) || 0), Math.max(0, groupCols - w));
-    const row = Math.min(Math.max(0, Math.floor(Number(raw.row)) || 0), Math.max(0, groupRows - h));
-    out.push({
-      id: typeof raw.id === 'string' ? raw.id : '',
-      elementId,
-      col,
-      row,
-      w,
-      h,
-    });
   }
   return out;
 }

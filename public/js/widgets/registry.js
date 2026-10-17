@@ -6,11 +6,6 @@ import { weather } from './weather.js';
 import { renderButtonTile } from '../elements/button.js';
 import { renderReportTile } from '../elements/reportTile.js';
 import { catalog } from '../elements/catalog.js';
-// `group` is no longer a widget: layout v5 models a group as a CONTENT-LESS box
-// (see server/services/layout.service.js). Its front schema will live in
-// public/js/grid/groups.js (lot L2+). Kept imported so an existing import graph
-// does not break during the v5 transition.
-import { group } from '../elements/group.js';
 import { el } from '../util.js';
 
 /**
