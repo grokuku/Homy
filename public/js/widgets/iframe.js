@@ -8,7 +8,7 @@ export const iframe = {
   name: 'Iframe',
   icon: '🖼',
   category: 'tools',
-  defaultSize: { w: 16, h: 4 }, // 6×4 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change)
+  defaultSize: { w: 32, h: 8 }, // 64×36 fine units: 16×4 global cells
   settingsSchema: {
     fields: [
       { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Widget title' },

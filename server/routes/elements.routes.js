@@ -13,11 +13,11 @@ const MAX_BODY_BYTES = 256 * 1024; // 256 KB
  *
  *   GET    /api/elements            → { elements: [...], count, max }
  *   GET    /api/elements/:id        → element (404 unknown)
- *   GET    /api/elements/:id/usage  → { pages: [{ pageId, name, groupId }], count }
+ *   GET    /api/elements/:id/usage  → { pages: [{ pageId, name, objectId }], count }
  *   POST   /api/elements            → 201 element (400 invalid/limit, 413 body)
  *   PATCH  /api/elements/:id        → 200 element (400 invalid, 404 unknown)
  *   DELETE /api/elements/:id        → 200 { ok, id } ; 409 { error, pages, count }
- *                                     when referenced by ≥1 group button
+ *                                     when referenced by ≥1 placement
  *                                     (bypass with `?force=1`) ; 404 unknown
  *
  * `layout` (optional) is the SAME LayoutService instance the layout routes use,
@@ -81,7 +81,7 @@ export function elementsRoutes(storeOrService, layout = null) {
     if (pages.length && !force) {
       return c.json(
         {
-          error: `Element is used by ${pages.length} button(s) — pass ?force=1 to delete anyway`,
+          error: `Element is used by ${pages.length} placement(s) — pass ?force=1 to delete anyway`,
           pages,
           count: pages.length,
         },

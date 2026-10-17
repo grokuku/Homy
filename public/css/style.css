@@ -1267,10 +1267,9 @@ body[data-bg-active] .grid-stack-item-content {
      --tile-surface-color  explicit background (fallback: theme elevation)
      --tile-surface-op     background opacity 0..100 % (fallback 100 %)
      --tile-surface-radius 8px (rounded) | 0px (square)
-   The tile MARGIN (the regular gap around every tile) is driven by the
-   GROUP-level setting config.tileInset, published once as the inherited
-   `--group-tile-inset` var by elements/group.js — a residual per-tile
-   `--tile-surface-inset` is deliberately ignored.
+   The tile MARGIN (the regular gap around every tile) is driven by the trame,
+   not by a per-tile var — a residual `--tile-surface-inset` is deliberately
+   ignored.
    Defaults reproduce the historical look EXACTLY (opaque theme surface, 8px
    radius, no margin), so a button without these options is unchanged. */
 .group-tile {
@@ -1592,31 +1591,6 @@ body.tile-dragging .report-tile.tile-editable { cursor: grabbing; }
 body.tile-dragging { user-select: none; -webkit-user-select: none; }
 body.tile-dragging .group-tile.tile-editable { cursor: grabbing; }
 
-/* ---------- Group zoom (Ctrl+drag, edit mode) ----------
-   A UNIFORM content scale stored in config.zoom and applied by multiplying the
-   base --group-step: the trame AND the tiles scale together, so tiles stay
-   square and the group never moves/resizes on the global grid. The readout is a
-   transient badge (body-appended, position:fixed) shown WHILE adjusting — it is
-   never clipped by the group's overflow:hidden and never swallows the gesture. */
-body.group-zoom-dragging { user-select: none; -webkit-user-select: none; cursor: ew-resize; }
-body.group-zoom-dragging .group-tile.tile-editable { cursor: ew-resize; }
-.group-zoom-badge {
-  position: fixed;
-  z-index: 400;
-  transform: translate(12px, 12px);
-  padding: 3px 8px;
-  border-radius: 6px;
-  border: 1px solid var(--accent);
-  background: color-mix(in srgb, var(--bg-elev-2) 92%, transparent);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.2;
-  pointer-events: none;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-}
-.group-zoom-badge.reset { border-color: var(--text-muted); color: var(--text-muted); }
 /* Multi-selection (lot 4): a clear 2px accent ring + a soft halo, independent
    from the hover outline so a selected tile stays obvious while hovered.
    Placed AFTER the [data-surface-off] rule so a selected invisible-surface tile

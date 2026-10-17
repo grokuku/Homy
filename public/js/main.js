@@ -136,11 +136,11 @@ async function showDashboard() {
       api.get('/api/settings'),
       catalog.load(),
     ]);
-    state.layout = layoutRes.items || [];
-    // Column count the layout was last saved with. Legacy layouts (no
-    // `columns` field in layout.json) report 12 and are migrated client-side
-    // by the editor/viewer via gridstack's column(32, 'moveScale') reflow.
-    state.layoutColumns = Number(layoutRes.columns) || 12;
+    state.layout = Array.isArray(layoutRes.objects) ? layoutRes.objects : [];
+    // v5: groups are content-less boxes (rendered as a background layer in L2+).
+    state.layoutGroups = Array.isArray(layoutRes.groups) ? layoutRes.groups : [];
+    // The v5 trame is a fixed 64×36 fine grid (server-canonical).
+    state.layoutColumns = Number(layoutRes.columns) || GRID_COLUMNS;
     // Multiple pages (schema v3): tab summary + memorized active page.
     state.pages = Array.isArray(layoutRes.pages) ? layoutRes.pages : [];
     state.activePageId = layoutRes.activePageId || state.pages[0]?.id || null;
@@ -792,43 +792,19 @@ function setMode(mode, { animate = false } = {}) {
 
 function saveLayout(items) {
   state.layout = items;
-  // The editor grid always runs at 32 columns (legacy layouts are migrated at
-  // init, before any save can happen) → persist the migrated coordinates with
-  // the columns field so the next load skips the migration.
-  state.layoutColumns = GRID_COLUMNS;
-  // Multiple pages: the save MUST target the page the grid currently edits
-  // (explicit pageId — the server replaces THAT page's items without ever
-  // switching the active one). Read at call time so a page switch that
-  // happened between the edit and the debounced save can never misroute it.
-  const pageId = state.activePageId || undefined;
-  // Review C3: persistence failures are NEVER swallowed. Two pre-checks plus
-  // a toasting catch keep the UI and the server from diverging silently:
-  //  - body > 256 KB would 413 server-side (limit duplicated above);
-  //  - > MAX_ITEMS would 400 server-side (the palette already blocks adding,
-  //    this covers layouts that were already over the cap at load).
-  const body = JSON.stringify({ items, columns: GRID_COLUMNS, pageId });
-  if (new TextEncoder().encode(body).length > MAX_BODY_BYTES) {
-    toast('Save failed: layout is too large (server limit 256 KB). Remove widgets or shorten notes.', 'error');
-    return Promise.resolve();
-  }
-  // The returned promise lets the page-switch flush await the actual PUT
-  // (ordering: the flushed save must land BEFORE PUT /api/layout/active).
-  return api.put('/api/layout', { items, columns: GRID_COLUMNS, pageId })
-    .then((res) => {
-      // Converge on the server's sanitized items (e.g. h clamped to 18 rows)
-      // so the client can never drift from what is actually on disk.
-      if (Array.isArray(res?.items)) state.layout = res.items;
-      // Item counts (and a possibly server-clamped columns/active id) follow.
-      // NOTE: no renderTabs() here — the tab row displays only names + the
-      // active state (itemCount lives in the title tooltip only), and a
-      // silent row rebuild mid-interaction would cancel an armed delete
-      // confirmation or an open rename input for nothing. The row refreshes
-      // on its own triggers (setMode / switchPage / page mutations).
-      if (Array.isArray(res?.pages)) state.pages = res.pages;
-      if (Number(res?.columns) > 0) state.layoutColumns = Number(res.columns);
-      if (res?.activePageId) state.activePageId = res.activePageId;
-    })
-    .catch((err) => toast(err.message || 'Failed to save layout', 'error'));
+  // ⚠️ L1 (layout v5) — editing PERSISTENCE is temporarily disabled: the drag/
+  // resize/add/delete path still serializes the old v4 grid shape while the v5
+  // editor lands in lots L2→L6. Widget config edits keep persisting through
+  // their own PATCH /api/layout/objects/:id/config (settings modal, notes).
+  warnEditPersistDisabled();
+  return Promise.resolve();
+}
+
+let _editWarned = false;
+function warnEditPersistDisabled() {
+  if (_editWarned) return;
+  _editWarned = true;
+  console.warn('[layout] v5 migration in progress: drag/resize/add/delete persistence is disabled until the L2+ editor lands');
 }
 
 // ---- Page switch transition (keyboard slide / click cross-fade) -------------
@@ -1004,10 +980,9 @@ function isPaletteOverlayOpen() {
   return getComputedStyle(pal).position === 'fixed';
 }
 
-/** True while a gridstack / in-trame drag, resize or group-zoom gesture runs. */
+/** True while a gridstack / in-trame drag or resize gesture runs. */
 function isInteractionActive() {
   if (document.body.classList.contains('tile-dragging')) return true;
-  if (document.body.classList.contains('group-zoom-dragging')) return true;
   return !!document.querySelector('.ui-draggable-dragging, .ui-resizable-resizing, .grid-stack-dragging');
 }
 
@@ -1096,7 +1071,8 @@ async function switchPage(pageId, opts = {}) {
     const res = await api.put('/api/layout/active', { pageId });
     state.activePageId = res.activePageId;
     if (Array.isArray(res.pages)) state.pages = res.pages;
-    state.layout = Array.isArray(res.items) ? res.items : [];
+    state.layoutGroups = Array.isArray(res.groups) ? res.groups : [];
+    state.layout = Array.isArray(res.objects) ? res.objects : [];
     if (Number(res.columns) > 0) state.layoutColumns = Number(res.columns);
     // 3+4) teardown + rebuild (same normalization path as initial load). The
     // flag tells setMode() this rebuild is PART of the switch, not an external

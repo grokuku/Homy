@@ -69,9 +69,9 @@ export const LABEL_POSITION_DEFAULT = 'bottom';
 // the widget-level appearance applied to the whole group container).
 //   - surfaceOpacity : 0..100 (%) opacity of the tile background;
 //   - surfaceInset   : DEPRECATED (kept only for back-compat coercion) — the
-//                      regular gap around tiles is now a GROUP setting
-//                      (config.tileInset, see elements/group.js); a residual
-//                      per-tile value is tolerated but ignored at render time;
+//                      regular gap around tiles is now driven by the trame;
+//                      a residual per-tile value is tolerated but ignored at
+//                      render time;
 //   - surfaceShape   : 'rounded' (default, theme radius) | 'square' (no radius);
 //   - surfaceColor   : explicit background colour ('' → theme default).
 // All are tolerant: unknown / out-of-range values fall back to the default so a
@@ -529,10 +529,9 @@ export function wireViewNavigation(root, linkEl, url, editable) {
  * re-fitted instead of keeping the icon size computed for its old footprint.
  * Never throws; `step` is the group's internal cell size in px.
  *
- * `insetPx` is the GROUP-level tile inset (config.tileInset) — the surface
- * margin is no longer a per-tile option, so the group passes its single value
- * here. When omitted (a legacy caller) the tile's residual `surfaceInset`
- * option is used, so nothing regresses.
+ * `insetPx` is the optional trame inset (px) applied as a surface margin;
+ * when omitted the tile's residual `surfaceInset` option is used, so nothing
+ * regresses.
  */
 export function applyTileMetrics(tileEl, rawButton, step = 22.5, insetPx) {
   if (!tileEl) return;
@@ -568,10 +567,9 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5, insetPx) {
  *   --tile-surface-op      background opacity, 0..100 %
  *   --tile-surface-radius  8px (rounded) | 0px (square)
  *
- * The surface MARGIN (inset) is NOT set here any more: it is a GROUP-level
- * setting (config.tileInset) published once as the inherited `--group-tile-inset`
- * by elements/group.js. A residual per-tile `surfaceInset` option is normalized
- * for back-compat but deliberately ignored at render time.
+ * The surface MARGIN (inset) is applied from the caller-supplied inset (if any).
+ * A residual per-tile `surfaceInset` option is normalized for back-compat but
+ * deliberately ignored at render time.
  *
  * The ICON colour is NO LONGER a per-tile option: it is an ELEMENT-level setting
  * (element.iconColor) applied ONCE by renderButtonTile, so this live editor

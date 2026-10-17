@@ -19,7 +19,7 @@ export const search = {
   // Existing h=1 search items are grown to h=2 at load time — see the shared
   // normalizeItems() in grid/config.js (editor + viewer). Must stay in sync
   // with server/routes/widgets.routes.js (check-schema-sync enforces it).
-  defaultSize: { w: 11, h: 2 }, // 4×2 after rescale: w = legacy 4×1 ×32/12 rounded, h grown for C1 (was 11×1)
+  defaultSize: { w: 22, h: 4 }, // 64×36 fine units: 11×2 global cells
   settingsSchema: {
     fields: [
       {

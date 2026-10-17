@@ -10,7 +10,7 @@ export const notes = {
   name: 'Notes',
   icon: '📝',
   category: 'tools',
-  defaultSize: { w: 8, h: 3 }, // 3×3 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change)
+  defaultSize: { w: 16, h: 6 }, // 64×36 fine units: 8×3 global cells
   settingsSchema: {
     fields: [
       { key: 'title', label: 'Title', type: 'text', default: 'Notes', placeholder: 'Notes' },

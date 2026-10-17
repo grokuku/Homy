@@ -206,7 +206,8 @@ async function deletePage(page) {
     if (res.activePageId) state.activePageId = res.activePageId;
     if (Number(res.columns) > 0) state.layoutColumns = Number(res.columns);
     if (wasActive) {
-      state.layout = Array.isArray(res.items) ? res.items : [];
+      state.layoutGroups = Array.isArray(res.groups) ? res.groups : [];
+      state.layout = Array.isArray(res.objects) ? res.objects : [];
       // Full rebuild through the SAME path as a page switch (setMode re-runs
       // destroyGrid/updatePreviewScale/syncBackgroundScope/renderTabs).
       hooks.onRebuild?.();

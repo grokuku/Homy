@@ -31,8 +31,8 @@
 import { getWidget } from '../widgets/registry.js';
 import { normalizeButton, minSizeForVariant } from '../elements/button.js';
 
-export const GRID_COLUMNS = 32;
-export const GRID_ROWS = 18;
+export const GRID_COLUMNS = 64;
+export const GRID_ROWS = 36;
 export const LEGACY_COLUMNS = 12;
 
 /** Design aspect of the canvas (32 columns / 18 rows = 16/9). */
@@ -79,12 +79,12 @@ export function computeCanvasFit(availW, availH, tolerance = CELL_ASPECT_TOLERAN
 }
 
 /**
- * Hard cap on the number of layout items. MUST stay equal to MAX_ITEMS in
- * server/routes/layout.routes.js: the server rejects PUT bodies with more
- * items (400), so the client blocks adding beyond this count with a visible
- * error instead of silently diverging from the server (review C3).
+ * Hard cap on the number of layout objects. MUST stay equal to
+ * MAX_OBJECTS_PER_PAGE in server/services/layout.service.js: the server rejects
+ * PUT bodies with more objects (400), so the client blocks adding beyond this
+ * count with a visible error instead of silently diverging from the server.
  */
-export const MAX_ITEMS = 100;
+export const MAX_ITEMS = 200;
 
 /**
  * Canvas-level item normalization, applied at load time by BOTH the editor
@@ -120,11 +120,24 @@ export function normalizeItems(items) {
   const ignored = new Set();
   for (const item of Array.isArray(items) ? items : []) {
     if (!item || typeof item !== 'object') continue;
-    // Tolerance (v4): an UNKNOWN item type is skipped cleanly (one muted log)
-    // instead of reaching renderWidget and printing an "Unknown widget" label
-    // — an old/future type must never break the layout. Server-side load/PUT
-    // already drops unknown types; this is the matching client-side guard.
-    // Since lot 6 this also covers the removed `frame`/`shortcut`/`links`.
+    // v5 OBJECTS: an element/report placement is not a widget — keep it (it is
+    // rendered by its own tile renderer) with hardened geometry (2×2 minimum).
+    if (item.kind === 'element' || item.kind === 'report') {
+      const w = Math.floor(Number(item.w));
+      const h = Math.floor(Number(item.h));
+      const x = Math.floor(Number(item.x));
+      const y = Math.floor(Number(item.y));
+      out.push({
+        ...item,
+        x: Number.isFinite(x) && x >= 0 ? x : 0,
+        y: Number.isFinite(y) && y >= 0 ? y : 0,
+        w: Number.isFinite(w) && w >= 2 ? w : 2,
+        h: Number.isFinite(h) && h >= 2 ? h : 2,
+      });
+      continue;
+    }
+    // Tolerance (v4/v5): an UNKNOWN widget type is skipped cleanly (one muted
+    // log). The removed `group`/`frame`/`shortcut`/`links` types are covered.
     const type = String(item.type || '');
     if (!getWidget(type)) {
       ignored.add(type);
@@ -138,11 +151,10 @@ export function normalizeItems(items) {
       w: Number.isFinite(w) && w >= 1 ? w : 1,
       h: Number.isFinite(h) && h >= 1 ? h : 1,
     };
-    if (next.type === 'search' && next.h === 1) next.h = 2;
-    if (next.type === 'group') {
-      next.buttons = normalizeGroupButtons(item.buttons, next.w, next.h);
-      next.reports = normalizeGroupReports(item.reports, next.w, next.h);
-    }
+    // A search bar needs 2 global rows (4 fine units) or it clips at every
+    // common desktop size — same « correct on load, persist on next save » rule
+    // as before, expressed in fine units (was h:1→2 on the 32-col grid).
+    if (next.type === 'search' && next.h < 4) next.h = 4;
     out.push(next);
   }
   if (ignored.size) {

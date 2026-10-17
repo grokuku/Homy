@@ -401,8 +401,7 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
    * PER-TILE SURFACE group: background colour (+ « Theme » reset), opacity and
    * shape (rounded | square). Every control applies LIVE through onUpdate,
    * exactly like the other option controls. The tile INSET is no longer a
-   * per-tile option — it is a GROUP-level setting (config.tileInset) rendered
-   * by the group's own config modal.
+   * per-tile (nor group-level) option.
    */
   function buildSurfaceGroup() {
     const o = work.options;

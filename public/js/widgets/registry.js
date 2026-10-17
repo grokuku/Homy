@@ -3,6 +3,13 @@ import { iframe } from './iframe.js';
 import { search } from './search.js';
 import { notes } from './notes.js';
 import { weather } from './weather.js';
+import { renderButtonTile } from '../elements/button.js';
+import { renderReportTile } from '../elements/reportTile.js';
+import { catalog } from '../elements/catalog.js';
+// `group` is no longer a widget: layout v5 models a group as a CONTENT-LESS box
+// (see server/services/layout.service.js). Its front schema will live in
+// public/js/grid/groups.js (lot L2+). Kept imported so an existing import graph
+// does not break during the v5 transition.
 import { group } from '../elements/group.js';
 import { el } from '../util.js';
 
@@ -11,9 +18,11 @@ import { el } from '../util.js';
  * settingsSchema, render }. `render(container, config, item)` renders content
  * and may return a cleanup fn. `settingsSchema` drives the generic config modal.
  *
- * LOT 6: the legacy `frame`/`shortcut`/`links` widgets were REMOVED (their use
- * is replaced by `group` + catalogue buttons). They are no longer known types:
- * a layout item with one of those types is now ignored cleanly at load.
+ * LOT 6: the legacy `frame`/`shortcut`/`links` widgets were REMOVED.
+ * LOT L1 (layout v5): the `group` WIDGET was REMOVED — a group is now a
+ * content-less box owned by the layout, not a widget. Removing it from BOTH the
+ * front registry and the server manifest keeps scripts/check-schema-sync.mjs
+ * green.
  */
 export const registry = {
   clock,
@@ -21,11 +30,6 @@ export const registry = {
   search,
   notes,
   weather,
-  // Layout v4 container: a titled frame holding button tiles that reference
-  // the global element catalogue (public/js/elements/). Registered on BOTH
-  // sides (see server/routes/widgets.routes.js) — schema/size parity is
-  // enforced by scripts/check-schema-sync.mjs.
-  group,
 };
 
 /**
@@ -48,7 +52,7 @@ export function getWidget(type) {
 }
 
 export function getDefaultSize(type) {
-  return getWidget(type)?.defaultSize || { w: 11, h: 3 }; // 11×3 = legacy 4×3 fallback, rescaled ×32/12
+  return getWidget(type)?.defaultSize || { w: 22, h: 4 }; // 22×4 = search default (64×36 fine units)
 }
 
 export function getSettingsSchema(type) {
@@ -125,6 +129,42 @@ export function applyAppearance(container, config) {
 }
 
 /**
+ * Render a v5 element/report object into a gridstack content cell. The object
+ * occupies its own (item.w × item.h) fine rect; a wrapper grid maps the tile's
+ * internal grid-column/row placement onto that rect so the existing tile
+ * renderers (which position themselves with `gridColumn/gridRow`) work
+ * unchanged. Returns the tile's dispose fn (report tiles own a refresh timer).
+ */
+function renderObjectTile(container, item, context = {}) {
+  const w = Math.max(2, Math.floor(Number(item.w)) || 2);
+  const h = Math.max(2, Math.floor(Number(item.h)) || 2);
+  const host = el('div', 'object-tile-host');
+  host.style.display = 'grid';
+  host.style.width = '100%';
+  host.style.height = '100%';
+  host.style.gridTemplateColumns = `repeat(${w}, 1fr)`;
+  host.style.gridTemplateRows = `repeat(${h}, 1fr)`;
+  // px per fine cell (used only to scale the icon); fall back to a sensible
+  // value when the cell is not laid out yet.
+  const step = container.clientWidth > 0 ? container.clientWidth / w : 20;
+  const element = catalog.get(item.elementId);
+  let tile;
+  if (item.kind === 'report') {
+    tile = renderReportTile({ report: { ...item, col: 0, row: 0 }, element, step });
+  } else {
+    tile = renderButtonTile({
+      button: { elementId: item.elementId, col: 0, row: 0, w, h, options: item.options },
+      element,
+      step,
+      editable: !!context.editable,
+    });
+  }
+  host.appendChild(tile.el);
+  container.appendChild(host);
+  return tile.dispose;
+}
+
+/**
  * Render a widget into a container. Clears the container first (safe: we
  * control the container, no user data is cleared via innerHTML). Runs the
  * previous cleanup (if any) before re-rendering so timers/RAF loops from an
@@ -141,6 +181,15 @@ export function renderWidget(container, item, context = {}) {
   // lost by clearing it.
   container.replaceChildren();
   applyAppearance(container, item?.config || {});
+  // v5 OBJECTS: an element/report placement is rendered by its own tile renderer
+  // (no widget). This keeps VIEW usable on a migrated v4 layout whose tiles are
+  // now absolute-positioned element/report objects.
+  if (item?.kind === 'element' || item?.kind === 'report') {
+    const cleanup = renderObjectTile(container, item, context);
+    if (typeof cleanup === 'function') cleanups.set(container, cleanup);
+    else cleanups.delete(container);
+    return cleanup;
+  }
   const w = getWidget(item?.type);
   if (!w) {
     container.appendChild(el('p', 'muted', `Unknown widget: ${item?.type || '?'}`));

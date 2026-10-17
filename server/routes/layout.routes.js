@@ -1,44 +1,35 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import {
-  KNOWN_ITEM_TYPES,
+  GRID_COLUMNS,
+  GRID_ROWS,
+  KNOWN_WIDGET_TYPES,
   LayoutService,
-  MAX_COLUMNS,
+  MAX_ELEMENT_SIZE,
+  MAX_GROUPS_PER_PAGE,
+  MAX_OBJECTS_PER_PAGE,
   MAX_PAGES,
+  MIN_GROUP,
+  MIN_OBJECT,
+  OBJECT_KINDS,
   PAGE_NAME_MAX,
+  contains,
   normalizeGroupConfig,
-  normalizeGroupZoom,
-  normalizeTileInset,
 } from '../services/layout.service.js';
 import { WIDGET_MANIFEST_FINAL } from './widgets.routes.js';
 
-const MAX_ITEMS = 100; // per PAGE (widgets are confined to their page)
 const MAX_BODY_BYTES = 256 * 1024; // 256 KB
-
-// v4 group/button bounds. `group` and the surviving widgets (clock/iframe/
-// search/notes/weather) are the KNOWN item types. The legacy `frame`/
-// `shortcut`/`links` and any other unknown type are IGNORED on write/load
-// (tolerance), never a hard failure.
-const MIN_GROUP = 2; // a group occupies at least 2×2 GLOBAL cells
-const MAX_BUTTONS_PER_GROUP = 50;
-const MAX_BUTTONS_PER_PAGE = 200; // buttons of ALL groups on a single page
-const BUTTON_CELLS_MAX = 4; // button w/h in INTERNAL cells (1..4)
 const ELEMENT_ID_MAX = 128;
-// Button icon size (per-button display option): a PERCENTAGE of the tile's
-// useful internal dimension, adjustable by a 0.5 step. The legacy letter crans
-// (S/M/L/XL/Fill) are still ACCEPTED and coerced to 40/55/70/85/100 so buttons
-// stored before the percentage model keep working. MUST stay in sync with
-// ICON_* in public/js/elements/button.js.
+const PAGE_NAME_MAX_LOCAL = PAGE_NAME_MAX;
+
+// Button icon size (per-element display option) — mirror of the front
+// (elements/button.js) and of layout.service.js.
 const ICON_SIZE_MIN = 8;
 const ICON_SIZE_MAX = 120;
 const ICON_SIZE_DEFAULT = 55;
 const ICON_SIZE_STEP = 0.5;
 const ICON_SIZE_PRESETS = { S: 40, M: 55, L: 70, XL: 85, Fill: 100 };
-// Label placement crans (relative to the icon). Defaults to 'bottom'.
 const LABEL_POSITIONS = new Set(['bottom', 'top', 'left', 'right']);
-// Per-tile SURFACE options (tile background box). MUST stay in sync with the
-// SURFACE_* constants/functions in public/js/elements/button.js and with the
-// mirror in server/services/layout.service.js.
 const SURFACE_OPACITY_MIN = 0;
 const SURFACE_OPACITY_MAX = 100;
 const SURFACE_OPACITY_DEFAULT = 100;
@@ -47,46 +38,21 @@ const SURFACE_INSET_MAX = 8;
 const SURFACE_INSET_DEFAULT = 0;
 const SURFACE_SHAPES = new Set(['rounded', 'square']);
 const SURFACE_SHAPE_DEFAULT = 'rounded';
-// Safe, single-property colour value (hex / rgb()·hsl() functional / named).
 const SURFACE_COLOR_RE = /^(#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\([0-9a-zA-Z.,%\s/]+\)|[a-zA-Z]{3,20})$/;
-// Report-tile geometry bounds (internal trame cells). Reports have a FREE size
-// (no button-variant minima) — MUST stay in sync with layout.service.js and
-// public/js/elements/reportTile.js.
-const REPORT_CELLS_MIN = 2;
-const REPORT_CELLS_MAX = 64;
-const MAX_REPORTS_PER_GROUP = 20;
-
-// The grid canvas (must stay in sync with public/js/grid/config.js and with
-// MAX_COLUMNS in layout.service.js): 32 columns × 18 rows.
-const GRID_COLUMNS = MAX_COLUMNS;
-const GRID_ROWS = 18;
 
 export function layoutRoutes(storeOrService, options = {}) {
   const layout =
     storeOrService instanceof LayoutService ? storeOrService : new LayoutService(storeOrService);
-  // Optional catalogue predicate — used ONLY to warn about buttons pointing at
-  // an unknown element id (best-effort signal, never a hard failure).
   const elementExists = typeof options.elementExists === 'function' ? options.elementExists : null;
   const routes = new Hono();
 
-  // Get full layout — items of the ACTIVE page + the column count they are
-  // expressed in (12 for legacy layouts, converted client-side by gridstack)
-  // + schema version + the page list (tabs). RETRO-COMPATIBLE: the legacy
-  // front only reads `items`/`columns`, which keep their meaning.
-  routes.get('/', (c) =>
-    c.json({
-      ...layout.meta(),
-      activePageId: layout.activePageId,
-      pages: layout.pagesSummary(),
-      items: layout.list(),
-    })
-  );
+  // ---- Full layout (canonical v5) ------------------------------------------
+  // GET /api/layout → { version:5, columns:64, rows:36, activePageId, pages,
+  //                     objects (active page), groups (active page) }
+  routes.get('/', (c) => c.json(fullLayout(layout)));
 
-  // Replace the items of the ACTIVE page (from gridstack serialization).
-  // `pageId` (optional) targets another page WITHOUT switching the active one.
-  // `columns` (optional) records the grid the coordinates are expressed in;
-  // legacy 12-column coordinates are migrated client-side BEFORE this call
-  // (editor.js), so a PUT with columns: 32 stores already-rescaled items.
+  // Replace the objects of the ACTIVE page (or an explicit `pageId`). The body
+  // may carry `objects` (v5) or a legacy `items` key — tolerated, never a 400.
   routes.put('/', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
@@ -95,96 +61,140 @@ export function layoutRoutes(storeOrService, options = {}) {
       targetId = layout.page(String(parsed.body.pageId))?.id;
       if (!targetId) return c.json({ error: 'Not found' }, 404);
     }
-    const rawItems = Array.isArray(parsed.body.items) ? parsed.body.items : [];
-    if (rawItems.length > MAX_ITEMS) {
-      return c.json({ error: `Too many items (max ${MAX_ITEMS} per page)` }, 400);
-    }
-    let columns;
-    if (parsed.body.columns !== undefined) {
-      columns = Math.round(Number(parsed.body.columns));
-      if (!Number.isFinite(columns) || columns < 1 || columns > MAX_COLUMNS) {
-        return c.json({ error: `columns must be an integer between 1 and ${MAX_COLUMNS}` }, 400);
-      }
+    const raw = Array.isArray(parsed.body.objects)
+      ? parsed.body.objects
+      : Array.isArray(parsed.body.items)
+        ? parsed.body.items
+        : [];
+    if (raw.length > MAX_OBJECTS_PER_PAGE) {
+      return c.json({ error: `Too many objects (max ${MAX_OBJECTS_PER_PAGE} per page)` }, 400);
     }
     const clean = [];
-    const ignored = new Set();
-    for (const item of rawItems) {
-      if (!isKnownType(item)) {
-        ignored.add(String(item?.type ?? 'undefined'));
-        continue; // unknown item types are IGNORED on PUT (never a hard failure)
+    const unknown = new Set();
+    const seen = new Set();
+    for (const item of raw) {
+      const { error, object } = sanitizeObject(item, { defaults: false });
+      if (error) {
+        if (error === 'unknown-kind') {
+          unknown.add(String(item?.kind ?? item?.type ?? 'undefined'));
+          continue;
+        }
+        return c.json({ error }, 400);
       }
-      const { error, item: cleanItem } = sanitizeItem(item);
-      if (error) return c.json({ error }, 400);
-      clean.push(cleanItem);
+      if (seen.has(object.id)) {
+        object.id = randomUUID();
+        console.warn('[layout] regenerated a duplicate object id on PUT');
+      }
+      seen.add(object.id);
+      clean.push(object);
     }
-    if (ignored.size) {
-      console.warn(`[layout] ignoring unknown item type(s) on PUT: ${[...ignored].join(', ')}`);
-    }
-    if (countButtons(clean) > MAX_BUTTONS_PER_PAGE) {
-      return c.json({ error: `Too many buttons on this page (max ${MAX_BUTTONS_PER_PAGE})` }, 400);
-    }
+    if (unknown.size) console.warn(`[layout] ignoring unknown object kind(s) on PUT: ${[...unknown].join(', ')}`);
     warnUnknownElements(clean, elementExists);
-    const items = layout.replace(clean, columns, targetId);
-    return c.json({ items, ...layout.meta(), activePageId: layout.activePageId, pages: layout.pagesSummary() });
+    const objects = layout.replaceObjects(clean, targetId);
+    return c.json({ objects, ...layout.canonical(), activePageId: layout.activePageId, pages: layout.pagesSummary() });
   });
 
-  // Add a single item to the ACTIVE page — missing w/h default to the widget's
-  // manifest defaultSize (32-col values, e.g. search = 11×2).
-  routes.post('/items', async (c) => {
+  // ---- Objects --------------------------------------------------------------
+
+  // Add a single object to the ACTIVE page. Missing w/h default to the widget's
+  // manifest defaultSize (64-col fine values) for widgets, or the 2×2 minimum.
+  routes.post('/objects', (c) => addObject(c, layout, elementExists));
+
+  // Update an object's config and/or rect (id looked up across all pages).
+  routes.patch('/objects/:id', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
-    if (layout.list().length >= MAX_ITEMS) {
-      return c.json({ error: `Too many items (max ${MAX_ITEMS} per page)` }, 400);
+    const patch = {};
+    if (parsed.body.config !== undefined || parsed.body.options !== undefined) {
+      patch.config = parsed.body.config; // widget config
     }
-    const error = validateType(parsed.body);
-    if (error) return c.json({ error }, 400);
-    const defaults = defaultSizeFor(parsed.body);
-    const { error: sanitizeError, item } = sanitizeItem({ ...parsed.body, ...defaults });
-    if (sanitizeError) return c.json({ error: sanitizeError }, 400);
-    if (countButtons(layout.list()) + countButtons([item]) > MAX_BUTTONS_PER_PAGE) {
-      return c.json({ error: `Too many buttons on this page (max ${MAX_BUTTONS_PER_PAGE})` }, 400);
-    }
-    warnUnknownElements([item], elementExists);
-    const entry = layout.add(item);
-    return c.json(entry, 201);
+    const entry = layout.updateObject(c.req.param('id'), patch);
+    if (!entry) return c.json({ error: 'Not found' }, 404);
+    return c.json(entry);
   });
 
-  // Update an item's config (id looked up across all pages — ids are unique)
+  // Config-only update (kept for the existing front call sites).
+  routes.patch('/objects/:id/config', async (c) => {
+    const parsed = await parseBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (!parsed.body.config || typeof parsed.body.config !== 'object') {
+      return c.json({ error: 'config object required' }, 400);
+    }
+    const entry = layout.updateObject(c.req.param('id'), { config: parsed.body.config });
+    if (!entry) return c.json({ error: 'Not found' }, 404);
+    return c.json(entry);
+  });
+
+  routes.delete('/objects/:id', (c) => {
+    const ok = layout.removeObject(c.req.param('id'));
+    if (!ok) return c.json({ error: 'Not found' }, 404);
+    return c.json({ ok: true });
+  });
+
+  // ---- Groups (boxes) -------------------------------------------------------
+
+  routes.post('/groups', async (c) => {
+    const parsed = await parseBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (layout.listGroups().length >= MAX_GROUPS_PER_PAGE) {
+      return c.json({ error: `Too many groups (max ${MAX_GROUPS_PER_PAGE} per page)` }, 400);
+    }
+    const { error, group } = sanitizeGroup(parsed.body);
+    if (error) return c.json({ error }, 400);
+    return c.json(layout.addGroup(group), 201);
+  });
+
+  routes.patch('/groups/:id', async (c) => {
+    const parsed = await parseBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const entry = layout.updateGroup(c.req.param('id'), parsed.body || {});
+    if (!entry) return c.json({ error: 'Not found' }, 404);
+    return c.json(entry);
+  });
+
+  // DELETE = dissolve (objects kept); DELETE ?withObjects=1 = also delete every
+  // object ENTIRELY contained in the group.
+  routes.delete('/groups/:id', (c) => {
+    const withObjects = c.req.query('withObjects') === '1' || c.req.query('withObjects') === 'true';
+    const result = layout.removeGroup(c.req.param('id'), withObjects);
+    if (!result.ok) return c.json({ error: 'Not found' }, 404);
+    return c.json({ ok: true, removedObjects: result.removedObjects });
+  });
+
+  // ---- Deprecated aliases (ex-/items) — kept so an existing front keeps working.
+  routes.post('/items', (c) => addObject(c, layout, elementExists));
   routes.patch('/items/:id/config', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
     if (!parsed.body.config || typeof parsed.body.config !== 'object') {
       return c.json({ error: 'config object required' }, 400);
     }
-    const entry = layout.updateConfig(c.req.param('id'), parsed.body.config);
+    const entry = layout.updateObject(c.req.param('id'), { config: parsed.body.config });
     if (!entry) return c.json({ error: 'Not found' }, 404);
     return c.json(entry);
   });
-
-  // Delete an item
   routes.delete('/items/:id', (c) => {
-    const ok = layout.remove(c.req.param('id'));
+    const ok = layout.removeObject(c.req.param('id'));
     if (!ok) return c.json({ error: 'Not found' }, 404);
     return c.json({ ok: true });
   });
 
   // ---- Pages (tabs) ---------------------------------------------------------
 
-  // Items of a specific page (the active one is NOT switched).
   routes.get('/pages/:id', (c) => {
     const page = layout.page(c.req.param('id'));
     if (!page) return c.json({ error: 'Not found' }, 404);
     return c.json({
       id: page.id,
       name: page.name,
-      itemCount: page.items.length,
-      items: page.items,
-      ...layout.meta(),
+      objectCount: page.objects.length,
+      groupCount: page.groups.length,
+      objects: page.objects,
+      groups: page.groups,
+      ...layout.canonical(),
     });
   });
 
-  // Create a page — optional {name} (1..40 chars after trim), defaults to
-  // "Page N" (first free index). Page ids are server-generated UUIDs.
   routes.post('/pages', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
@@ -194,63 +204,69 @@ export function layoutRoutes(storeOrService, options = {}) {
     let name;
     if (parsed.body.name !== undefined) {
       name = normalizePageName(parsed.body.name);
-      if (!name) return c.json({ error: `name must be 1 to ${PAGE_NAME_MAX} characters after trim` }, 400);
+      if (!name) return c.json({ error: `name must be 1 to ${PAGE_NAME_MAX_LOCAL} characters after trim` }, 400);
     }
     return c.json(layout.createPage(name), 201);
   });
 
-  // Rename a page — {name} required, 1..40 chars after trim.
   routes.patch('/pages/:id', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
     const name = normalizePageName(parsed.body.name);
-    if (!name) return c.json({ error: `name must be 1 to ${PAGE_NAME_MAX} characters after trim` }, 400);
+    if (!name) return c.json({ error: `name must be 1 to ${PAGE_NAME_MAX_LOCAL} characters after trim` }, 400);
     const page = layout.renamePage(c.req.param('id'), name);
     if (!page) return c.json({ error: 'Not found' }, 404);
     return c.json(page);
   });
 
-  // Delete a page. The last page cannot be deleted (400). Deleting the ACTIVE
-  // page falls back to the FIRST remaining page: the response carries the new
-  // activePageId AND its items + the fresh page list (single round-trip).
   routes.delete('/pages/:id', (c) => {
     const result = layout.deletePage(c.req.param('id'));
     if (!result.ok) {
       if (result.reason === 'not-found') return c.json({ error: 'Not found' }, 404);
       return c.json({ error: 'Cannot delete the last page' }, 400);
     }
-    return c.json({
-      ok: true,
-      activePageId: result.activePageId,
-      items: layout.list(),
-      ...layout.meta(),
-      pages: layout.pagesSummary(),
-    });
+    return c.json({ ok: true, ...fullLayout(layout), activePageId: result.activePageId });
   });
 
-  // Switch the active page — {pageId}. One round-trip: returns the new active
-  // page's items + the page list, so the front can swap tabs instantly.
   routes.put('/active', async (c) => {
     const parsed = await parseBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
     if (parsed.body.pageId === undefined) return c.json({ error: 'pageId required' }, 400);
     const page = layout.setActive(String(parsed.body.pageId));
     if (!page) return c.json({ error: 'Not found' }, 404);
-    return c.json({
-      activePageId: page.id,
-      items: page.items,
-      ...layout.meta(),
-      pages: layout.pagesSummary(),
-    });
+    return c.json(fullLayout(layout));
   });
 
   return routes;
 }
 
-/**
- * Read + size-limit + JSON-parse a request body.
- * Returns `{ ok: true, body }` on success, or `{ ok: false, status, error }`.
- */
+/** Canonical full layout payload for the ACTIVE page. */
+function fullLayout(layout) {
+  return {
+    ...layout.canonical(),
+    activePageId: layout.activePageId,
+    pages: layout.pagesSummary(),
+    objects: layout.listObjects(),
+    groups: layout.listGroups(),
+  };
+}
+
+async function addObject(c, layout, elementExists) {
+  const parsed = await parseBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+  if (layout.listObjects().length >= MAX_OBJECTS_PER_PAGE) {
+    return c.json({ error: `Too many objects (max ${MAX_OBJECTS_PER_PAGE} per page)` }, 400);
+  }
+  const { error, object } = sanitizeObject(parsed.body, { defaults: true });
+  if (error) return c.json({ error: error === 'unknown-kind' ? `Unknown object type: ${parsed.body?.type ?? parsed.body?.kind}` : error }, 400);
+  warnUnknownElements([object], elementExists);
+  return c.json(layout.addObject(object), 201);
+}
+
+// ---------------------------------------------------------------------------
+// Body parsing
+// ---------------------------------------------------------------------------
+
 async function parseBody(c) {
   const text = await c.req.text().catch(() => '');
   if (text.length > MAX_BODY_BYTES) {
@@ -264,241 +280,126 @@ async function parseBody(c) {
   }
 }
 
-function isKnownType(item) {
-  if (!item || typeof item !== 'object') return false;
-  return KNOWN_ITEM_TYPES.has(String(item.type || ''));
-}
-
-function validateType(item) {
-  if (!item || typeof item !== 'object') return 'Invalid layout item';
-  const type = String(item.type || '');
-  if (!KNOWN_ITEM_TYPES.has(type)) return `Unknown widget type: ${type}`;
-  return null;
-}
-
-/** Manifest defaultSize for a type (only fills fields the caller omitted). */
-function defaultSizeFor(item) {
-  const def = WIDGET_MANIFEST_FINAL.find((w) => w.type === String(item?.type || ''))?.defaultSize;
-  const out = {};
-  if (def && item?.w === undefined) out.w = def.w;
-  if (def && item?.h === undefined) out.h = def.h;
-  return out;
-}
-
-/** Page name: trim + length check (1..40). Returns the trimmed name or null. */
 function normalizePageName(raw) {
   const name = String(raw ?? '').trim();
-  return name && name.length <= PAGE_NAME_MAX ? name : null;
+  return name && name.length <= PAGE_NAME_MAX_LOCAL ? name : null;
 }
 
+// ---------------------------------------------------------------------------
+// Object/group sanitization (WRITE path)
+// ---------------------------------------------------------------------------
+
 /**
- * Validate/normalize a grid item for the 32×18 canvas.
- * Returns `{ item }` on success or `{ error }` (HTTP 400) on rejection.
+ * Validate/normalize a layout object. `defaults` (POST) fills missing w/h from
+ * the widget manifest; on PUT the caller always sends explicit geometry.
+ * Returns `{ object }` or `{ error }` (or `{ error:'unknown-kind' }` so PUT can
+ * SKIP unknown kinds while POST rejects them).
  *
- * Rejected: non-integer or negative x/y, w outside 1..32, h < 1, non-numeric
- * coordinates. Tolerated (documented leniency): missing w/h/x/y and h taller
- * than the canvas. Review A1 restored a NON-destructive fallback:
- *   - w/h missing → 1 (NOT the old 11×3, which silently inflated every item
- *     whose w or h was omitted). Why 1 and not the widget's defaultSize: the
- *     only legitimate producer of a PUT body missing w/h is gridstack's own
- *     save() (old cached frontends included), and its removeInternalForSave()
- *     strips these fields ONLY when the value IS exactly 1 — so a missing
- *     field semantically means "1". Deriving from defaultSize would inflate
- *     widgets the user deliberately resized to a single cell (e.g. a clock at
- *     h=1). The fixed client always sends explicit w/h (it serializes from
- *     the live engine nodes, not grid.save()); POST /items keeps its
- *     defaultSize fallback because there the caller means "create a widget
- *     without geometry" and the manifest default IS the intent.
- *   - x/y missing → 0 (unchanged).
- *   - h is CLAMPED to 18 instead of rejected so a hand-edited legacy item
- *     taller than the canvas can still be saved (a rejection here would
- *     strand the whole layout: the client could never persist its edits again).
- *
- * v4 additions: a `group` is validated with a 2×2 GLOBAL minimum (a 1×1 group
- * is rejected) and carries a sanitized `buttons[]`. Non-group items keep the
- * exact previous behavior — no `buttons` field is ever attached to them.
+ * Documented leniency: `h` is clamped to 36 (never rejected), x/y default to 0,
+ * missing w/h fall back to the 2×2 minimum, `zoom`/`tileInset` keys are STRIPPED
+ * (never a 400). Rejections: negative/non-integer x/y, w outside 1..64, missing
+ * `type` for a widget, missing `elementId` for element/report.
  */
-function sanitizeItem(item) {
-  if (!item || typeof item !== 'object') return { error: 'Invalid layout item' };
-  const type = String(item.type || '');
-  const id = String(item.id || '');
-  const isGroup = type === 'group';
-  const minW = isGroup ? MIN_GROUP : 1;
-  const minH = isGroup ? MIN_GROUP : 1;
+export function sanitizeObject(raw, { defaults = false } = {}) {
+  if (!raw || typeof raw !== 'object') return { error: 'Invalid layout object' };
+  const kind = String(raw.kind || '');
+  if (!OBJECT_KINDS.has(kind)) return { error: 'unknown-kind' };
 
   const int = (v) => {
     const n = Number(v);
     return Number.isFinite(n) ? Math.floor(n) : null;
   };
 
-  let x = int(item.x);
+  let x = int(raw.x);
   if (x === null) x = 0;
   if (x < 0) return { error: 'x must be an integer >= 0' };
-
-  let y = int(item.y);
+  let y = int(raw.y);
   if (y === null) y = 0;
   if (y < 0) return { error: 'y must be an integer >= 0' };
 
-  let w = int(item.w);
-  if (w === null) w = minW;
-  if (w < minW || w > GRID_COLUMNS) {
-    return {
-      error: isGroup
-        ? `w must be an integer between ${minW} and ${GRID_COLUMNS} for a group`
-        : `w must be an integer between 1 and ${GRID_COLUMNS}`,
-    };
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : randomUUID();
+
+  if (kind === 'widget') {
+    const type = String(raw.type || '');
+    if (!KNOWN_WIDGET_TYPES.has(type)) return { error: 'unknown-kind' };
+    let w = int(raw.w);
+    if (w === null) w = defaults ? defaultWidgetSize(type).w : MIN_OBJECT;
+    if (w < 1 || w > GRID_COLUMNS) return { error: `w must be an integer between 1 and ${GRID_COLUMNS}` };
+    w = Math.max(MIN_OBJECT, w);
+    let h = int(raw.h);
+    if (h === null && defaults) h = defaultWidgetSize(type).h;
+    h = clampInt(h, MIN_OBJECT, GRID_ROWS);
+    return { object: { id, kind, type, x, y, w: Math.min(w, GRID_COLUMNS - x), h: Math.min(h, GRID_ROWS - y), config: plainObject(raw.config) } };
   }
 
-  let h = int(item.h);
-  if (h === null) h = minH;
-  if (h < minH) {
-    return { error: isGroup ? 'h must be an integer >= 2 for a group (min 2×2)' : 'h must be an integer >= 1' };
-  }
+  // element / report — elementId required.
+  const elementId = typeof raw.elementId === 'string' ? raw.elementId.trim() : '';
+  if (!elementId || elementId.length > ELEMENT_ID_MAX) return { error: `${kind}.elementId is required` };
 
-  const clean = {
-    id: id || (isGroup ? randomUUID() : undefined),
-    x,
-    y,
-    w,
-    h: Math.min(h, GRID_ROWS),
-    type,
-    config: item.config && typeof item.config === 'object' ? item.config : {},
+  const maxW = kind === 'element' ? MAX_ELEMENT_SIZE : GRID_COLUMNS;
+  let w = int(raw.w);
+  if (w === null) w = MIN_OBJECT;
+  w = clampInt(w, MIN_OBJECT, maxW);
+  let h = int(raw.h);
+  if (h === null) h = MIN_OBJECT;
+  h = clampInt(h, MIN_OBJECT, kind === 'element' ? MAX_ELEMENT_SIZE : GRID_ROWS);
+  const rect = { x, y, w: Math.min(w, GRID_COLUMNS - x), h: Math.min(h, GRID_ROWS - y) };
+
+  if (kind === 'report') {
+    return { object: { id, kind, elementId, ...rect } };
+  }
+  return { object: { id, kind, elementId, ...rect, options: normalizeButtonOptions(raw.options) } };
+}
+
+function sanitizeGroup(raw) {
+  if (!raw || typeof raw !== 'object') return { error: 'Invalid group' };
+  const int = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.floor(n) : null;
   };
+  let x = int(raw.x);
+  if (x === null) x = 0;
+  if (x < 0) return { error: 'x must be an integer >= 0' };
+  let y = int(raw.y);
+  if (y === null) y = 0;
+  if (y < 0) return { error: 'y must be an integer >= 0' };
+  const w = clampInt(int(raw.w) ?? MIN_GROUP, MIN_GROUP, GRID_COLUMNS);
+  const h = clampInt(int(raw.h) ?? MIN_GROUP, MIN_GROUP, GRID_ROWS);
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : randomUUID();
+  return {
+    group: {
+      id,
+      x,
+      y,
+      w: Math.min(w, GRID_COLUMNS - x),
+      h: Math.min(h, GRID_ROWS - y),
+      config: normalizeGroupConfig(raw.config),
+    },
+  };
+}
 
-  if (isGroup) {
-    // Tolerant config normalization (the WRITE path): titleVisibility is
-    // coerced to always|hover|never (unknown → always), zoom to a finite
-    // number in [0.5, 3] and tileInset to an integer px value in [0, 8]
-    // (invalid / out-of-range → 4) so a hand-edited or stale config can never
-    // persist an unhandled value. Other keys pass through. normalizeGroupConfig
-    // already covers all three; the explicit calls document the write-side
-    // contract and stay idempotent.
-    clean.config = normalizeGroupConfig(clean.config);
-    clean.config.zoom = normalizeGroupZoom(clean.config.zoom);
-    clean.config.tileInset = normalizeTileInset(clean.config.tileInset);
-    const { error, buttons } = sanitizeButtons(item.buttons);
-    if (error) return { error };
-    clean.buttons = buttons;
-    const { error: reportError, reports } = sanitizeReports(item.reports);
-    if (reportError) return { error: reportError };
-    clean.reports = reports;
-  }
+function clampInt(value, min, max) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
 
-  return { item: clean };
+function plainObject(v) {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+}
+
+/** Manifest defaultSize for a widget type (64-col fine values). */
+function defaultWidgetSize(type) {
+  return WIDGET_MANIFEST_FINAL.find((w) => w.type === type)?.defaultSize ?? { w: MIN_OBJECT, h: MIN_OBJECT };
 }
 
 /**
- * Validate/normalize a group's `buttons`. Returns `{ buttons }` or `{ error }`.
- * A missing batch defaults to []; `elementId` is REQUIRED but may point at an
- * unknown catalogue id (the catalogue can evolve) — that is only logged, never
- * fatal. Options are completed with their documented defaults.
- */
-function sanitizeButtons(raw) {
-  if (raw === undefined || raw === null) return { buttons: [] };
-  if (!Array.isArray(raw)) return { error: 'buttons must be an array' };
-  if (raw.length > MAX_BUTTONS_PER_GROUP) {
-    return { error: `Too many buttons in group (max ${MAX_BUTTONS_PER_GROUP})` };
-  }
-  const buttons = [];
-  for (const button of raw) {
-    if (!button || typeof button !== 'object' || Array.isArray(button)) return { error: 'Invalid button' };
-    const elementId = typeof button.elementId === 'string' ? button.elementId.trim() : '';
-    if (!elementId || elementId.length > ELEMENT_ID_MAX) {
-      return { error: 'button.elementId is required' };
-    }
-    const int = (v) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.floor(n) : null;
-    };
-    let col = int(button.col);
-    if (col === null) col = 0;
-    if (col < 0) return { error: 'button.col must be an integer >= 0' };
-    let row = int(button.row);
-    if (row === null) row = 0;
-    if (row < 0) return { error: 'button.row must be an integer >= 0' };
-    let w = int(button.w);
-    if (w === null) w = 1;
-    if (w < 1 || w > BUTTON_CELLS_MAX) {
-      return { error: `button.w must be an integer between 1 and ${BUTTON_CELLS_MAX}` };
-    }
-    let h = int(button.h);
-    if (h === null) h = 1;
-    if (h < 1 || h > BUTTON_CELLS_MAX) {
-      return { error: `button.h must be an integer between 1 and ${BUTTON_CELLS_MAX}` };
-    }
-    buttons.push({
-      id: typeof button.id === 'string' && button.id ? button.id : randomUUID(),
-      elementId,
-      col,
-      row,
-      w,
-      h,
-      options: normalizeButtonOptions(button.options),
-    });
-  }
-  return { buttons };
-}
-
-/**
- * Validate/normalize a group's `reports[]` (dedicated report tiles, LOT 8).
- * A missing batch defaults to []; `elementId` is REQUIRED but may point at an
- * unknown catalogue id (the catalogue can evolve) — never fatal. A report tile
- * has a FREE internal-trame size: only [REPORT_CELLS_MIN, REPORT_CELLS_MAX] is
- * enforced (NO button-variant minima, NO overlap enforcement — tolerant).
- */
-function sanitizeReports(raw) {
-  if (raw === undefined || raw === null) return { reports: [] };
-  if (!Array.isArray(raw)) return { error: 'reports must be an array' };
-  if (raw.length > MAX_REPORTS_PER_GROUP) {
-    return { error: `Too many reports in group (max ${MAX_REPORTS_PER_GROUP})` };
-  }
-  const reports = [];
-  for (const report of raw) {
-    if (!report || typeof report !== 'object' || Array.isArray(report)) {
-      return { error: 'Invalid report tile' };
-    }
-    const elementId = typeof report.elementId === 'string' ? report.elementId.trim() : '';
-    if (!elementId || elementId.length > ELEMENT_ID_MAX) {
-      return { error: 'report.elementId is required' };
-    }
-    const int = (v) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.floor(n) : null;
-    };
-    let col = int(report.col);
-    if (col === null) col = 0;
-    if (col < 0) return { error: 'report.col must be an integer >= 0' };
-    let row = int(report.row);
-    if (row === null) row = 0;
-    if (row < 0) return { error: 'report.row must be an integer >= 0' };
-    let w = int(report.w);
-    if (w === null) w = REPORT_CELLS_MIN;
-    if (w < REPORT_CELLS_MIN || w > REPORT_CELLS_MAX) {
-      return { error: `report.w must be an integer between ${REPORT_CELLS_MIN} and ${REPORT_CELLS_MAX}` };
-    }
-    let h = int(report.h);
-    if (h === null) h = REPORT_CELLS_MIN;
-    if (h < REPORT_CELLS_MIN || h > REPORT_CELLS_MAX) {
-      return { error: `report.h must be an integer between ${REPORT_CELLS_MIN} and ${REPORT_CELLS_MAX}` };
-    }
-    reports.push({
-      id: typeof report.id === 'string' && report.id ? report.id : randomUUID(),
-      elementId,
-      col,
-      row,
-      w,
-      h,
-    });
-  }
-  return { reports };
-}
-
-/**
- * TOLERANT: unknown/missing keys fall back to their default — a button saved
- * before `iconSize`/`allowIconOverflow` existed keeps working untouched.
+ * TOLERANT option coercion on WRITE: unknown/missing keys fall back to defaults.
+ * A residual per-tile `iconColor` is dropped (the icon colour is now an
+ * element-level setting).
  */
 function normalizeButtonOptions(raw) {
-  const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const o = plainObject(raw);
   const bool = (v, def) => (typeof v === 'boolean' ? v : def);
   return {
     icon: bool(o.icon, true),
@@ -514,38 +415,27 @@ function normalizeButtonOptions(raw) {
     surfaceInset: normalizeSurfaceInset(o.surfaceInset),
     surfaceShape: SURFACE_SHAPES.has(o.surfaceShape) ? o.surfaceShape : SURFACE_SHAPE_DEFAULT,
     surfaceColor: normalizeSurfaceColor(o.surfaceColor),
-    // NB: a residual per-tile `iconColor` option is no longer carried: the icon
-    // colour is now an ELEMENT-level setting (element.iconColor). The unknown
-    // key is dropped (tolerated: never a crash, PUT still 200).
   };
 }
 
-/** Clamp a surface opacity to an integer percentage in [0,100] (default 100). */
 function normalizeSurfaceOpacity(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return SURFACE_OPACITY_DEFAULT;
   return Math.min(SURFACE_OPACITY_MAX, Math.max(SURFACE_OPACITY_MIN, Math.round(n)));
 }
 
-/** Clamp a surface inset to an integer px value in [0,8] (default 0). */
 function normalizeSurfaceInset(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return SURFACE_INSET_DEFAULT;
   return Math.min(SURFACE_INSET_MAX, Math.max(SURFACE_INSET_MIN, Math.round(n)));
 }
 
-/** Tolerant surface colour coercion: a plausible CSS colour, else '' (theme). */
 function normalizeSurfaceColor(raw) {
   const s = typeof raw === 'string' ? raw.trim() : '';
   if (!s || s.length > 64) return '';
   return SURFACE_COLOR_RE.test(s) ? s : '';
 }
 
-/**
- * Tolerant icon-size coercion: a finite number (clamped to [8,120], snapped to
- * the 0.5 step), a numeric string, or a legacy letter (S/M/L/XL/Fill → its
- * percentage). Anything else falls back to the 55 % default — never fails.
- */
 function normalizeButtonIconSize(raw) {
   let n = null;
   if (typeof raw === 'number' && Number.isFinite(raw)) n = raw;
@@ -560,31 +450,23 @@ function normalizeButtonIconSize(raw) {
   return Math.min(ICON_SIZE_MAX, Math.max(ICON_SIZE_MIN, stepped));
 }
 
-/** Total buttons carried by a batch of (already sanitized or raw) items. */
-function countButtons(items) {
-  let total = 0;
-  for (const item of items) {
-    if (item && Array.isArray(item.buttons)) total += item.buttons.length;
-  }
-  return total;
-}
-
 /**
- * Best-effort signal: log (once per write) the element ids referenced by a
- * group but absent from the catalogue. Never blocks the write — references are
- * allowed to dangle while the catalogue evolves (the DELETE guard handles the
- * cleanup side).
+ * Best-effort signal: log the catalog element ids referenced by element/report
+ * objects but absent from the catalogue. Never blocks the write.
  */
-function warnUnknownElements(items, elementExists) {
+function warnUnknownElements(objects, elementExists) {
   if (!elementExists) return;
   const unknown = new Set();
-  for (const item of items) {
-    if (!item || item.type !== 'group' || !Array.isArray(item.buttons)) continue;
-    for (const button of item.buttons) {
-      if (button && button.elementId && !elementExists(button.elementId)) unknown.add(button.elementId);
-    }
+  for (const object of objects) {
+    if (!object || (object.kind !== 'element' && object.kind !== 'report')) continue;
+    if (object.elementId && !elementExists(object.elementId)) unknown.add(object.elementId);
   }
   if (unknown.size) {
-    console.warn(`[layout] button(s) reference unknown element id(s): ${[...unknown].join(', ')}`);
+    console.warn(`[layout] placement(s) reference unknown element id(s): ${[...unknown].join(', ')}`);
   }
 }
+
+// `contains` is imported for documentation parity (used by the service); keep a
+// reference so the bundler/linter does not flag the import as dead when the
+// route-level containment test lives in the service.
+void contains;

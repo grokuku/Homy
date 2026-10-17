@@ -34,7 +34,7 @@ export const weather = {
   name: 'Weather',
   icon: '🌤',
   category: 'data',
-  defaultSize: { w: 5, h: 2 }, // 2×2 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change)
+  defaultSize: { w: 10, h: 4 }, // 64×36 fine units: 5×2 global cells
   settingsSchema: {
     fields: [
       { key: 'city', label: 'City', type: 'text', default: '', required: true, placeholder: 'e.g. Paris' },

@@ -31,61 +31,13 @@ const APPEARANCE_FIELDS = [
 
 const WIDGET_MANIFEST = [
   {
-    id: 'group',
-    type: 'group',
-    name: 'Group',
-    icon: '▦',
-    category: 'generic',
-    description: 'Titled container whose buttons reference the global element catalogue (layout v4).',
-    defaultSize: { w: 8, h: 6 } /* 8×6 global cells — comfortably above the 2×2 minimum; a group resizes in global cells */,
-    settingsSchema: {
-      fields: [
-        { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Group title' },
-        {
-          key: 'titleVisibility',
-          label: 'Title visibility',
-          type: 'select',
-          default: 'always',
-          options: [
-            { value: 'always', label: 'Always' },
-            { value: 'hover', label: 'On hover' },
-            { value: 'never', label: 'Never' },
-          ],
-          help: 'Always shows the title chip, reveals it on hover, or hides it entirely.',
-        },
-        {
-          key: 'zoom',
-          label: 'Zoom',
-          type: 'range',
-          default: 1,
-          min: 0.5,
-          max: 3,
-          step: 0.05,
-          unit: '\u00d7',
-          help: 'Uniform scale of the group content (tiles + grid), keeping tiles square. Also adjustable with Ctrl+drag on the group in edit mode; Ctrl+double-click resets to 1.',
-        },
-        {
-          key: 'tileInset',
-          label: 'Tile inset',
-          type: 'range',
-          default: 4,
-          min: 0,
-          max: 8,
-          step: 1,
-          unit: 'px',
-          help: 'Regular gap kept around every tile inside the frame (frame-to-tile spacing and between adjacent tiles). Applied to all tiles of the group.',
-        },
-      ],
-    },
-  },
-  {
     id: 'clock',
     type: 'clock',
     name: 'Clock',
     icon: '🕐',
     category: 'data',
     description: 'Live clock widget.',
-    defaultSize: { w: 5, h: 2 } /* 2×2 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
+    defaultSize: { w: 10, h: 4 } /* 64×36 fine units (1 unit = ½ global cell): 5×2 global cells */,
     settingsSchema: {
       fields: [
         {
@@ -138,7 +90,7 @@ const WIDGET_MANIFEST = [
     icon: '🖼',
     category: 'tools',
     description: 'Embed an external page in an iframe.',
-    defaultSize: { w: 16, h: 4 } /* 6×4 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
+    defaultSize: { w: 32, h: 8 } /* 64×36 fine units: 16×4 global cells */,
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: '', placeholder: 'Widget title' },
@@ -155,7 +107,7 @@ const WIDGET_MANIFEST = [
     icon: '🔍',
     category: 'tools',
     description: 'Search bar (Google, DuckDuckGo, Bing or custom URL).',
-    defaultSize: { w: 11, h: 2 } /* grown from the legacy 4×1 rescale (11×1): a 1-row cell cannot fit the search bar (review C1). Existing h=1 items are upgraded at load — see public/js/grid/config.js normalizeItems. */,
+    defaultSize: { w: 22, h: 4 } /* 64×36 fine units: 11×2 global cells (a 1-row cell cannot fit the search bar) */,
     settingsSchema: {
       fields: [
         {
@@ -189,7 +141,7 @@ const WIDGET_MANIFEST = [
     icon: '📝',
     category: 'tools',
     description: 'Free-form editable text block (persisted in config).',
-    defaultSize: { w: 8, h: 3 } /* 3×3 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
+    defaultSize: { w: 16, h: 6 } /* 64×36 fine units: 8×3 global cells */,
     settingsSchema: {
       fields: [
         { key: 'title', label: 'Title', type: 'text', default: 'Notes', placeholder: 'Notes' },
@@ -204,7 +156,7 @@ const WIDGET_MANIFEST = [
     icon: '🌤',
     category: 'data',
     description: 'Current weather via open-meteo (no API key).',
-    defaultSize: { w: 5, h: 2 } /* 2×2 on the legacy 12-col grid, rescaled ×32/12 (h unchanged: row heights did not change) */,
+    defaultSize: { w: 10, h: 4 } /* 64×36 fine units: 5×2 global cells */,
     settingsSchema: {
       fields: [
         { key: 'city', label: 'City', type: 'text', default: '', required: true, placeholder: 'e.g. Paris' },
