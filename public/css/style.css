@@ -1322,8 +1322,10 @@ body[data-bg-active] .group-layer .group-box[data-group-blur] {
 .overlay-layer .group-handle[data-handle='se'] { right: -7px; bottom: -7px; cursor: nwse-resize; }
 .overlay-layer .group-marquee {
   position: absolute;
-  border: 1px dashed var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 2px;
 }
 /* Cursor feedback for the group hit-test (boxes are pointer-events:none, so the
    cursor must live on the grid underneath). */
@@ -1386,34 +1388,110 @@ body[data-bg-active] .group-layer .group-box[data-group-blur] {
   border-radius: calc(var(--radius) + 2px);
 }
 
-/* Minimal contextual bar (L4): revealed in EDIT only, when a group is selected
-   or ≥ 2 objects are selected. The full floating multi-selection bar is L6. */
-.group-context-bar {
+/* Floating multi-selection bar (L6 — replaces the minimal L4 context bar).
+   position:fixed, centred at the bottom, appended to <body> so it is never
+   clipped by the canvas and never scrolls with the grid. Revealed in EDIT only,
+   when ≥ 1 object OR group is selected. Sections lay out in a wrapping row:
+   counter → Objects → Groups → actions. */
+.selection-bar {
   position: fixed;
   left: 50%;
-  bottom: 18px;
+  bottom: 16px;
   transform: translateX(-50%);
   z-index: 60;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 6px;
+  justify-content: center;
+  gap: 8px;
+  max-width: min(94vw, 1180px);
+  padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elev) 94%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
 }
-.group-context-bar.hidden { display: none; }
-.group-context-bar .btn { font-size: 13px; }
-.group-context-bar .btn.confirm {
+.selection-bar.hidden { display: none; }
+.selection-bar .btn { font-size: 13px; }
+.selection-bar .btn.confirm {
   background: var(--danger, #e5484d);
   border-color: var(--danger, #e5484d);
   color: #fff;
 }
+.selection-bar .sel-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 4px;
+  border-right: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.selection-bar .sel-count-detail {
+  font-weight: 400;
+  color: var(--text-muted, #8a93a6);
+}
+.selection-bar .sel-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  border-right: 1px solid var(--border);
+}
+.selection-bar .sel-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #8a93a6);
+}
+.selection-bar .sel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* One field = label + control, laid out inline. `is-mixed` marks a key whose
+   carriers disagree; moving the control overwrites the key on every carrier. */
+.selection-bar .sel-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.selection-bar .sel-field.is-mixed {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.selection-bar .sel-field.is-mixed .sel-field-label::after {
+  content: ' · mixed';
+  color: var(--accent);
+  font-weight: 600;
+}
+.selection-bar .sel-field-label { color: var(--text-muted, #8a93a6); }
+.selection-bar .sel-range { width: 90px; }
+.selection-bar .sel-field-val { min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+.selection-bar .sel-color-row { display: flex; align-items: center; gap: 4px; }
+.selection-bar .sel-color { width: 28px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 4px; background: none; }
+.selection-bar .sel-text {
+  width: 120px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg, transparent);
+  color: var(--text);
+  font-size: 12px;
+}
+.selection-bar .segmented { display: inline-flex; }
+.selection-bar .segmented-item { font-size: 12px; padding: 3px 8px; }
 
-/* While a group gesture runs, keep the grabbing cursor and kill text selection. */
+/* While a group gesture or a rigid multi-translation runs, keep the grabbing
+   cursor and kill text selection. While a lasso runs, crosshair + no select. */
 body.group-dragging,
 body.group-dragging * { cursor: grabbing !important; user-select: none; }
+body.lasso-active,
+body.lasso-active * { cursor: crosshair !important; user-select: none; }
 
 /* ---------- Button tiles (matrix of variants) ----------
    The TILE IS THE SURFACE. Its background/border/radius are driven by per-tile

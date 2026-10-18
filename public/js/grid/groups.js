@@ -129,7 +129,7 @@ export function createGroupLayer(previewEl) {
   let rectsDirty = true;
   let mode = 'view';
   let hoveredId = null;
-  let selectedId = null;
+  let selectedIds = new Set();
   let alertId = null;
   let alertTimer = 0;
 
@@ -235,10 +235,10 @@ export function createGroupLayer(previewEl) {
     applySelectedClass();
   }
 
-  /** Re-assert `.group-selected` on the boxes from the stored id. */
+  /** Re-assert `.group-selected` on the boxes from the stored id SET. */
   function applySelectedClass() {
     for (const node of layer.children) {
-      const on = selectedId != null && node.dataset && node.dataset.groupId === String(selectedId);
+      const on = node.dataset && selectedIds.has(String(node.dataset.groupId));
       node.classList.toggle('group-selected', on);
     }
   }
@@ -248,9 +248,18 @@ export function createGroupLayer(previewEl) {
     return groups.find((g) => g && String(g.id) === String(id)) || null;
   }
 
-  /** Mark (or clear) the selected group box — ring + hit-test target for L4. */
+  /** Mark (or clear) the selected group box(es) — ring + hit-test target (L4/L6). */
+  function setSelectedGroups(ids) {
+    const next = new Set();
+    const list = ids instanceof Set ? ids : Array.isArray(ids) ? ids : ids == null ? [] : [ids];
+    for (const id of list) if (id != null) next.add(String(id));
+    selectedIds = next;
+    applySelectedClass();
+  }
+
+  /** Back-compat single-id shorthand (existing L4 call sites). */
   function setSelectedGroup(id) {
-    selectedId = id == null ? null : String(id);
+    selectedIds = id == null ? new Set() : new Set([String(id)]);
     applySelectedClass();
   }
 
@@ -261,6 +270,18 @@ export function createGroupLayer(previewEl) {
     const box = boxFor(g.id);
     if (box) place(box, g);
     invalidate();
+  }
+
+  /**
+   * Translate a box VISUALLY without touching its model (L6 rigid multi-drag
+   * preview). `null`/0 clears the transform. The box keeps its fine-unit rect;
+   * only a CSS transform is layered on top until the drop commits.
+   */
+  function previewTransform(id, dxPx, dyPx) {
+    const box = boxFor(id);
+    if (!box) return;
+    if (!dxPx && !dyPx) box.style.transform = '';
+    else box.style.transform = `translate(${dxPx}px, ${dyPx}px)`;
   }
 
   /**
@@ -373,6 +394,8 @@ export function createGroupLayer(previewEl) {
     findGroup,
     getHoveredId: () => hoveredId,
     setSelectedGroup,
+    setSelectedGroups,
+    previewTransform,
     placeGroup,
     flashAlert,
     destroy,

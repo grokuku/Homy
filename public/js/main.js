@@ -30,6 +30,16 @@ const groupEditor = createGroupEditor({
   previewEl: $('grid-preview'),
   groupLayer,
   getGrid: () => grid,
+  // L6 keyboard/gesture guards live in main.js (single source of truth): the
+  // editor must never steal Delete/Escape/Ctrl+A from a text field, a modal,
+  // an in-flight gesture or a page transition.
+  guards: {
+    isTextEntryTarget,
+    isOverlayOpen,
+    isPaletteOverlayOpen,
+    isInteractionActive,
+    isTransitionActive: () => switchingPage || pageAnimActive,
+  },
 });
 let viewTopbarVisible = false; // VIEW-mode topbar state (right-click toggles; default hidden)
 let lastViewTopbarH = 0; // VIEW-mode topbar natural height (for the animated swap)
@@ -1016,9 +1026,16 @@ function isPaletteOverlayOpen() {
   return getComputedStyle(pal).position === 'fixed';
 }
 
-/** True while a gridstack / in-trame drag or resize gesture runs. */
+/** True while a gridstack / in-trame drag, a group gesture or a lasso runs. */
 function isInteractionActive() {
-  if (document.body.classList.contains('tile-dragging')) return true;
+  if (
+    document.body.classList.contains('tile-dragging') ||
+    document.body.classList.contains('group-dragging') ||
+    document.body.classList.contains('group-resizing') ||
+    document.body.classList.contains('lasso-active')
+  ) {
+    return true;
+  }
   return !!document.querySelector('.ui-draggable-dragging, .ui-resizable-resizing, .grid-stack-dragging');
 }
 

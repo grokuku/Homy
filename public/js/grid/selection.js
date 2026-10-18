@@ -110,6 +110,25 @@ class Selection {
     this._emit();
   }
 
+  /**
+   * Replace the WHOLE selection in one shot (L6: lasso, Ctrl+A). Both sets are
+   * replaced (not merged) and a single change is emitted; an identical target
+   * is a no-op. Ids are stringified so a numeric DOM id and a string model id
+   * never produce a phantom selection. Kept on the SAME store (no second one).
+   */
+  set({ objects = [], groups = [] } = {}) {
+    const nextObjects = new Set();
+    for (const id of objects) if (id != null) nextObjects.add(String(id));
+    const nextGroups = new Set();
+    for (const id of groups) if (id != null) nextGroups.add(String(id));
+    if (sameSet(this.objects, nextObjects) && sameSet(this.groups, nextGroups)) return;
+    this.objects.clear();
+    for (const id of nextObjects) this.objects.add(id);
+    this.groups.clear();
+    for (const id of nextGroups) this.groups.add(id);
+    this._emit();
+  }
+
   /** Drop ids that no longer exist (page switch / deletion). */
   prune({ objectIds, groupIds } = {}) {
     let changed = false;
@@ -131,6 +150,12 @@ class Selection {
     }
     if (changed) this._emit();
   }
+}
+
+function sameSet(a, b) {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
 }
 
 /** Module singleton — one dashboard, one selection. */

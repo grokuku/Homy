@@ -1,5 +1,7 @@
 import { renderWidget, disposeWidget, getWidget, getDefaultSize, getSettingsSchema } from '../widgets/registry.js';
 import { openSettingsModal } from '../ui/settingsModal.js';
+import { openButtonOptions } from '../elements/buttonOptions.js';
+import { catalog } from '../elements/catalog.js';
 import { toast } from '../ui/toast.js';
 import { uuid, el } from '../util.js';
 import { GRID_COLUMNS, GRID_ROWS, MAX_ITEMS, normalizeItems } from './config.js';
@@ -278,6 +280,35 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
   }
 
   // ---- config modal (generic, schema-driven) ----
+  /**
+   * Re-render ONE object in place from the current meta (widget config after an
+   * appearance write, element options after a bar write). Geometry is read from
+   * the live engine node so a concurrent commit is never clobbered.
+   */
+  function rerenderObject(id) {
+    const m = meta.get(id);
+    const node = grid.engine.nodes.find((n) => n.id === id);
+    const contentEl = node?.el?.querySelector('.grid-stack-item-content');
+    if (!m || !node || !contentEl) return;
+    renderWidget(
+      contentEl,
+      {
+        id,
+        kind: m.kind,
+        type: m.type,
+        elementId: m.elementId,
+        x: node.x || 0,
+        y: node.y || 0,
+        w: node.w || 1,
+        h: node.h || 1,
+        config: m.config || {},
+        options: m.options || {},
+      },
+      { editable: true }
+    );
+    attachControls(node.el, id, { config: m.kind === 'widget' });
+  }
+
   function openConfig(id) {
     const m = meta.get(id);
     if (!m || m.kind !== 'widget') return;
@@ -290,18 +321,40 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
       config: m.config || {},
       onSaved: (newConfig) => {
         m.config = newConfig;
-        const node = grid.engine.nodes.find((n) => n.id === id);
-        const contentEl = node?.el?.querySelector('.grid-stack-item-content');
-        if (contentEl) {
-          renderWidget(
-            contentEl,
-            { id, kind: 'widget', type: m.type, x: node?.x || 0, y: node?.y || 0, w: node?.w || 1, h: node?.h || 1, config: newConfig },
-            { editable: true }
-          );
-          attachControls(node.el, id, { config: true });
-        }
+        rerenderObject(id);
         scheduleSave();
       },
+    });
+  }
+
+  /**
+   * Full options panel of an ELEMENT object (L6 « Edit… »): reuses the exact
+   * tile panel (live switches, size, icon size, surface) and writes each change
+   * back into the object's `options` (+ its w/h, which map 1:1 onto the panel's
+   * internal cells for an element). Returns the modal controller or undefined.
+   */
+  function openObjectOptions(id) {
+    const m = meta.get(id);
+    if (!m || m.kind !== 'element') return undefined;
+    const node = grid.engine.nodes.find((n) => n.id === id);
+    return openButtonOptions({
+      button: { elementId: m.elementId, w: node?.w || 2, h: node?.h || 2, options: m.options || {} },
+      element: catalog.get(m.elementId),
+      maxW: MAX_ELEMENT_SIZE,
+      maxH: MAX_ELEMENT_SIZE,
+      onUpdate: (btn) => {
+        if (btn.elementId) m.elementId = btn.elementId;
+        m.options = btn.options || {};
+        const cur = grid.engine.nodes.find((n) => n.id === id);
+        if (cur) {
+          const w = clampSize(btn.w, MIN_OBJECT_SIZE, MAX_ELEMENT_SIZE);
+          const h = clampSize(btn.h, MIN_OBJECT_SIZE, MAX_ELEMENT_SIZE);
+          if (cur.w !== w || cur.h !== h) grid.update(cur.el, { w, h });
+        }
+        rerenderObject(id);
+        scheduleSave();
+      },
+      onDelete: () => removeWidget(id),
     });
   }
 
@@ -376,6 +429,42 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     addWidget,
     addObject,
     applyConfig,
+    /**
+     * Live identity + geometry of one object (L6 floating bar): kind, type /
+     * elementId, the persisted `config` (widget) or `options` (element) object
+     * and the current engine rect. Returns null for an unknown id.
+     */
+    getObjectMeta(id) {
+      const m = meta.get(id);
+      if (!m) return null;
+      const node = grid.engine.nodes.find((n) => n.id === id);
+      return {
+        ...m,
+        x: node?.x || 0,
+        y: node?.y || 0,
+        w: node?.w || 1,
+        h: node?.h || 1,
+      };
+    },
+    /** Merge a patch into a WIDGET's config and re-render it (L6 bar write). */
+    setWidgetConfig(id, patch) {
+      const m = meta.get(id);
+      if (!m || m.kind !== 'widget' || !patch) return;
+      m.config = { ...(m.config || {}), ...patch };
+      rerenderObject(id);
+      scheduleSave();
+    },
+    /** Merge a patch into an ELEMENT's options and re-render it (L6 bar write). */
+    setObjectOptions(id, patch) {
+      const m = meta.get(id);
+      if (!m || m.kind !== 'element' || !patch) return;
+      m.options = { ...(m.options || {}), ...patch };
+      rerenderObject(id);
+      scheduleSave();
+    },
+    /** Open the full per-kind options panel for ONE object (L6 « Edit… »). */
+    openObjectConfig: openConfig,
+    openObjectOptions,
     /**
      * Live geometry of every object, straight from the engine nodes (the source
      * of truth for the next PUT). Used by the L4 group engine to FREEZE the

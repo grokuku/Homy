@@ -1,35 +1,43 @@
 /**
- * Group editing engine (layout v5, lot L4).
+ * Group / selection editing engine (layout v5, lots L4 + L6).
  *
- * Wires up everything the L2/L3 substrate deferred:
- *   - GROUP selection on click (via the pure `hitGroups`) + a minimal OBJECT
- *     multi-selection (click / Ctrl-Cmd-click / Shift-click) — the selection
- *     STATE itself lives in grid/selection.js, this module only drives it.
- *   - GROUP drag: the member list is FROZEN at mousedown (`contains`, widgets
- *     AND elements/reports) and every member is translated by the exact same
- *     delta. Snap is 1 fine unit, raised to 2 when the group contains at least
- *     one widget so no widget can ever land on an odd trame (relative parity is
- *     preserved by construction: all members share one even delta). Canvas
- *     clamp [0,64]×[0,36]; a candidate that INTERSECTS another group is refused
- *     (the group sticks at the last valid position + a ~120 ms alert ring).
- *     ONE mutation per gesture at mouseup: a single debounced full PUT for the
- *     members + one PATCH for the box geometry.
- *   - GROUP resize from a 12×12 SE handle: min 4×4, 1-unit snap, canvas clamp,
- *     growth STOPPED at the first contact with another group (no refusal, no
- *     push). ONE PATCH at mouseup (members do not move).
- *   - « Group selection »: bbox of the selected objects (+ selected groups)
- *     inflated by 2 units, floor/ceil, clamp, symmetric widening to 4×4;
- *     collision → retry with 0 margin → refuse + toast (nothing written).
- *     Selected groups are ABSORBED (dissolved, their objects untouched).
- *   - Ungroup (dissolve) / Delete group + contents (2-step, strict containment).
+ * This module is the single pointer + keyboard brain of the EDIT canvas. It
+ * drives the selection STORE (grid/selection.js), the group layer
+ * (grid/groups.js), the object grid (grid/editor.js) and the floating bar
+ * (grid/selectionBar.js). It owns NO persisted state of its own.
  *
- * DOM: the 4px border grab frame + the SE handle live in `groupLayer.overlay`
- * (EDIT only, pointer-events:none on the parent, `auto` on the handles). The
- * context bar is a small fixed bar appended to <body> and revealed only in EDIT
- * when a group is selected or ≥ 2 objects are selected.
+ * ── L4 (delivered) ────────────────────────────────────────────────────────
+ *   - GROUP selection on click (pure `hitGroups`) + object multi-selection.
+ *   - GROUP drag (members frozen at mousedown, one shared delta, parity
+ *     preserving, canvas clamp, no-overlap refusal with a ~120 ms alert ring)
+ *     and SE resize (min 4×4, growth stopped at first contact).
+ *   - « Group selection » (bbox±2, margin 0 fallback, refusal + toast, absorbs
+ *     the selected groups), Ungroup, Delete group + contents (2-step).
  *
- * NOT L4 (see lot L6): lasso, full floating multi-selection bar, Ctrl+A,
- * keyboard Delete/Backspace, heterogeneous rigid translation, bulk appearance.
+ * ── L6 (this lot) ──────────────────────────────────────────────────────────
+ *   - SELECTION gestures: click replaces, Ctrl/Cmd-click toggles (XOR),
+ *     Shift-click is UNION-ONLY (never removes), empty-canvas click clears,
+ *     Escape cancels the lasso else clears, Ctrl+A selects every object + group
+ *     of the active page (EDIT only, never inside a text field / modal).
+ *   - LASSO: a left press on empty canvas (no Ctrl/Meta) arms a lasso; only past
+ *     LASSO_THRESHOLD px does the marquee appear. Objects are caught by
+ *     INTERSECTION (area > 0), groups by CONTAINMENT (fully inside). Shift =
+ *     additive (XOR on what is met, never clearing the rest). Escape cancels an
+ *     in-flight lasso (restores the previous selection). Marquee + halos live in
+ *     the EDIT-only `.overlay-layer` (pointer-events:none). Live counter via the
+ *     coalesced homy:selection event (rAF). NOTHING is persisted.
+ *   - RIGID TRANSLATION: dragging an ALREADY-selected item while the selection
+ *     size ≥ 2 translates the WHOLE selection by ONE delta (clamped by the
+ *     tightest constraint: canvas for objects, no-overlap for groups). ONE
+ *     mutation at mouseup.
+ *   - KEYBOARD DELETE (Delete / Backspace): objects removed, groups DISSOLVED
+ *     (contents kept), mixed = both. Never removes contents — that stays the
+ *     2-step « Delete group + contents ». Guarded against text fields, modals,
+ *     in-flight gestures and page transitions.
+ *
+ * Pointer routing priority at mousedown: (1) an EDIT-only overlay handle,
+ * (2) an object inside `.grid-stack-item`, (3) a group box (`hitGroups`),
+ * (4) empty canvas → lasso / clear.
  */
 
 import { api } from '../api.js';
@@ -41,21 +49,28 @@ import { APPEARANCE_FIELDS } from '../widgets/registry.js';
 import { contains, groupRect, hitGroups, rectsIntersect } from './groups.js';
 import { GRID_COLUMNS, GRID_ROWS } from './config.js';
 import { selection } from './selection.js';
+import { emitSelection } from './selectionEvents.js';
+import { createSelectionBar } from './selectionBar.js';
 
-/** Pixels of pointer travel before a press becomes a drag (below = a click). */
+/** Pixels of pointer travel before a press becomes a drag / a lasso. */
 export const DRAG_THRESHOLD = 4;
+/** Pixels before an empty-canvas press becomes a lasso (no flicker on a click). */
+export const LASSO_THRESHOLD = 4;
 /** A group box is at least 4×4 fine units (mirrors server MIN_GROUP). */
 const GROUP_MIN = 4;
 /** Units of margin added on each side when grouping a selection. */
 const GROUP_MARGIN = 2;
-/** 2-step « Delete group + contents » confirmation window (tabs.js pattern). */
-const CONFIRM_MS = 3000;
+/** Debounce before a group config write leaves the client (bar live edits). */
+const GROUP_PATCH_MS = 400;
+
+const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
 /**
  * Group config schema (front-only — the group is NOT a widget, so it is not
  * part of the server widget manifest nor of scripts/check-schema-sync.mjs).
  * The write path is PATCH /api/layout/groups/:id via openSettingsModal's
  * `save` override; the server's normalizeGroupConfig tolerates every field.
+ * The removed `zoom`/`tileInset` keys are gone for good.
  */
 const GROUP_SETTINGS_SCHEMA = {
   fields: [
@@ -75,79 +90,67 @@ const GROUP_SETTINGS_SCHEMA = {
   ],
 };
 
-const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+const NO_GUARDS = {
+  isTextEntryTarget: () => false,
+  isOverlayOpen: () => false,
+  isPaletteOverlayOpen: () => false,
+  isInteractionActive: () => false,
+  isTransitionActive: () => false,
+};
 
-export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
+export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guardsOpt }) {
+  const guards = { ...NO_GUARDS, ...(guardsOpt || {}) };
   let mode = 'view';
   let gesture = null; // active group drag/resize
-  let clickState = null; // a press that may resolve into a selection click
+  let rigid = null; // active rigid multi-selection translation
+  let lasso = null; // active marquee
+  let clickState = null; // a press that may resolve into a selection click / lasso
+  let selectionSource = 'click';
+  let marquee = null; // the .group-marquee node (overlay)
   const handleSets = new Map(); // groupId -> handle DOM
-  let deleteTimer = 0;
+  const groupPatchTimers = new Map(); // groupId -> debounce timer
+  let groupRenderScheduled = false;
 
-  // ---- context bar ----------------------------------------------------------
-  const bar = el('div', 'group-context-bar hidden', null, { id: 'group-context-bar' });
-  const groupBtn = el('button', 'btn', 'Group', { type: 'button', title: 'Group the selected objects' });
-  const ungroupBtn = el('button', 'btn', 'Ungroup', { type: 'button', title: 'Dissolve this group (objects stay)' });
-  const editBtn = el('button', 'btn', 'Edit group…', { type: 'button', title: 'Edit title, visibility and appearance' });
-  const deleteBtn = el('button', 'btn btn-danger', 'Delete group + contents', {
-    type: 'button',
-    title: 'Delete this group and every object entirely inside it',
+  // ---- floating bar (L6 — replaces the L4 minimal bar) ----------------------
+  const bar = createSelectionBar({
+    getGrid,
+    getGroups: () => state.layoutGroups,
+    actions: {
+      group: () => groupSelection(),
+      dissolveGroups: () => dissolveSelectedGroups(),
+      deleteSelection: (source) => deleteSelection(source || 'click'),
+      deleteGroupsWithContents: () => deleteGroupsWithContents(),
+      editGroup: (id) => editGroup(id),
+      setGroupConfig: (id, patch) => setGroupConfig(id, patch),
+    },
   });
-  bar.append(groupBtn, ungroupBtn, editBtn, deleteBtn);
-  document.body.appendChild(bar);
 
-  groupBtn.addEventListener('click', () => groupSelection());
-  ungroupBtn.addEventListener('click', () => ungroupSelected());
-  editBtn.addEventListener('click', () => {
-    const g = groupLayer.findGroup(selection.singleGroup());
-    if (g) openGroupConfig(g);
-  });
-  deleteBtn.addEventListener('click', () => {
-    if (deleteBtn.classList.contains('confirm')) {
-      disarmDelete();
-      deleteSelectedGroup();
-      return;
+  const totalSelection = () => selection.objects.size + selection.groups.size;
+
+  /** Tag the selection source for the coalesced homy:selection event. */
+  function withSource(source, fn) {
+    selectionSource = source || 'click';
+    try {
+      return fn();
+    } finally {
+      selectionSource = 'click';
     }
-    armDelete();
-  });
-
-  function armDelete() {
-    disarmDelete();
-    deleteBtn.classList.add('confirm');
-    deleteBtn.textContent = 'Click again to confirm';
-    deleteTimer = setTimeout(disarmDelete, CONFIRM_MS);
-  }
-  function disarmDelete() {
-    if (deleteTimer) clearTimeout(deleteTimer);
-    deleteTimer = 0;
-    deleteBtn.classList.remove('confirm');
-    deleteBtn.textContent = 'Delete group + contents';
   }
 
   // ---- selection visuals ----------------------------------------------------
-  const unsubscribeSelection = selection.onChange(() => applySelection());
+  const unsubscribeSelection = selection.onChange(() => {
+    applySelection();
+    emitSelection(selectionSource);
+  });
 
   function applySelection() {
-    groupLayer.setSelectedGroup(selection.singleGroup());
+    groupLayer.setSelectedGroups(selection.groups);
     const selected = selection.objects;
     for (const node of previewEl.querySelectorAll('.grid-stack-item')) {
       const id = node.gridstackNode?.id ?? node.getAttribute('gs-id');
       node.classList.toggle('grid-object-selected', id != null && selected.has(String(id)));
     }
     syncHandles();
-    updateBar();
-  }
-
-  function updateBar() {
-    const hasGroup = selection.groups.size > 0;
-    const objectCount = selection.objects.size;
-    const visible = mode === 'edit' && (hasGroup || objectCount >= 2);
-    bar.classList.toggle('hidden', !visible);
-    groupBtn.classList.toggle('hidden', objectCount < 1);
-    ungroupBtn.classList.toggle('hidden', !hasGroup);
-    editBtn.classList.toggle('hidden', !hasGroup);
-    deleteBtn.classList.toggle('hidden', !hasGroup);
-    if (!hasGroup) disarmDelete();
   }
 
   // ---- handles (overlay) ----------------------------------------------------
@@ -179,9 +182,9 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
   }
 
   /**
-   * Keep the overlay handles in sync with the visible ids: the SELECTED group
-   * (persistent ring) plus the currently HOVERED one (set by groups.js's
-   * mousemove hit-test). Idempotent — only the diff is created/removed.
+   * Keep the overlay handles in sync with the visible ids: the SELECTED groups
+   * (persistent rings, L6 multi-selection) plus the currently HOVERED one (set
+   * by groups.js's mousemove hit-test). Idempotent — only the diff changes.
    */
   function syncHandles() {
     const overlay = groupLayer.overlay;
@@ -217,6 +220,8 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     if (mode !== 'edit' || e.button !== 0) return;
     const t = e.target;
     const closest = (sel) => (t && t.closest ? t.closest(sel) : null);
+    const ctrlMeta = e.ctrlKey || e.metaKey;
+    const shiftOnly = e.shiftKey && !ctrlMeta;
 
     // (a) an overlay handle wins (it is above the grid by design).
     const handleEl = closest('.group-handle, .group-edge');
@@ -224,7 +229,7 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
       const wrap = handleEl.closest('[data-group-id]');
       const g = wrap ? groupLayer.findGroup(wrap.dataset.groupId) : null;
       if (g) {
-        selection.selectGroup(g.id);
+        withSource('click', () => selection.selectGroup(g.id));
         startGesture(handleEl.dataset.handle === 'se' ? 'resize' : 'move', g, e);
         e.preventDefault();
         e.stopPropagation();
@@ -235,14 +240,32 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     // (b) an object wins over the group it sits on.
     const itemEl = closest('.grid-stack-item');
     if (itemEl) {
-      // An object wins over the group it sits on; let gridstack handle the drag.
       const id = itemEl.gridstackNode?.id ?? itemEl.getAttribute('gs-id');
       if (id != null) {
-        clickState = { type: 'object', objectId: String(id), x: e.clientX, y: e.clientY, moved: false };
+        const sid = String(id);
+        // L6 rigid translation: press on an ALREADY-selected object while the
+        // selection is multiple (no modifier) → move the whole selection. We
+        // stopPropagation so gridstack's own single-item drag never starts.
+        if (selection.objects.has(sid) && totalSelection() >= 2 && !ctrlMeta && !e.shiftKey) {
+          startRigid(e, { id: sid, kind: 'object' });
+          if (rigid) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+        }
+        clickState = {
+          type: 'object',
+          objectId: sid,
+          additive: ctrlMeta,
+          unionOnly: shiftOnly,
+          x: e.clientX,
+          y: e.clientY,
+          moved: false,
+        };
       }
       // EDIT: neutralize a tile's real <a href> so a press starts a selection /
-      // gridstack drag instead of a native link drag (the capture-phase guard
-      // the L2 comments refer to — see elements/button.js wireViewNavigation).
+      // gridstack drag instead of a native link drag.
       if (closest('a[href]')) e.preventDefault();
       return;
     }
@@ -251,32 +274,75 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     const units = groupLayer.unitsFromClient(e.clientX, e.clientY);
     const hit = units ? hitGroups(groupLayer.getGroups(), units) : null;
     if (hit) {
-      selection.selectGroup(hit.id);
+      const gid = String(hit.id);
+      // Rigid translation of a multi-selection containing this group.
+      if (selection.groups.has(gid) && totalSelection() >= 2 && !ctrlMeta && !e.shiftKey) {
+        startRigid(e, { id: gid, kind: 'group' });
+        if (rigid) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
+      if (shiftOnly) {
+        if (!selection.groups.has(gid)) withSource('click', () => selection.selectGroup(gid, { additive: true }));
+      } else if (ctrlMeta) {
+        withSource('click', () => selection.selectGroup(gid, { additive: true }));
+      } else {
+        withSource('click', () => selection.selectGroup(gid));
+      }
       startGesture('move', hit, e);
       e.preventDefault();
       e.stopPropagation();
       return;
     }
 
-    // (d) truly empty canvas → clear the selection on click.
-    clickState = { type: 'canvas', x: e.clientX, y: e.clientY, moved: false };
+    // (d) truly empty canvas → arm a lasso (or clear the selection on click).
+    clickState = {
+      type: 'canvas',
+      x: e.clientX,
+      y: e.clientY,
+      moved: false,
+      additive: ctrlMeta || e.shiftKey,
+      canLasso: !ctrlMeta,
+      shift: e.shiftKey,
+      baseObjects: new Set(selection.objects),
+      baseGroups: new Set(selection.groups),
+    };
   }
 
   function onWindowMouseMove(e) {
+    if (lasso) {
+      moveLasso(e);
+      return;
+    }
     if (gesture) {
       moveGesture(e);
+      return;
+    }
+    if (rigid) {
+      moveRigid(e);
       return;
     }
     if (clickState && !clickState.moved) {
       if (Math.hypot(e.clientX - clickState.x, e.clientY - clickState.y) > DRAG_THRESHOLD) {
         clickState.moved = true;
+        if (clickState.type === 'canvas' && clickState.canLasso) startLasso(clickState, e);
       }
     }
   }
 
   function onWindowMouseUp(e) {
+    if (lasso) {
+      finishLasso();
+      return;
+    }
     if (gesture) {
       finishGesture();
+      return;
+    }
+    if (rigid) {
+      finishRigid();
       return;
     }
     if (clickState) finishClick(e);
@@ -297,16 +363,115 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     e.stopPropagation();
   }
 
+  function applyObjectClick(id, { additive, unionOnly }) {
+    const sid = String(id);
+    if (unionOnly) {
+      if (selection.objects.has(sid)) return; // union-only: never removes
+      withSource('click', () => selection.selectObject(sid, { additive: true }));
+      return;
+    }
+    withSource('click', () => selection.selectObject(sid, { additive: !!additive }));
+  }
+
   function finishClick(e) {
     const cs = clickState;
     clickState = null;
     if (!cs || cs.moved || mode !== 'edit') return;
-    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
     if (cs.type === 'object') {
-      selection.selectObject(cs.objectId, { additive });
-    } else if (cs.type === 'canvas' && !additive) {
-      selection.clear();
+      applyObjectClick(cs.objectId, cs);
+    } else if (cs.type === 'canvas' && !cs.additive) {
+      withSource('click', () => selection.clear());
     }
+  }
+
+  // ---- lasso (L6) -----------------------------------------------------------
+  function rectContainsRect(outer, inner) {
+    return (
+      inner.x >= outer.x &&
+      inner.y >= outer.y &&
+      inner.x + inner.w <= outer.x + outer.w &&
+      inner.y + inner.h <= outer.y + outer.h
+    );
+  }
+
+  function startLasso(cs, e) {
+    clickState = null;
+    lasso = {
+      startX: cs.x,
+      startY: cs.y,
+      baseObjects: cs.baseObjects,
+      baseGroups: cs.baseGroups,
+      shift: cs.shift,
+      rect: null,
+    };
+    document.body.classList.add('lasso-active');
+    marquee = el('div', 'group-marquee');
+    groupLayer.overlay.appendChild(marquee);
+    moveLasso(e);
+  }
+
+  function moveLasso(e) {
+    if (!lasso) return;
+    const cur = groupLayer.unitsFromClient(e.clientX, e.clientY);
+    const start = groupLayer.unitsFromClient(lasso.startX, lasso.startY);
+    if (!cur || !start) return;
+    const x = clamp(Math.min(start.x, cur.x), 0, GRID_COLUMNS);
+    const y = clamp(Math.min(start.y, cur.y), 0, GRID_ROWS);
+    const w = clamp(Math.max(start.x, cur.x), 0, GRID_COLUMNS) - x;
+    const h = clamp(Math.max(start.y, cur.y), 0, GRID_ROWS) - y;
+    const rect = { x, y, w, h };
+    lasso.rect = rect;
+    if (marquee) {
+      marquee.style.left = `calc(${x} * var(--unit-w, 1px))`;
+      marquee.style.top = `calc(${y} * var(--unit-h, 1px))`;
+      marquee.style.width = `calc(${w} * var(--unit-w, 1px))`;
+      marquee.style.height = `calc(${h} * var(--unit-h, 1px))`;
+    }
+
+    const grid = getGrid();
+    const objRects = grid ? grid.getObjectRects() : [];
+    const hitObjects = objRects.filter((o) => rectsIntersect(rect, o)).map((o) => String(o.id));
+    const hitGroups = groupLayer
+      .getGroups()
+      .filter((g) => rectContainsRect(rect, groupRect(g)))
+      .map((g) => String(g.id));
+
+    let objects;
+    let groups;
+    if (lasso.shift) {
+      objects = new Set(lasso.baseObjects);
+      groups = new Set(lasso.baseGroups);
+      for (const id of hitObjects) objects.has(id) ? objects.delete(id) : objects.add(id);
+      for (const id of hitGroups) groups.has(id) ? groups.delete(id) : groups.add(id);
+    } else {
+      objects = new Set(hitObjects);
+      groups = new Set(hitGroups);
+    }
+    withSource('lasso', () => selection.set({ objects, groups }));
+    if (e.cancelable) e.preventDefault();
+  }
+
+  function teardownLasso() {
+    document.body.classList.remove('lasso-active');
+    if (marquee) {
+      marquee.remove();
+      marquee = null;
+    }
+  }
+
+  function finishLasso() {
+    if (!lasso) return;
+    lasso = null;
+    teardownLasso();
+  }
+
+  /** Escape during an in-flight lasso → restore the pre-lasso selection. */
+  function cancelLasso() {
+    if (!lasso) return;
+    const base = lasso;
+    lasso = null;
+    teardownLasso();
+    withSource('lasso', () => selection.set({ objects: base.baseObjects, groups: base.baseGroups }));
   }
 
   // ---- group drag / resize --------------------------------------------------
@@ -333,7 +498,7 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     if (!g.dragging) {
       if (Math.hypot(dxpx, dypx) < DRAG_THRESHOLD) return;
       g.dragging = true;
-      document.body.classList.add('group-dragging');
+      document.body.classList.add(g.kind === 'resize' ? 'group-resizing' : 'group-dragging');
     }
     const units = groupLayer.unitsFromClient(g.startX, g.startY);
     if (!units) return;
@@ -408,8 +573,8 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
   function applyResize(rawDx, rawDy) {
     const g = gesture;
     const g0 = g.startRect;
-    const reqW = clamp(g0.w + Math.round(rawDx), GROUP_MIN, GRID_COLUMNS - g0.x);
-    const reqH = clamp(g0.h + Math.round(rawDy), GROUP_MIN, GRID_ROWS - g0.y);
+    const reqW = clampResizeAxis(g0, rawDx, 'w');
+    const reqH = clampResizeAxis(g0, rawDy, 'h');
     const cand = clampResizeToGroups({ x: g0.x, y: g0.y, w: reqW, h: reqH }, g.groupId);
     if (cand.w !== reqW || cand.h !== reqH) groupLayer.flashAlert(g.groupId);
     if (g.group.w === cand.w && g.group.h === cand.h) return;
@@ -417,6 +582,13 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     g.group.h = cand.h;
     groupLayer.placeGroup(g.groupId);
     syncHandles();
+  }
+
+  /** Requested SE size on one axis: min 4×4, clamped to the canvas edge. */
+  function clampResizeAxis(g0, raw, axis) {
+    return axis === 'w'
+      ? clamp(g0.w + Math.round(raw), GROUP_MIN, GRID_COLUMNS - g0.x)
+      : clamp(g0.h + Math.round(raw), GROUP_MIN, GRID_ROWS - g0.y);
   }
 
   function clearMemberTransforms(g) {
@@ -431,6 +603,7 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     const g = gesture;
     gesture = null;
     document.body.classList.remove('group-dragging');
+    document.body.classList.remove('group-resizing');
     if (!g || !g.dragging) return;
 
     if (g.kind === 'move') {
@@ -438,14 +611,10 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
       const dy = g.group.y - g.startRect.y;
       const grid = getGrid();
       if ((dx || dy) && grid) {
-        // ONE debounced full PUT carries every member at its final position
-        // (direct node writes — no collision resolution, see editor.js).
         grid.commitObjectRects(g.members.map((m) => ({ id: m.id, x: m.x + dx, y: m.y + dy })));
       }
       clearMemberTransforms(g);
-      if (dx || dy) {
-        patchGroup({ id: g.groupId, x: g.group.x, y: g.group.y });
-      }
+      if (dx || dy) patchGroup({ id: g.groupId, x: g.group.x, y: g.group.y });
     } else {
       clearMemberTransforms(g);
       patchGroup({ id: g.groupId, x: g.group.x, y: g.group.y, w: g.group.w, h: g.group.h });
@@ -458,6 +627,144 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     return api
       .patch(`/api/layout/groups/${id}`, body)
       .catch((err) => toast(err.message || 'Failed to save group', 'error'));
+  }
+
+  // ---- rigid multi-selection translation (L6) -------------------------------
+  function startRigid(e, press) {
+    const grid = getGrid();
+    const rects = grid ? grid.getObjectRects() : [];
+    const objects = rects.filter((o) => selection.objects.has(String(o.id))).map((o) => ({ ...o }));
+    const groups = groupLayer
+      .getGroups()
+      .filter((g) => selection.groups.has(String(g.id)))
+      .map((g) => ({ group: g, rect: groupRect(g) }));
+    if (objects.length + groups.length < 2) {
+      rigid = null;
+      return;
+    }
+    const step = objects.some((o) => o.kind === 'widget') ? 2 : 1;
+    rigid = { startX: e.clientX, startY: e.clientY, objects, groups, step, dragging: false, dx: 0, dy: 0, press: press || null };
+  }
+
+  function overlapsStaticGroups(dx, dy) {
+    const statics = groupLayer
+      .getGroups()
+      .filter((g) => !selection.groups.has(String(g.id)))
+      .map(groupRect);
+    if (!statics.length) return false;
+    for (const entry of rigid.groups) {
+      const cand = { x: entry.rect.x + dx, y: entry.rect.y + dy, w: entry.rect.w, h: entry.rect.h };
+      for (const s of statics) if (rectsIntersect(cand, s)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Clamp a requested rigid delta by the TIGHTEST constraint: every translated
+   * object AND group stays inside the canvas, and no translated group may
+   * overlap a non-selected one (stepped back one unit at a time from the
+   * requested delta — the largest valid one wins).
+   */
+  function clampRigid(dx, dy) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const o of rigid.objects) {
+      minX = Math.min(minX, o.x);
+      minY = Math.min(minY, o.y);
+      maxX = Math.max(maxX, o.x + o.w);
+      maxY = Math.max(maxY, o.y + o.h);
+    }
+    for (const g of rigid.groups) {
+      minX = Math.min(minX, g.rect.x);
+      minY = Math.min(minY, g.rect.y);
+      maxX = Math.max(maxX, g.rect.x + g.rect.w);
+      maxY = Math.max(maxY, g.rect.y + g.rect.h);
+    }
+    dx = clamp(dx, -minX, GRID_COLUMNS - maxX);
+    dy = clamp(dy, -minY, GRID_ROWS - maxY);
+    let guard = 0;
+    while (guard++ < 200 && overlapsStaticGroups(dx, dy)) {
+      if (dx !== 0 && Math.abs(dx) >= Math.abs(dy)) dx -= Math.sign(dx) * rigid.step;
+      else if (dy !== 0) dy -= Math.sign(dy) * rigid.step;
+      else break;
+    }
+    return { dx, dy };
+  }
+
+  function moveRigid(e) {
+    const r = rigid;
+    const dxpx = e.clientX - r.startX;
+    const dypx = e.clientY - r.startY;
+    if (!r.dragging) {
+      if (Math.hypot(dxpx, dypx) < DRAG_THRESHOLD) return;
+      r.dragging = true;
+      document.body.classList.add('group-dragging');
+    }
+    const units = groupLayer.unitsFromClient(r.startX, r.startY);
+    if (!units) return;
+    let dx = Math.round(dxpx / units.u / r.step) * r.step;
+    let dy = Math.round(dypx / units.v / r.step) * r.step;
+    ({ dx, dy } = clampRigid(dx, dy));
+    r.dx = dx;
+    r.dy = dy;
+    const grid = getGrid();
+    for (const o of r.objects) {
+      const node = grid?.getObjectElement(o.id);
+      if (node) node.style.transform = dx || dy ? `translate(${dx * units.u}px, ${dy * units.v}px)` : '';
+    }
+    for (const entry of r.groups) {
+      groupLayer.previewTransform(entry.group.id, dx * units.u, dy * units.v);
+      const wrap = handleSets.get(String(entry.group.id));
+      if (wrap) wrap.style.transform = dx || dy ? `translate(${dx * units.u}px, ${dy * units.v}px)` : '';
+    }
+    if (e.cancelable) e.preventDefault();
+  }
+
+  function clearRigidTransforms(r) {
+    const grid = getGrid();
+    for (const o of r.objects) {
+      const node = grid?.getObjectElement(o.id);
+      if (node && node.style.transform) node.style.transform = '';
+    }
+    for (const entry of r.groups) {
+      groupLayer.previewTransform(entry.group.id, 0, 0);
+      const wrap = handleSets.get(String(entry.group.id));
+      if (wrap) wrap.style.transform = '';
+    }
+  }
+
+  function finishRigid() {
+    const r = rigid;
+    rigid = null;
+    if (!r) return;
+    document.body.classList.remove('group-dragging');
+    clearRigidTransforms(r);
+    if (!r.dragging) {
+      // A press WITHOUT movement is a plain CLICK: collapse the multi-selection
+      // onto the pressed item (the « click replaces » rule of L6-B).
+      if (r.press) {
+        if (r.press.kind === 'group') withSource('click', () => selection.selectGroup(r.press.id));
+        else withSource('click', () => selection.selectObject(r.press.id));
+      }
+      return;
+    }
+    const { dx, dy } = r;
+    if (dx === 0 && dy === 0) return;
+    const grid = getGrid();
+    // ONE object mutation (debounced full PUT) carrying every selected object.
+    if (r.objects.length && grid) {
+      grid.commitObjectRects(r.objects.map((o) => ({ id: o.id, x: o.x + dx, y: o.y + dy })));
+    }
+    // Groups are not grid items: one PATCH each, committed together here.
+    for (const entry of r.groups) {
+      entry.group.x = entry.rect.x + dx;
+      entry.group.y = entry.rect.y + dy;
+      groupLayer.placeGroup(entry.group.id);
+      patchGroup({ id: entry.group.id, x: entry.group.x, y: entry.group.y });
+    }
+    syncHandles();
   }
 
   // ---- create / dissolve / delete -------------------------------------------
@@ -498,8 +805,6 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
       maxY = Math.max(maxY, r.y + r.h);
     }
 
-    // bbox + `margin` on each side (floor/ceil), clamped to the canvas. Below
-    // the 4×4 minimum the box is widened symmetrically.
     const build = (margin) => {
       const right = Math.ceil(maxX) + margin;
       const bottom = Math.ceil(maxY) + margin;
@@ -519,8 +824,6 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
       }
       return { x, y, w, h };
     };
-    // Collision against a group OUTSIDE the selection: fold back to margin 0,
-    // then refuse + toast (nothing is written).
     const collides = (r) =>
       groupLayer.getGroups().some((g) => !selection.groups.has(g.id) && rectsIntersect(r, groupRect(g)));
     let rect = build(GROUP_MARGIN);
@@ -542,7 +845,6 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     };
     try {
       const created = await api.post('/api/layout/groups', draft);
-      // Absorb the selected groups: dissolve them server-side (objects stay).
       for (const id of absorbedIds) {
         try {
           await api.del(`/api/layout/groups/${id}`);
@@ -552,7 +854,7 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
       }
       state.layoutGroups = state.layoutGroups.filter((g) => !absorbedSet.has(String(g.id)));
       state.layoutGroups.push(created && created.id ? created : draft);
-      selection.clear();
+      withSource('click', () => selection.clear());
       groupLayer.render(state.layoutGroups, mode);
       applySelection();
       toast(`Group created (${rect.w}×${rect.h})`, 'success');
@@ -576,44 +878,164 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     });
   }
 
-  async function ungroupSelected() {
-    const id = selection.singleGroup();
-    if (!id) return;
-    try {
-      await api.del(`/api/layout/groups/${id}`);
-      state.layoutGroups = state.layoutGroups.filter((g) => String(g.id) !== String(id));
-      selection.clear();
-      groupLayer.render(state.layoutGroups, mode);
-      applySelection();
-      toast('Group removed — objects kept', 'success');
-    } catch (err) {
-      toast(err.message || 'Failed to remove group', 'error');
-    }
+  function editGroup(id) {
+    const g = groupLayer.findGroup(id);
+    if (g) openGroupConfig(g);
   }
 
-  async function deleteSelectedGroup() {
-    const group = groupLayer.findGroup(selection.singleGroup());
-    if (!group) return;
-    const grid = getGrid();
-    // Same STRICT containment as the server: only fully-inside objects go.
-    const contained = grid
-      ? grid.getObjectRects().filter((o) => contains(group, o)).map((o) => o.id)
-      : [];
-    try {
-      await api.del(`/api/layout/groups/${group.id}?withObjects=1`);
-      if (contained.length && grid) grid.removeObjects(contained);
-      state.layoutGroups = state.layoutGroups.filter((g) => String(g.id) !== String(group.id));
-      selection.clear();
+  /**
+   * Live group config write from the floating bar: mutate the box locally + a
+   * single rAF-coalesced re-render (so dragging a slider never rebuilds the
+   * layer per pixel), and debounce the actual PATCH per group.
+   */
+  function setGroupConfig(id, patch) {
+    const g = groupLayer.findGroup(id);
+    if (!g || !patch) return;
+    g.config = { ...(g.config || {}), ...patch };
+    scheduleGroupRender();
+    const key = String(id);
+    const prev = groupPatchTimers.get(key);
+    if (prev) clearTimeout(prev);
+    groupPatchTimers.set(
+      key,
+      setTimeout(() => {
+        groupPatchTimers.delete(key);
+        api
+          .patch(`/api/layout/groups/${id}`, { config: g.config })
+          .catch((err) => toast(err.message || 'Failed to save group', 'error'));
+      }, GROUP_PATCH_MS)
+    );
+  }
+
+  function scheduleGroupRender() {
+    if (groupRenderScheduled) return;
+    groupRenderScheduled = true;
+    requestAnimationFrame(() => {
+      groupRenderScheduled = false;
       groupLayer.render(state.layoutGroups, mode);
       applySelection();
-      toast(
-        contained.length
-          ? `Group deleted (${contained.length} object${contained.length > 1 ? 's' : ''} removed)`
-          : 'Group deleted',
-        'success'
-      );
-    } catch (err) {
-      toast(err.message || 'Failed to delete group', 'error');
+    });
+  }
+
+  /** Ungroup: dissolve every SELECTED group (objects always kept). */
+  async function dissolveSelectedGroups() {
+    const ids = [...selection.groups];
+    if (!ids.length) return;
+    for (const id of ids) {
+      try {
+        await api.del(`/api/layout/groups/${id}`);
+      } catch {
+        /* best effort */
+      }
+    }
+    const set = new Set(ids);
+    state.layoutGroups = state.layoutGroups.filter((g) => !set.has(String(g.id)));
+    withSource('click', () => selection.clear());
+    groupLayer.render(state.layoutGroups, mode);
+    applySelection();
+    toast(ids.length > 1 ? `Removed ${ids.length} groups — objects kept` : 'Group removed — objects kept', 'success');
+  }
+
+  /**
+   * Delete (bar « Delete » AND keyboard Delete/Backspace): the selected OBJECTS
+   * are removed and the selected GROUPS are only DISSOLVED — their contents are
+   * NEVER removed implicitly (that is the 2-step « Delete group + contents »).
+   */
+  function deleteSelection(source = 'click') {
+    const grid = getGrid();
+    const objIds = [...selection.objects];
+    const grpIds = [...selection.groups];
+    if (!objIds.length && !grpIds.length) return;
+    if (objIds.length && grid) grid.removeObjects(objIds);
+    if (grpIds.length) {
+      const set = new Set(grpIds);
+      for (const id of grpIds) api.del(`/api/layout/groups/${id}`).catch(() => {});
+      state.layoutGroups = state.layoutGroups.filter((g) => !set.has(String(g.id)));
+    }
+    withSource(source, () => selection.clear());
+    if (grpIds.length) groupLayer.render(state.layoutGroups, mode);
+    applySelection();
+    const parts = [];
+    if (objIds.length) parts.push(`${objIds.length} object${objIds.length > 1 ? 's' : ''} deleted`);
+    if (grpIds.length) parts.push(`${grpIds.length} group${grpIds.length > 1 ? 's' : ''} dissolved (objects kept)`);
+    if (parts.length) toast(parts.join(' · '), 'success');
+  }
+
+  /** 2-step: delete the selected groups AND every object entirely inside them. */
+  async function deleteGroupsWithContents() {
+    const grid = getGrid();
+    const ids = [...selection.groups];
+    if (!ids.length) return;
+    const groups = groupLayer.getGroups().filter((g) => selection.groups.has(String(g.id)));
+    const rects = grid ? grid.getObjectRects() : [];
+    const contained = new Set();
+    for (const g of groups) for (const o of rects) if (contains(g, o)) contained.add(String(o.id));
+    for (const id of ids) {
+      try {
+        await api.del(`/api/layout/groups/${id}?withObjects=1`);
+      } catch {
+        /* best effort */
+      }
+    }
+    if (contained.size && grid) grid.removeObjects([...contained]);
+    const set = new Set(ids);
+    state.layoutGroups = state.layoutGroups.filter((g) => !set.has(String(g.id)));
+    withSource('click', () => selection.clear());
+    groupLayer.render(state.layoutGroups, mode);
+    applySelection();
+    toast(
+      contained.size
+        ? `Group(s) deleted (${contained.size} object${contained.size > 1 ? 's' : ''} removed)`
+        : 'Group(s) deleted',
+      'success'
+    );
+  }
+
+  // ---- keyboard (L6) --------------------------------------------------------
+  /** Ctrl+A: every object + every group of the active page (EDIT only). */
+  function selectAll() {
+    const grid = getGrid();
+    const objects = grid ? grid.getObjectRects().map((o) => String(o.id)) : [];
+    const groups = groupLayer.getGroups().map((g) => String(g.id));
+    withSource('keyboard', () => selection.set({ objects, groups }));
+  }
+
+  function onKeyDown(e) {
+    if (mode !== 'edit' || !previewEl.isConnected) return;
+    if (e.defaultPrevented) return;
+    if (guards.isOverlayOpen() || guards.isPaletteOverlayOpen()) return;
+    // Never steal a key from a text field — INCLUDING the floating bar's own
+    // inputs (Delete must not remove an object while typing its title).
+    if (guards.isTextEntryTarget(e.target) || guards.isTextEntryTarget(document.activeElement)) return;
+
+    const key = e.key;
+    if (key === 'Escape') {
+      if (lasso) {
+        e.preventDefault();
+        cancelLasso();
+        return;
+      }
+      if (!selection.isEmpty()) {
+        e.preventDefault();
+        withSource('keyboard', () => selection.clear());
+      }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'a' || key === 'A')) {
+      e.preventDefault();
+      selectAll();
+      return;
+    }
+    if (key === 'Delete' || key === 'Backspace') {
+      // No-op total on an empty selection / during a gesture / transition /
+      // lasso: never preventDefault without acting (it would break ←/→, the
+      // native history and in-field editing).
+      if (selection.isEmpty()) return;
+      if (lasso || gesture || rigid) return;
+      if (guards.isInteractionActive()) return;
+      if (guards.isTransitionActive()) return;
+      e.preventDefault();
+      deleteSelection('keyboard');
     }
   }
 
@@ -623,17 +1045,25 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     if (mode !== 'edit') {
       clearHandles();
       document.body.classList.remove('group-dragging');
+      document.body.classList.remove('group-resizing');
+      if (lasso) cancelLasso();
+      gesture = null;
+      rigid = null;
+      clickState = null;
     }
-    updateBar();
+    bar.setMode(mode);
     syncHandles();
   }
 
   /** Drop selection + handles (called on every grid rebuild / page switch). */
   function reset() {
-    selection.clear();
+    if (lasso) cancelLasso();
+    gesture = null;
+    rigid = null;
+    clickState = null;
+    withSource('click', () => selection.clear());
     clearHandles();
-    disarmDelete();
-    updateBar();
+    bar.refresh();
   }
 
   // ---- listeners ------------------------------------------------------------
@@ -648,6 +1078,7 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
   });
   window.addEventListener('mousemove', onWindowMouseMove, true);
   window.addEventListener('mouseup', onWindowMouseUp, true);
+  document.addEventListener('keydown', onKeyDown);
 
   function destroy() {
     unsubscribeSelection();
@@ -655,9 +1086,12 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid }) {
     previewEl.removeEventListener('click', onPreviewClick, true);
     window.removeEventListener('mousemove', onWindowMouseMove, true);
     window.removeEventListener('mouseup', onWindowMouseUp, true);
+    document.removeEventListener('keydown', onKeyDown);
     clearHandles();
-    disarmDelete();
-    bar.remove();
+    teardownLasso();
+    for (const t of groupPatchTimers.values()) clearTimeout(t);
+    groupPatchTimers.clear();
+    bar.destroy();
   }
 
   return { setMode, reset, syncHandles, destroy };
