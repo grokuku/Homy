@@ -67,7 +67,15 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
       maxRow: GRID_ROWS, // …and content can never exceed it → exact 16:9 fill
       float: true, // free vertical placement — holes are preserved
       resizable: { handles: 'all' },
-      draggable: { handle: '.grid-stack-item-content' },
+      // `true` = gridstack's own default: the WHOLE cell is the drag handle,
+      // not only `.grid-stack-item-content`. The 8 px gutter around a tile
+      // belongs to `.grid-stack-item`, so with the old
+      // `handle: '.grid-stack-item-content'` grabbing an object "by its margin"
+      // selected it instead of moving it (L8 bug report). Resize handles and
+      // input/textarea/button/select stay excluded by gridstack's own mousedown
+      // filter (DDDraggable._mouseDown), so this only ADDS the gutter as a move
+      // target — nothing else changes.
+      draggable: true,
     },
     container
   );
@@ -439,14 +447,28 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     contentEl.appendChild(controls);
     itemEl.classList.add('editing');
     // Review C14: the vendored gridstack v13 drag engine has no
-    // draggable.cancel — a mousedown on an interactive child (<a>, inputs,
-    // buttons…) bubbles to the drag handle (.grid-stack-item-content), starts
-    // an item drag on move, and its preventDefault() kills text selection in
-    // e.g. the notes textarea. Block the bubbling AT the child, before the
-    // handle sees it (children fire before their ancestors while bubbling).
-    // stopPropagation() only — the native behavior (links, focus, typing,
-    // clicks) is untouched.
-    for (const interactive of contentEl.querySelectorAll('a, textarea, input, select, button')) {
+    // draggable.cancel — a mousedown on an interactive child (inputs, buttons…)
+    // bubbles to the drag handle (.grid-stack-item-content), starts an item drag
+    // on move, and its preventDefault() kills text selection in e.g. the notes
+    // textarea. Block the bubbling AT the child, before the handle sees it
+    // (children fire before their ancestors while bubbling). stopPropagation()
+    // only — the native behavior (focus, typing, clicks) is untouched.
+    //
+    // ANCHORS ARE DELIBERATELY EXCLUDED (L8 bug « impossible de déplacer une
+    // icône »): a tile's whole main zone is an <a.tile-main> covering the icon
+    // AND the label, so stopping its mousedown kept gridstack's drag handle from
+    // ever seeing the press → an element/report object could not be dragged by
+    // its icon or label (only by the few px of tile inset left around the
+    // anchor). Only `<a>` is affected: gridstack already refuses to start a drag
+    // on input/textarea/select/option/button/[contenteditable] (DDDraggable.
+    // _mouseDown), the selector below mirrors that list. Navigation stays
+    // impossible in EDIT through three independent guards that do NOT sit on
+    // mousedown-bubbling: groupEditor's capture `mousedown` preventDefault, its
+    // capture `click` preventDefault/stopPropagation on a[href], and the
+    // anchor's own `draggable="false"` (see elements/button.js).
+    for (const interactive of contentEl.querySelectorAll(
+      'input, textarea, select, option, button, [contenteditable="true"]'
+    )) {
       if (interactive.dataset.dragGuard) continue;
       interactive.dataset.dragGuard = '1';
       const stop = (e) => e.stopPropagation();

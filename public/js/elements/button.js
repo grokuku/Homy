@@ -325,14 +325,18 @@ export function renderButtonTile({ button, element, step = 22.5, inset, editable
   // ---- main zone (the `shortcut` clickable area wraps the visible content) ---
   // The tile's clickable zone is a real <a href> WITHOUT `target` in VIEW: a
   // LEFT click follows it in the CURRENT tab (right click = new tab, see
-  // wireViewNavigation). In EDIT mode the group's capture-phase guard neutralizes
-  // the navigation (selection/drag win), so this stays inert there.
+  // wireViewNavigation). In EDIT mode the group's capture-phase guards
+  // neutralize the navigation (selection/drag win) and the anchor's own NATIVE
+  // link drag is disabled: `draggable="false"` is the only thing that can stop
+  // the browser from starting an HTML5 link-drag on the very press gridstack
+  // needs for its item drag. VIEW keeps the attribute off → 100% native link.
+  const anchorAttrs = (attrs) => (editable ? { ...attrs, draggable: 'false' } : attrs);
   let linkEl = null;
   if (hasContent) {
     const clickable = o.shortcut && url;
     let main;
     if (clickable) {
-      linkEl = el('a', 'tile-main', null, { href: url, rel: 'noopener noreferrer' });
+      linkEl = el('a', 'tile-main', null, anchorAttrs({ href: url, rel: 'noopener noreferrer' }));
       main = linkEl;
     } else {
       main = el('div', 'tile-main');
@@ -364,11 +368,12 @@ export function renderButtonTile({ button, element, step = 22.5, inset, editable
     root.appendChild(main);
   } else if (o.shortcut && url) {
     // Nothing to display but shortcut is on: keep a clickable (empty) zone.
-    linkEl = el('a', 'tile-main tile-main-empty', null, {
-      href: url,
-      rel: 'noopener noreferrer',
-      'aria-label': name || 'Open link',
-    });
+    linkEl = el(
+      'a',
+      'tile-main tile-main-empty',
+      null,
+      anchorAttrs({ href: url, rel: 'noopener noreferrer', 'aria-label': name || 'Open link' })
+    );
     root.appendChild(linkEl);
   }
 
