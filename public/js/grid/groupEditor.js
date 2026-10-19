@@ -46,11 +46,21 @@ import { el, uuid } from '../util.js';
 import { toast } from '../ui/toast.js';
 import { openSettingsModal } from '../ui/settingsModal.js';
 import { APPEARANCE_FIELDS } from '../widgets/registry.js';
+import { catalog } from '../elements/catalog.js';
+import { openElementsModal } from '../ui/elementsModal.js';
+import { closeContextMenu, isContextMenuOpen, openContextMenu } from '../ui/contextMenu.js';
 import { contains, groupRect, hitGroups, rectsIntersect } from './groups.js';
 import { GRID_COLUMNS, GRID_ROWS } from './config.js';
 import { selection } from './selection.js';
 import { emitSelection } from './selectionEvents.js';
 import { createSelectionBar } from './selectionBar.js';
+import {
+  canvasMenuItems,
+  elementMenuItems,
+  groupMenuItems,
+  reportMenuItems,
+  widgetMenuItems,
+} from './contextMenuItems.js';
 
 /** Pixels of pointer travel before a press becomes a drag / a lasso. */
 export const DRAG_THRESHOLD = 4;
@@ -98,8 +108,9 @@ const NO_GUARDS = {
   isTransitionActive: () => false,
 };
 
-export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guardsOpt }) {
+export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guardsOpt, canvasActions }) {
   const guards = { ...NO_GUARDS, ...(guardsOpt || {}) };
+  const canvasMenuActions = canvasActions && typeof canvasActions === 'object' ? canvasActions : {};
   let mode = 'view';
   let gesture = null; // active group drag/resize
   let rigid = null; // active rigid multi-selection translation
@@ -110,6 +121,7 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guar
   const handleSets = new Map(); // groupId -> handle DOM
   const groupPatchTimers = new Map(); // groupId -> debounce timer
   let groupRenderScheduled = false;
+  let menuConfirmTimer = 0; // armed « Delete group + contents » from the menu
 
   // ---- floating bar (L6 — replaces the L4 minimal bar) ----------------------
   const bar = createSelectionBar({
@@ -991,6 +1003,173 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guar
     );
   }
 
+  // ---- EDIT context menu (L9) ----------------------------------------------
+  // The per-tile ✕ (delete) / ⚙ (options) buttons are GONE: every setting of
+  // every object is reachable from a RIGHT CLICK on it (see
+  // grid/contextMenuItems.js for the per-kind content). The menu is opened from
+  // the `contextmenu` event — NEVER from `mousedown` — so the gridstack drag
+  // engine, the selection gestures and the lasso are completely untouched.
+  const MENU_CONFIRM_MS = 3000; // mirrors the floating bar's 2-step window
+  let menuConfirmArmed = false; // « Delete group + contents » armed from the menu
+
+  function openGridMenu(e, items) {
+    openContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items,
+      label: 'Object options',
+      onClose: () => {
+        // A half-armed 2-step must never survive the menu it belongs to.
+        clearTimeout(menuConfirmTimer);
+        menuConfirmTimer = 0;
+        menuConfirmArmed = false;
+      },
+    });
+  }
+
+  /**
+   * Delete label of the menu: when the right-clicked object belongs to a
+   * MULTIPLE selection the whole selection goes (exactly like the floating
+   * bar's « Delete »), otherwise only that object.
+   */
+  function menuDeleteLabel(id) {
+    return selection.objects.has(id) && totalSelection() >= 2 ? `Delete selection (${totalSelection()})` : 'Delete';
+  }
+
+  /**
+   * Menu « Delete »: routed through the SAME path as the bar / keyboard
+   * (deleteSelection), so objects are removed and selected groups are only
+   * dissolved — then ONE debounced PUT persists the result.
+   */
+  function menuDeleteObject(id) {
+    if (selection.objects.has(id) || selection.groups.size) {
+      deleteSelection('click');
+      return;
+    }
+    getGrid()?.removeObjects?.([id]);
+  }
+
+  /** Wiring of the menu rows of an OBJECT (element / widget / report). */
+  function objectMenuActions(id) {
+    const grid = getGrid();
+    return {
+      setOptions: (patch) => grid?.setObjectOptions?.(id, patch),
+      openOptions: () => grid?.openObjectOptions?.(id),
+      openSettings: () => grid?.openObjectConfig?.(id),
+      openElement: () => openElementsModal(),
+      remove: () => menuDeleteObject(id),
+    };
+  }
+
+  /** Wiring of the menu rows of a GROUP box. */
+  function groupMenuActions(group) {
+    const gid = String(group.id);
+    return {
+      setGroupConfig: (patch) => setGroupConfig(gid, patch),
+      editGroup: () => editGroup(gid),
+      ungroup: () => dissolveSelectedGroups(),
+      deleteGroupWithContents: (ctx) => {
+        // 2-step: the first activation only ARMS the destructive action (same
+        // pattern as the bar's button), the second one executes it.
+        if (!menuConfirmArmed) {
+          menuConfirmArmed = true;
+          ctx?.setLabel?.('Click again to confirm');
+          clearTimeout(menuConfirmTimer);
+          menuConfirmTimer = setTimeout(() => {
+            menuConfirmTimer = 0;
+            menuConfirmArmed = false;
+            ctx?.setLabel?.('Delete group + contents');
+          }, MENU_CONFIRM_MS);
+          return;
+        }
+        clearTimeout(menuConfirmTimer);
+        menuConfirmTimer = 0;
+        menuConfirmArmed = false;
+        ctx?.close?.();
+        deleteGroupsWithContents();
+      },
+    };
+  }
+
+  /**
+   * EDIT right click. Priority mirrors the pointer routing: an object wins over
+   * the group box it sits on, then a group, then the empty canvas.
+   * VIEW is untouched (the tile's native contract opens a NEW TAB).
+   */
+  function onPreviewContextMenu(e) {
+    if (mode !== 'edit' || !previewEl.isConnected) return;
+    const t = e.target;
+    const closest = (sel) => (t && t.closest ? t.closest(sel) : null);
+    // Native fields keep the BROWSER menu (copy / paste / inspect) — the same
+    // exemption main.js applies to genuine native targets in VIEW.
+    if (
+      closest(
+        'input, textarea, select, [contenteditable], [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]'
+      )
+    ) {
+      return;
+    }
+    if (lasso || gesture || rigid) return; // never interrupt an in-flight gesture
+    if (guards.isOverlayOpen() || guards.isPaletteOverlayOpen()) return; // a modal owns the screen
+    if (guards.isTransitionActive()) return;
+
+    const grid = getGrid();
+
+    // (a) an object (widget / element / report).
+    const itemEl = closest('.grid-stack-item');
+    if (itemEl && grid) {
+      const raw = itemEl.gridstackNode?.id ?? itemEl.getAttribute('gs-id');
+      if (raw == null) return;
+      const id = String(raw);
+      const info = grid.getObjectMeta(id);
+      if (!info) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Selection sync: a right click on an object OUTSIDE the current selection
+      // makes it THE selection (menu + bar agree); an object already part of a
+      // multi-selection keeps the selection, so « Delete » applies to all of it.
+      if (!selection.objects.has(id) || selection.groups.size) withSource('click', () => selection.selectObject(id));
+      const element = info.kind === 'widget' ? null : catalog.get(info.elementId);
+      const common = {
+        info,
+        element,
+        deleteLabel: menuDeleteLabel(id),
+        actions: objectMenuActions(id),
+      };
+      const items =
+        info.kind === 'element'
+          ? elementMenuItems(common)
+          : info.kind === 'report'
+            ? reportMenuItems(common)
+            : widgetMenuItems(common);
+      openGridMenu(e, items);
+      return;
+    }
+
+    // (b) a group box under the pointer (pure hit test, LAST → FIRST).
+    const units = groupLayer.unitsFromClient(e.clientX, e.clientY);
+    const hit = units ? hitGroups(groupLayer.getGroups(), units) : null;
+    if (hit) {
+      e.preventDefault();
+      e.stopPropagation();
+      const gid = String(hit.id);
+      if (!selection.groups.has(gid) || selection.objects.size) {
+        withSource('click', () => selection.selectGroup(gid));
+      }
+      openGridMenu(e, groupMenuItems({ group: hit, actions: groupMenuActions(hit) }));
+      return;
+    }
+
+    // (c) truly empty canvas → the two creation entry points (same as topbar).
+    const canvasItems = canvasMenuItems({ actions: canvasMenuActions });
+    if (canvasItems.length > 1) {
+      e.preventDefault();
+      e.stopPropagation();
+      withSource('click', () => selection.clear());
+      openGridMenu(e, canvasItems);
+    }
+  }
+
   // ---- keyboard (L6) --------------------------------------------------------
   /** Ctrl+A: every object + every group of the active page (EDIT only). */
   function selectAll() {
@@ -1002,6 +1181,10 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guar
 
   function onKeyDown(e) {
     if (mode !== 'edit' || !previewEl.isConnected) return;
+    // An open context menu owns the keyboard (its capture handler stops the
+    // keys it uses, but Delete / Backspace / Ctrl+A must never reach the canvas
+    // while a menu or one of its fields has the focus).
+    if (isContextMenuOpen()) return;
     if (e.defaultPrevented) return;
     if (guards.isOverlayOpen() || guards.isPaletteOverlayOpen()) return;
     // Never steal a key from a text field — INCLUDING the floating bar's own
@@ -1042,6 +1225,9 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guar
   // ---- lifecycle ------------------------------------------------------------
   function setMode(next) {
     mode = next === 'edit' ? 'edit' : 'view';
+    // A menu belongs to the EDIT canvas: leaving EDIT tears it down (no stale
+    // panel above the VIEW dashboard, no half-armed 2-step).
+    if (mode !== 'edit') closeContextMenu();
     if (mode !== 'edit') {
       clearHandles();
       document.body.classList.remove('group-dragging');
@@ -1058,6 +1244,7 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guar
   /** Drop selection + handles (called on every grid rebuild / page switch). */
   function reset() {
     if (lasso) cancelLasso();
+    closeContextMenu(); // a grid rebuild invalidates every menu target
     gesture = null;
     rigid = null;
     clickState = null;
@@ -1073,6 +1260,9 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guar
   // deliberately do NOT stop propagation, so gridstack still starts its drag.
   previewEl.addEventListener('mousedown', onPreviewMouseDown, true);
   previewEl.addEventListener('click', onPreviewClick, true);
+  // `contextmenu` (never `mousedown`): the menu can never interfere with the
+  // gridstack drag engine nor with the selection gestures above.
+  previewEl.addEventListener('contextmenu', onPreviewContextMenu, true);
   previewEl.addEventListener('mousemove', () => {
     if (mode === 'edit') syncHandles();
   });
@@ -1084,9 +1274,14 @@ export function createGroupEditor({ previewEl, groupLayer, getGrid, guards: guar
     unsubscribeSelection();
     previewEl.removeEventListener('mousedown', onPreviewMouseDown, true);
     previewEl.removeEventListener('click', onPreviewClick, true);
+    previewEl.removeEventListener('contextmenu', onPreviewContextMenu, true);
     window.removeEventListener('mousemove', onWindowMouseMove, true);
     window.removeEventListener('mouseup', onWindowMouseUp, true);
     document.removeEventListener('keydown', onKeyDown);
+    closeContextMenu();
+    clearTimeout(menuConfirmTimer);
+    menuConfirmTimer = 0;
+    menuConfirmArmed = false;
     clearHandles();
     teardownLasso();
     for (const t of groupPatchTimers.values()) clearTimeout(t);

@@ -630,6 +630,26 @@ function healthUrlOf(element) {
   return isValidHttpUrl(value) ? value : null;
 }
 
+// ---- option availability (public) -------------------------------------------
+// The rules that decide whether a tile OPTION is usable are shared by the tile
+// options panel (elements/buttonOptions.js) and the EDIT context menu
+// (grid/contextMenuItems.js): ONE source of truth, no drifting predicates.
+
+/** True when the element carries a usable Docky target (monitoring + controls). */
+export function elementHasDockyTarget(element) {
+  return !!dockyTargetOf(element);
+}
+
+/** True when the element has a health source (`healthCheck` + URL or Docky). */
+export function elementHasHealthSource(element) {
+  return resolvePillSource(element).type !== 'none';
+}
+
+/** True when the element has a non-empty URL (the `shortcut` clickable zone). */
+export function elementHasUrl(element) {
+  return !!String(element?.url || '').trim();
+}
+
 /**
  * Live health dot. `data-state` drives the colour (healthy/unhealthy/degraded/
  * starting/none/unknown); a title explains the current state and any error.

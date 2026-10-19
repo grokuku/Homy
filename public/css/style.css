@@ -572,14 +572,9 @@ body { background: transparent; transition: background 0.2s; }
   aspect-ratio: auto;
   margin: 0;
 }
-/* Keep the per-item ⚙/✕ controls at their 24px logical size (and clickable)
-   whatever the dezoom factor: undo the scale on the controls only. */
-#dashboard-view.preview-active .widget-controls button {
-  width: calc(24px / var(--preview-scale, 1));
-  height: calc(24px / var(--preview-scale, 1));
-  font-size: calc(12px / var(--preview-scale, 1));
-  border-width: calc(1px / var(--preview-scale, 1));
-}
+/* Lot 9: the per-item ⚙/✕ controls are GONE — every object setting now lives
+   in the EDIT right-click menu (see `.context-menu` below, ui/contextMenu.js).
+   Nothing to counter-scale here any more. */
 /* Lot 2 — same compensation for gridstack's resize handles: they live INSIDE
    the scaled canvas, so their hit boxes would shrink to 20·f px. Counter-scale
    them about their own center to keep a ~20px grab area at any dezoom. The
@@ -828,7 +823,6 @@ body { background: transparent; transition: background 0.2s; }
                         DEZOOMS from (or back to) the view-sized canvas;
      • .palette       : transform translateX() + opacity  → slides in/out of
                         its docked column (translate never moves the layout);
-     • .widget-controls: opacity + transform  → the ⚙/✕ arrive sliding;
      • .editing-grid  : --guide-op (registered) → the guide overlay FADES,
                         in sync with the frame scale, so the grid of markers
                         follows the workspace zoom instead of popping in.
@@ -846,10 +840,6 @@ body { background: transparent; transition: background 0.2s; }
 }
 #dashboard-view.mode-anim.preview-active .palette {
   transition: transform var(--mode-dur) var(--mode-ease), opacity var(--mode-dur) var(--mode-ease);
-}
-#dashboard-view.mode-anim.preview-active .widget-controls {
-  transition: opacity calc(var(--mode-dur) * 0.7) var(--mode-ease) 60ms,
-              transform calc(var(--mode-dur) * 0.7) var(--mode-ease) 60ms;
 }
 #dashboard-view.mode-anim .grid-stack.editing-grid {
   transition: --guide-op var(--mode-dur) var(--mode-ease);
@@ -896,11 +886,6 @@ body { background: transparent; transition: background 0.2s; }
   transform: translateX(calc(-1 * var(--palette-dock-w, 228px)));
   opacity: 0;
 }
-#dashboard-view.anim-from-view.preview-active .widget-controls,
-#dashboard-view.anim-to-view.preview-active .widget-controls {
-  opacity: 0;
-  transform: translateY(-6px);
-}
 /* The guides follow the zoom: opacity 0 at the beginning/end of the swap. */
 #dashboard-view.anim-from-view .grid-stack.editing-grid,
 #dashboard-view.anim-to-view .grid-stack.editing-grid {
@@ -932,7 +917,6 @@ body { background: transparent; transition: background 0.2s; }
   :root { --mode-dur: 0ms; }
   #dashboard-view.mode-anim.preview-active #grid-preview,
   #dashboard-view.mode-anim.preview-active .palette,
-  #dashboard-view.mode-anim.preview-active .widget-controls,
   #dashboard-view.mode-anim .topbar,
   #dashboard-view.mode-anim .topbar-actions,
   #dashboard-view.mode-anim .editor-actions,
@@ -944,8 +928,6 @@ body { background: transparent; transition: background 0.2s; }
   #dashboard-view.anim-to-view.preview-active #grid-preview,
   #dashboard-view.anim-from-view.preview-active .palette,
   #dashboard-view.anim-to-view.preview-active .palette,
-  #dashboard-view.anim-from-view.preview-active .widget-controls,
-  #dashboard-view.anim-to-view.preview-active .widget-controls,
   #dashboard-view.anim-from-view .grid-stack.editing-grid,
   #dashboard-view.anim-to-view .grid-stack.editing-grid,
   #dashboard-view.anim-from-view .topbar,
@@ -1071,7 +1053,7 @@ body.bg-to-view #homy-bg-layer {
 /* Review C11: the vendored gridstack CSS positions .grid-stack-item-content
    ABSOLUTELY with the four --gs-item-margin-* insets (selector specificity
    0,3,0 beats this block's 0,1,0), so this element IS the positioned box the
-   edit-mode .widget-controls anchor to — an app-level `position: relative`
+   gridstack resize handles anchor to — an app-level `position: relative`
    here was dead code and is gone. The rule below only carries the surface
    look. Overflow is set in the 0,3,0 rule further down (overflow: hidden —
    review A2: the vendored default is overflow-y:auto which made every widget
@@ -1165,24 +1147,10 @@ body[data-bg-active] .grid-stack-item-content {
 }
 .widget-header .widget-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* edit-mode controls — anchored top-right INSIDE the content, clear of the
-   gridstack resize handles (20×20 corner handles, z-index 101, would otherwise
-   swallow real clicks on the ⚙/✕ buttons that sat flush at the bottom). */
-.widget-controls { display: none; gap: 4px; position: absolute; top: 26px; right: 8px; z-index: 110; }
-.grid-stack-item.editing .widget-controls { display: flex; }
-.widget-controls button {
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  width: 24px;
-  height: 24px;
-  font-size: 12px;
-  cursor: pointer;
-  line-height: 1;
-}
-.widget-controls button:hover { border-color: var(--accent); }
-.widget-controls button.del:hover { border-color: var(--danger); color: var(--danger); }
+/* Lot 9 — the edit-mode per-tile controls (✕ delete / ⚙ options) were REMOVED:
+   they stole canvas space and duplicated what the right-click context menu now
+   offers. `.grid-stack-item.editing` is therefore no longer set by editor.js and
+   no `.widget-controls` node exists in the DOM. */
 
 /* LOT 6: the shortcut widget was removed with its .shortcut-* styles. */
 
@@ -1507,6 +1475,125 @@ body.group-dragging,
 body.group-dragging * { cursor: grabbing !important; user-select: none; }
 body.lasso-active,
 body.lasso-active * { cursor: crosshair !important; user-select: none; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   EDIT context menu (layout v5, lot L9) — ui/contextMenu.js
+   ═══════════════════════════════════════════════════════════════════════
+   The right-click menu that REPLACED the per-tile ✕/⚙ controls. It is appended
+   to <body> and positioned `fixed` at the pointer, so it is never clipped by
+   the canvas, never scrolls with the grid and never inherits the EDIT dezoom.
+   z-index 400 sits above every canvas layer (.overlay-layer = 5, gridstack
+   resize handles = 101, the selection bar = 60) while staying under the holaf
+   modals opened from its action rows. Colours come ONLY from the theme tokens,
+   so dark and light are both covered. */
+.context-menu {
+  position: fixed;
+  z-index: 400;
+  min-width: 212px;
+  max-width: 300px;
+  max-height: calc(100vh - 12px);
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elev-2) 97%, transparent);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+  color: var(--text);
+  font-size: 13px;
+  user-select: none;
+  outline: none;
+}
+.context-menu .context-header {
+  padding: 5px 8px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-menu .context-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.context-menu .context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+}
+.context-menu .context-item:hover,
+.context-menu .context-item:focus { background: var(--btn-hover); }
+.context-menu .context-item[aria-checked='true'] .context-mark { opacity: 1; }
+.context-menu .context-item.open { background: var(--btn-hover); }
+.context-menu .context-mark {
+  width: 12px;
+  flex: 0 0 12px;
+  text-align: center;
+  color: var(--accent);
+  opacity: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+.context-menu .context-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.context-menu .context-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.context-menu .context-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.context-menu .context-arrow { margin-left: auto; color: var(--text-muted); }
+.context-menu .context-item.danger { color: var(--danger); }
+.context-menu .context-item.danger .context-mark { color: var(--danger); }
+.context-menu .context-item.disabled,
+.context-menu .context-field.disabled { opacity: 0.45; cursor: default; }
+.context-menu .context-item.disabled:hover { background: none; }
+/* Field rows (range / select / color / text) stay OUT of the ↑/↓ roving focus
+   (they are reached with Tab and keep their own key semantics). */
+.context-menu .context-field { padding: 5px 8px 7px; }
+.context-menu .context-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.context-menu .context-field-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.context-menu .context-range { width: 100%; }
+.context-menu .context-color-row { display: flex; align-items: center; gap: 6px; }
+.context-menu .context-color {
+  width: 34px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+}
+.context-menu .context-theme { font-size: 12px; padding: 3px 8px; }
+.context-menu .context-text {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg, transparent);
+  color: var(--text);
+  font-size: 12px;
+}
+.context-menu .segmented { display: inline-flex; }
+.context-menu .segmented-item { font-size: 12px; padding: 3px 8px; }
 
 /* ---------- Button tiles (matrix of variants) ----------
    The TILE IS THE SURFACE. Its background/border/radius are driven by per-tile

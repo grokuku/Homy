@@ -382,10 +382,18 @@ export function createSelectionBar({ getGrid, getGroups, actions }) {
   function render() {
     bar.replaceChildren();
     clearTimeout(confirmTimer);
+    // NEVER touch the grid in VIEW: the viewer handle exposes no object API
+    // (getObjectMeta/setObjectOptions live on the EDITOR handle) and the bar is
+    // hidden anyway. Reading the infos first crashed with « getObjectMeta is not
+    // a function » whenever a selection survived an EDIT → VIEW switch.
+    if (mode !== 'edit') {
+      bar.classList.add('hidden');
+      return;
+    }
     const infos = objectInfos();
     const groups = groupInfos();
     const total = selection.objects.size + selection.groups.size;
-    if (mode !== 'edit' || total === 0) {
+    if (total === 0) {
       bar.classList.add('hidden');
       return;
     }

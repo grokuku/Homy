@@ -1,4 +1,4 @@
-import { el, isValidHttpUrl } from '../util.js';
+import { el } from '../util.js';
 import { HolafModal } from '../../vendor/holaf/holaf-modal.js';
 import {
   normalizeButton,
@@ -14,6 +14,9 @@ import {
   SURFACE_OPACITY_MAX,
   SURFACE_SHAPES,
   buildIconNode,
+  elementHasDockyTarget,
+  elementHasHealthSource,
+  elementHasUrl,
 } from './button.js';
 import { toast } from '../ui/toast.js';
 import { openElementPicker } from './elementPicker.js';
@@ -103,19 +106,14 @@ const SURFACE_SWATCH_FALLBACK = '#3a4150';
 /** Pretty icon-size percentage (drops a trailing « .0 »). */
 const fmtIconSize = (n) => String(Math.round(Number(n) * 10) / 10);
 
-const hasDockyTarget = (element) => !!(element?.docky && (element.docky.agent || element.docky.container));
+const hasDockyTarget = elementHasDockyTarget;
 
 /**
- * True when the element has a usable health-pill source: `healthCheck` on AND
- * (a valid custom `healthUrl` OR a Docky target). Mirrors the server-side
- * `resolveHealthSource` contract — a Docky target alone (healthCheck off) or an
- * URL alone (healthCheck off) is NOT a source.
+ * True when the element has a usable health-pill source — `healthCheck` on AND
+ * (a valid custom `healthUrl` OR a Docky target). Shared with the EDIT context
+ * menu through elements/button.js (one single source of truth).
  */
-const hasHealthSource = (element) => {
-  if (element?.healthCheck !== true) return false;
-  if (isValidHttpUrl(String(element?.healthUrl || '').trim())) return true;
-  return hasDockyTarget(element);
-};
+const hasHealthSource = elementHasHealthSource;
 
 /**
  * Open the options panel for one tile. Returns the HolafModal controller.
@@ -144,7 +142,7 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
 
   // ---- commit helpers --------------------------------------------------------
 
-  const hasUrl = () => !!String(currentElement?.url || '').trim();
+  const hasUrl = () => elementHasUrl(currentElement);
 
   /** Apply the working copy live, enforcing the variant minimum footprint. */
   function commit() {

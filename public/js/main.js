@@ -18,6 +18,7 @@ import { catalog } from './elements/catalog.js';
 import { openElementPicker } from './elements/elementPicker.js';
 import { selection } from './grid/selection.js';
 import { clearLocalIconCache } from './elements/button.js';
+import { isContextMenuOpen } from './ui/contextMenu.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,6 +33,12 @@ const groupEditor = createGroupEditor({
   previewEl: $('grid-preview'),
   groupLayer,
   getGrid: () => grid,
+  // L9: the empty-canvas right-click menu reuses the topbar's creation entry
+  // points (elements/elementPicker.js through addCanvasObject).
+  canvasActions: {
+    addElement: () => addCanvasObject('element'),
+    addReport: () => addCanvasObject('report'),
+  },
   // L6 keyboard/gesture guards live in main.js (single source of truth): the
   // editor must never steal Delete/Escape/Ctrl+A from a text field, a modal,
   // an in-flight gesture or a page transition.
@@ -1064,6 +1071,9 @@ document.addEventListener('keydown', (e) => {
   if ($('dashboard-view').classList.contains('hidden')) return;
   if (isTextEntryTarget(e.target) || isTextEntryTarget(document.activeElement)) return;
   if (isOverlayOpen() || isPaletteOverlayOpen()) return;
+  // An open EDIT context menu owns ↑/↓/←/→ (grid navigation): never page-switch
+  // underneath it.
+  if (isContextMenuOpen()) return;
   if (isInteractionActive()) return;
   if (switchingPage || pageAnimActive) return; // single transition at a time
   e.preventDefault();
