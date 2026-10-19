@@ -1,69 +1,305 @@
-name: Test Build
+# =============================================================================
+# Homy — CI "image" workflow: validation, single image build, container smoke
+# test, and publication of the TEST image (`:test`) on ghcr.io.
+#
+# Same working principle as Yuki (`.github/workflows/test-build.yml`), adapted
+# to a Node app with no front-end build step and no Go/agent binaries:
+#
+#   quality → npm ci + `npm run check:schema` + version.txt validation ;
+#   docker  → Compose-free local build of the image (built ONCE) + smoke test
+#             of the running container (`GET /api/health`, embedded version) ;
+#   publish → push `:test` + `:sha-<short>` (NEVER on pull_request).
+#
+# Why the image is built once and shipped between jobs: the image that is
+# published is EXACTLY the image that was smoke-tested, with no second build
+# that could diverge. (Same rationale as Yuki.)
+#
+# Tag policy — do not blur the two workflows:
+#   * this file owns `:test` (throwaway) and `:sha-<short>` (immutable);
+#   * `release.yml` owns `:<version>` and `:latest`.
+#   A test build can therefore NEVER overwrite a published release.
+#
+# No secret to configure: the ephemeral `GITHUB_TOKEN` is enough. The
+# repository must however allow package writes (`packages: write`), see the
+# README "CI/CD" section.
+# =============================================================================
+name: Test build (ghcr :test)
 
 on:
+  # Automatic test build on every push to the default branch...
+  push:
+    branches: [main]
+  # ...and on pull requests targeting it. Publication is gated below: a PR
+  # only validates (quality + build + smoke test), it never pushes an image.
+  pull_request:
+    branches: [main]
+  # Manual replay gate: (re)build and publish `:test` on demand.
   workflow_dispatch:
+  # No `tag` trigger: that is the exclusive job of `release.yml`.
+
+# Minimal permissions:
+#   contents: read   — checkout only (this workflow NEVER writes to the repo);
+#   packages: write  — push of `:test` / `:sha-<short>` to ghcr.io.
+permissions:
+  contents: read
+  packages: write
+
+# Cancel obsolete runs for PRs only. On `push` to main and on
+# `workflow_dispatch` runs are QUEUED (never killed mid-`docker push`, which
+# would leave a partially published image).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ${{ github.repository }}
+  # `github.repository` is "grokuku/Homy"; it is lowercased when the image
+  # reference is built (ghcr only accepts lowercase). Never hardcode the image
+  # name: it follows the repository.
+  IMAGE_REPOSITORY: ${{ github.repository }}
+  NODE_VERSION: '24'
+  # Local, unpublished tag used by the `docker` job (never pushed as-is).
+  IMAGE_LOCAL_TAG: homy-ci:test
 
 jobs:
-  test-build:
+  # ---------------------------------------------------------------------------
+  # Quality gate: `docker` and `publish` depend on it.
+  # ---------------------------------------------------------------------------
+  quality:
+    name: Schema sync & version validation
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Read version
-        id: version
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Widget settingsSchema / defaultSize must agree between the server
+      # manifest and the front-end registry (no build step exists, so the data
+      # is duplicated: this check is the guard against drift).
+      - name: Check widget settingsSchemas (server ↔ front)
+        run: npm run check:schema
+
+      # Fail BEFORE building an image if `version.txt` is missing, empty or
+      # malformed (single source of truth for the release version).
+      - name: Validate version.txt
+        run: node scripts/version.mjs validate
+
+  # ---------------------------------------------------------------------------
+  # Local image build (linux/amd64, native runner) + container smoke test.
+  #
+  # A plain `docker build` is used on purpose: Homy has no Compose-only
+  # requirement, the base `docker-compose.yml` pulls the published image, and
+  # building once here is all that is needed. Test builds stay amd64-only
+  # (fast, native); multi-arch is reserved to `release.yml`.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Build & smoke test
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve build metadata
+        id: meta
         run: |
-          VERSION=$(cat version.txt | tr -d '[:space:]')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
+          set -euo pipefail
+          VERSION="$(node scripts/version.mjs show)"
+          SHA_SHORT="$(git rev-parse --short HEAD)"
+          if ! printf '%s' "${SHA_SHORT}" | grep -Eq '^[0-9a-f]+$'; then
+            echo "::error::invalid short sha: '${SHA_SHORT}'"
+            exit 1
+          fi
+          {
+            echo "version=${VERSION}"
+            echo "sha_short=${SHA_SHORT}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Version: ${VERSION} (sha-${SHA_SHORT})"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Build the image
+        env:
+          LOCAL_TAG: ${{ env.IMAGE_LOCAL_TAG }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          GIT_COMMIT: ${{ steps.meta.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --platform linux/amd64 \
+            --build-arg "VERSION=${VERSION}" \
+            --build-arg "GIT_COMMIT=${GIT_COMMIT}" \
+            -t "${LOCAL_TAG}" .
+          docker image inspect "${LOCAL_TAG}" >/dev/null
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      # Smoke test: the container must reach a healthy state and embed the
+      # version injected above (guards the Dockerfile build args).
+      - name: Smoke test the container
+        env:
+          LOCAL_TAG: ${{ env.IMAGE_LOCAL_TAG }}
+          EXPECTED_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          NAME="homy-ci-smoke-${GITHUB_RUN_ID}"
+          trap 'docker rm -f "${NAME}" >/dev/null 2>&1 || true' EXIT
 
-      - name: Login to GitHub Container Registry
+          docker run -d --name "${NAME}" -p 18080:3000 "${LOCAL_TAG}" >/dev/null
+
+          healthy=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/api/health >/dev/null 2>&1; then
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "${healthy}" != "1" ]; then
+            echo "::error::container never answered GET /api/health"
+            docker logs "${NAME}" || true
+            exit 1
+          fi
+
+          echo "GET /api/health:"
+          curl -fsS http://127.0.0.1:18080/api/health
+          echo
+
+          IMAGE_VERSION="$(docker run --rm --entrypoint cat "${LOCAL_TAG}" /app/version.txt | tr -d '[:space:]')"
+          if [ "${IMAGE_VERSION}" != "${EXPECTED_VERSION}" ]; then
+            echo "::error::image embeds version '${IMAGE_VERSION}', expected '${EXPECTED_VERSION}'"
+            exit 1
+          fi
+          echo "Embedded version OK: ${IMAGE_VERSION}"
+
+      - name: Export the built image (for the publish job)
+        # Useless on PR: `publish` never runs there, so no artifact to upload.
+        if: github.event_name != 'pull_request'
+        env:
+          LOCAL_TAG: ${{ env.IMAGE_LOCAL_TAG }}
+          ARCHIVE: ${{ runner.temp }}/homy-image.tar.gz
+        run: |
+          set -euo pipefail
+          if ! docker image inspect "${LOCAL_TAG}" >/dev/null 2>&1; then
+            echo "::error::image '${LOCAL_TAG}' missing after the smoke test"
+            exit 1
+          fi
+          docker save "${LOCAL_TAG}" | gzip -1 > "${ARCHIVE}"
+          echo "Exported archive: $(du -h "${ARCHIVE}" | cut -f1)"
+
+      - name: Upload the built image as an artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: homy-image
+          path: ${{ runner.temp }}/homy-image.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Publish the TEST image (`:test` + `:sha-<short>`) on ghcr.io.
+  #
+  # Conditional on purpose: only on `push` to main and on `workflow_dispatch`,
+  # NEVER on `pull_request` — (1) a `:test` pushed from a PR would overwrite the
+  # tag with unmerged code; (2) package writes are not granted to fork PRs.
+  #
+  # The image is the one built and smoke-tested by the `docker` job (artifact):
+  # it is NOT rebuilt.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish ghcr :test
+    needs: [quality, docker]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download the built image
+        uses: actions/download-artifact@v4
+        with:
+          name: homy-image
+          path: ${{ runner.temp }}
+
+      - name: Load the image and resolve the reference
+        id: meta
+        env:
+          # Context passed through `env` (never interpolated into the script):
+          # avoids shell injection and centralises derivation.
+          REPOSITORY: ${{ env.IMAGE_REPOSITORY }}
+          REGISTRY: ${{ env.REGISTRY }}
+          LOCAL_TAG: ${{ env.IMAGE_LOCAL_TAG }}
+          ARCHIVE: ${{ runner.temp }}/homy-image.tar.gz
+        run: |
+          set -euo pipefail
+
+          if [ -z "${REPOSITORY:-}" ]; then
+            echo "::error::github.repository is empty — cannot derive the image name"
+            exit 1
+          fi
+          if [ ! -f "${ARCHIVE}" ]; then
+            echo "::error::image archive not found: ${ARCHIVE}"
+            exit 1
+          fi
+
+          gunzip -c "${ARCHIVE}" | docker load
+          if ! docker image inspect "${LOCAL_TAG}" >/dev/null 2>&1; then
+            echo "::error::image '${LOCAL_TAG}' missing after 'docker load'"
+            exit 1
+          fi
+
+          # ghcr.io only accepts lowercase references.
+          IMAGE="${REGISTRY}/$(printf '%s' "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          SHA_SHORT="$(git rev-parse --short HEAD)"
+          if ! printf '%s' "${SHA_SHORT}" | grep -Eq '^[0-9a-f]+$'; then
+            echo "::error::invalid short sha: '${SHA_SHORT}'"
+            exit 1
+          fi
+
+          docker tag "${LOCAL_TAG}" "${IMAGE}:test"
+          docker tag "${LOCAL_TAG}" "${IMAGE}:sha-${SHA_SHORT}"
+
+          {
+            echo "image=${IMAGE}"
+            echo "sha_short=${SHA_SHORT}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Image: ${IMAGE}"
+          echo "Tags : ${IMAGE}:test, ${IMAGE}:sha-${SHA_SHORT}"
+
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Lowercase repository name
+      - name: Push :test and :sha-<short>
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          SHA_SHORT: ${{ steps.meta.outputs.sha_short }}
         run: |
-          echo "IMG=$(echo ${{ env.REGISTRY }}/${{ env.IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          set -euo pipefail
+          docker push "${IMAGE}:test"
+          docker push "${IMAGE}:sha-${SHA_SHORT}"
 
-      - name: Set build args
-        id: vars
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Check widget settingsSchemas (server ↔ front)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install + run schema sync check
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          SHA_SHORT: ${{ steps.meta.outputs.sha_short }}
         run: |
-          npm ci
-          npm run check:schema
-
-      - name: Build and push (test)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
-            VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ${{ env.IMG }}:test
+          set -euo pipefail
+          {
+            echo "### Test image published on ${REGISTRY}"
+            echo
+            echo "| Tag | Reference |"
+            echo "| --- | --- |"
+            echo "| throwaway | \`${IMAGE}:test\` |"
+            echo "| immutable | \`${IMAGE}:sha-${SHA_SHORT}\` |"
+            echo
+            echo "> Release tags (\`:latest\`, \`:<version>\`) are NOT touched by this workflow."
+          } >> "${GITHUB_STEP_SUMMARY}"

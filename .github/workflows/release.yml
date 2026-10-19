@@ -1,29 +1,105 @@
-name: Release
+# =============================================================================
+# Homy — release workflow: Publish the versioned image on ghcr.io and bump the
+# version automatically.
+#
+# Same working principle as Yuki (`/projects/Yuki/.github/workflows/release.yml`,
+# itself taken from Docky), adapted to Homy:
+#
+#   read `version.txt` → build & push `:<version>` + `:latest` + `:sha-<short>`
+#   → increment the PATCH in `version.txt` → commit → push.
+#
+#   * `version.txt` (repository root) is the SINGLE SOURCE OF TRUTH for the
+#     version: no manual entry, no Git tag. `scripts/version.mjs` owns the
+#     arithmetic (validated and dry-runnable outside CI).
+#   * MANUAL trigger only (`workflow_dispatch`), like Yuki/Docky: the bump
+#     commit pushed to `main` therefore cannot re-trigger this workflow
+#     (loop guard). It does trigger one `test-build` run, which is harmless.
+#   * Permissions: `contents: write` (push of the bump commit) +
+#     `packages: write` (image push on ghcr.io).
+#
+# Idempotency: if `:<version>` already exists in the registry, the run FAILS
+# before building and tells you to bump `version.txt` by hand. A release is
+# never silently republished nor silently skipped.
+#
+# Homy keeps multi-arch (`linux/amd64`, `linux/arm64`) like its existing
+# release convention (lightweight Node app, no GPU) — the test build stays
+# amd64-only.
+# =============================================================================
+name: Release image
 
 on:
+  # Manual publication only. No `push` (branch or `v*` tag) trigger: the
+  # version comes exclusively from `version.txt`. This is also the loop guard.
   workflow_dispatch:
+
+# Serialise ALL runs of this workflow: two concurrent runs would bump
+# `version.txt` twice and/or overwrite the same version.
+# `cancel-in-progress: false`: never kill an image push mid-flight.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# Minimal default permissions (read only). The `publish` job raises `contents`
+# to `write` (bump commit) and `packages` to `write` (image push) — nothing else.
+permissions:
+  contents: read
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ${{ github.repository }}
+  # `github.repository` is "grokuku/Homy"; lowercased when the reference is
+  # built. Never hardcode the image name.
+  IMAGE_REPOSITORY: ${{ github.repository }}
+  NODE_VERSION: '24'
 
 jobs:
-  release:
+  # ---------------------------------------------------------------------------
+  # Quality gate: publication starts only if these checks pass.
+  # ---------------------------------------------------------------------------
+  quality:
+    name: Schema sync & version validation
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      packages: write
-
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Read version
-        id: version
-        run: |
-          VERSION=$(cat version.txt | tr -d '[:space:]')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check widget settingsSchemas (server ↔ front)
+        run: npm run check:schema
+
+      - name: Validate version.txt
+        run: node scripts/version.mjs validate
+
+  # ---------------------------------------------------------------------------
+  # Publish the image, then bump `version.txt` (PATCH) and push the bump.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Build, push & bump version
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit + push of the `version.txt` bump
+      packages: write # image push on ghcr.io
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # --- 1. Tooling: registry login + buildx (needed by the probe and build) -
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -31,21 +107,68 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Lowercase repository name
+      # --- 2. Resolve the version and refuse to republish it ------------------
+      # Login is already done: the probe below needs authentication when the
+      # package is private. Buildx is already set up: `imagetools inspect` is
+      # the primary probe (with `docker manifest inspect` as a fallback).
+      - name: Resolve version & check idempotency
+        id: version
+        env:
+          REPOSITORY: ${{ env.IMAGE_REPOSITORY }}
+          REGISTRY: ${{ env.REGISTRY }}
         run: |
-          echo "IMG=$(echo ${{ env.REGISTRY }}/${{ env.IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          set -euo pipefail
 
-      - name: Set build args
-        id: vars
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          if [ -z "${REPOSITORY:-}" ]; then
+            echo "::error::github.repository is empty — cannot derive the image name"
+            exit 1
+          fi
+          # ghcr.io only accepts lowercase references.
+          IMAGE="${REGISTRY}/$(printf '%s' "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          CURRENT="$(node scripts/version.mjs show)"
 
+          # Idempotency probe: is `:<current version>` already in the registry?
+          # Both probes exit non-zero when the tag is absent (and when the
+          # registry cannot be reached — the build below would then fail loudly).
+          tag_exists() {
+            if docker buildx imagetools inspect "$1" >/dev/null 2>&1; then return 0; fi
+            if docker manifest inspect "$1" >/dev/null 2>&1; then return 0; fi
+            return 1
+          }
+
+          PUBLISHED=""
+          if tag_exists "${IMAGE}:${CURRENT}"; then
+            PUBLISHED="${CURRENT}"
+            echo "Already published: ${IMAGE}:${CURRENT}"
+          fi
+
+          # `scripts/version.mjs` owns the rule (publish current, bump patch) and
+          # throws ALREADY_PUBLISHED when the probe found the tag.
+          PLAN="$(node scripts/version.mjs resolve --published="${PUBLISHED}")"
+          printf '%s\n' "${PLAN}" >> "${GITHUB_OUTPUT}"
+
+          # Single source of the values below: the plan printed by the script.
+          VERSION="$(printf '%s\n' "${PLAN}" | sed -n 's/^version=//p')"
+          NEXT="$(printf '%s\n' "${PLAN}" | sed -n 's/^next=//p')"
+          SHA_SHORT="$(git rev-parse --short HEAD)"
+
+          if [ -z "${VERSION}" ] || [ -z "${NEXT}" ]; then
+            echo "::error::could not parse the version plan printed by scripts/version.mjs"
+            exit 1
+          fi
+
+          {
+            echo "IMAGE=${IMAGE}"
+            echo "VERSION=${VERSION}"
+            echo "NEXT=${NEXT}"
+            echo "SHA_SHORT=${SHA_SHORT}"
+          } >> "${GITHUB_ENV}"
+
+          echo "Image        : ${IMAGE}"
+          echo "Version      : ${VERSION}"
+          echo "Next version : ${NEXT}"
+
+      # --- 3. Build and push the image with the CURRENT version --------------
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -53,27 +176,51 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
-            VERSION=${{ steps.version.outputs.version }}
+            GIT_COMMIT=${{ env.SHA_SHORT }}
+            VERSION=${{ env.VERSION }}
           tags: |
-            ${{ env.IMG }}:${{ steps.version.outputs.version }}
-            ${{ env.IMG }}:latest
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ env.SHA_SHORT }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Increment version
+      # --- 4. Increment the version (AFTER the image push) -------------------
+      - name: Increment version.txt (PATCH)
         run: |
-          CURRENT=$(cat version.txt | tr -d '[:space:]')
-          MAJOR=$(echo $CURRENT | cut -d. -f1)
-          MINOR=$(echo $CURRENT | cut -d. -f2)
-          PATCH=$(echo $CURRENT | cut -d. -f3)
-          NEW_PATCH=$((PATCH + 1))
-          NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-          echo "$NEW_VERSION" > version.txt
-          echo "New version: $NEW_VERSION"
+          set -euo pipefail
+          NEW_VERSION="$(node scripts/version.mjs bump)"
+          if [ "${NEW_VERSION}" = "${VERSION}" ]; then
+            echo "::error::version bump did not change version.txt"
+            exit 1
+          fi
+          echo "version.txt: ${VERSION} → ${NEW_VERSION}"
+          echo "NEXT_VERSION=${NEW_VERSION}" >> "${GITHUB_ENV}"
 
-      - name: Commit new version
+      # --- 5. Commit and push the bump ---------------------------------------
+      # No `[skip ci]`: the bump commit triggers one `test-build` run of the
+      # new commit, which is exactly the expected "push → test image" behaviour.
+      - name: Commit and push the new version
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add version.txt
           git commit -m "chore: bump version to $(cat version.txt)"
           git push
+
+      - name: Summary
+        run: |
+          set -euo pipefail
+          {
+            echo "### Image published on ${REGISTRY}"
+            echo
+            echo "| Tag | Reference |"
+            echo "| --- | --- |"
+            echo "| version | \`${IMAGE}:${VERSION}\` |"
+            echo "| latest | \`${IMAGE}:latest\` |"
+            echo "| immutable | \`${IMAGE}:sha-${SHA_SHORT}\` |"
+            echo
+            echo "Next version: \`${NEXT_VERSION}\` (bump commit pushed by this workflow)."
+            echo "No Git tag and no GitHub Release are created: \`version.txt\` is the source of truth (same convention as Yuki/Docky)."
+          } >> "${GITHUB_STEP_SUMMARY}"

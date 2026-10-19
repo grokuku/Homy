@@ -223,19 +223,76 @@ docker build \
   -t homy .
 ```
 
-### Image build (CI)
+### CI / CD (image build & release)
 
-Two **manually triggered** workflows in `.github/workflows/` follow the same principle as the
-Docky project:
+Two workflows in `.github/workflows/` follow the same working principle as the Yuki /
+Docky projects, adapted to Homy (Node server, no front-end build step). `version.txt`
+(repository root) is the **single source of truth** for the version — no Git tag, no
+manual version entry.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `test-build.yml` | manual | multi-arch build (`linux/amd64`, `linux/arm64`), pushes only `:test` |
-| `release.yml` | manual | multi-arch build, pushes `:<version>` **and** `:latest`, then increments the patch in `version.txt` and commits it |
+| `test-build.yml` — *Test build (ghcr :test)* | **automatic**: `push` to `main`, `pull_request` to `main`; **manual**: `workflow_dispatch` | quality gate (`npm ci` + `npm run check:schema` + `version.txt` validation), single `linux/amd64` build, container smoke test (`GET /api/health` + embedded version), then pushes `:test` and `:sha-<short>` — **never** on a pull request |
+| `release.yml` — *Release image* | **manual only**: `workflow_dispatch` | quality gate, then multi-arch (`linux/amd64`, `linux/arm64`) build & push of `:<version>`, `:latest` and `:sha-<short>`, then increments the **patch** in `version.txt`, commits and pushes that bump |
 
-`version.txt` (repository root) is the single source of truth for the version: it is passed to
-both builds as the `VERSION` build arg (`GIT_COMMIT` receives the short commit hash). Run
-`test-build` to validate an image, then `release` to publish it.
+Both pass `VERSION` (read from `version.txt`) and `GIT_COMMIT` (short commit hash) as
+build args. The schema sync check stays the CI guard against server ↔ front drift.
+
+#### Tag conventions
+
+| Tag | Published by | Meaning |
+| --- | --- | --- |
+| `:test` | `test-build` (push / manual) | throwaway build of the latest `main` — may be overwritten |
+| `:sha-<short>` | both workflows | immutable, pins one commit |
+| `:<version>` | `release` | explicit release, value read from `version.txt` |
+| `:latest` | `release` | last published release |
+
+A test build can never overwrite a release tag, and a release never uses the `:test` tag.
+
+#### Versioning (automatic numbering)
+
+- `version.txt` holds `MAJOR.MINOR.PATCH` (e.g. `0.1.0`). A release publishes **that**
+  version, then bumps the **patch** (`0.1.0` → `0.1.1`).
+- **Minor / major releases are deliberate**: edit `version.txt` by hand (e.g. `0.2.0` or
+  `1.0.0`) and run `release`; the workflow then only increments the patch from there.
+- The arithmetic lives in `scripts/version.mjs` (zero dependency), so it is reviewable and
+  dry-runnable outside CI:
+
+  ```bash
+  node scripts/version.mjs show                         # current version
+  node scripts/version.mjs validate                     # non-zero exit if malformed
+  node scripts/version.mjs resolve --published=0.1.0    # dry-run: version + next
+  node scripts/version.mjs bump --dry-run               # next version, no write
+  node scripts/version.mjs selftest                     # assertions (exit 1 on failure)
+  ```
+
+- **Idempotency**: if `:<version>` already exists in the registry, the release **fails
+  before building** and asks you to bump `version.txt` by hand. A release is never
+  silently republished nor silently skipped.
+- Like Yuki / Docky, no Git tag and no GitHub Release are created: the bump commit on
+  `main` is the release record (it also triggers one `test-build` run, by design).
+
+#### How to publish a release
+
+1. GitHub → **Actions** → **Release image** → **Run workflow** (branch `main`).
+2. The run publishes `:<version>`, `:latest`, `:sha-<short>` and pushes the bump commit.
+3. To pin a deployment to an immutable build, use `:<version>` or `:sha-<short>` in
+   `docker-compose.yml` instead of `:latest`.
+
+#### Required permissions / secrets
+
+No custom secret is needed: the ephemeral `GITHUB_TOKEN` is enough.
+
+- Repository settings → **Actions → General → Workflow permissions**: allow read and
+  write (or let the workflows declare their own permissions, as they do).
+- `test-build.yml` declares `permissions: contents: read` + `packages: write` (the only
+  write is the image push; it never writes to the repository).
+- `release.yml` declares `contents: read` by default and raises it to
+  `contents: write` (bump commit) + `packages: write` (image push) on its `publish` job.
+- The package is published on ghcr.io under the repository name (`ghcr.io/<owner>/<repo>`,
+  lowercased); its visibility is set under **Settings → Packages**.
+- If `main` is protected against direct pushes, allow GitHub Actions / the bot role to
+  push — otherwise the bump commit is rejected *after* the image was pushed.
 
 ## Project structure
 
@@ -249,10 +306,11 @@ docker-entrypoint.sh       # fixes data volume ownership, then su-exec → CMD a
 .dockerignore              # keeps data/, node_modules/ and .env out of the context
 docker-compose.yml         # deployment: bind mount ./data, port 3000
 version.txt                # single source of truth for the version (CI)
-.github/workflows/         # test-build.yml + release.yml (manual, ghcr.io)
+.github/workflows/         # test-build.yml (push → :test) + release.yml (manual → :version/:latest, ghcr.io)
 scripts/
   check-schema-sync.mjs    # fails if the duplicated widget settingsSchema OR defaultSize drifts (server ↔ front)
                            #   run via: npm run check:schema
+  version.mjs              # CI version arithmetic (source of truth: version.txt), dry-runnable + selftest
 server/
   index.js                 # Hono bootstrap, static, routes, error handler
   config.js                # env + config.json loader

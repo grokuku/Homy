@@ -279,6 +279,36 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     return res ? res.id : null;
   }
 
+  /**
+   * First w×h rect that intersects NO existing object, scanning top-left →
+   * bottom-right (row-major). Returns `{ x, y }` or null when the layout has
+   * no room left. Used by the « Add element / Add report » entry points so a
+   * new object NEVER pushes (or overlaps) an existing one — gridstack resolves
+   * collisions by MOVING the occupant, which must never happen as a side
+   * effect of an explicit « add ». Groups are content-less boxes and are
+   * deliberately ignored: placing an object inside a box is how membership is
+   * expressed in layout v5.
+   */
+  function findFreeSlot(w = MIN_OBJECT_SIZE, h = MIN_OBJECT_SIZE) {
+    const cw = Math.max(1, Math.floor(Number(w)) || MIN_OBJECT_SIZE);
+    const chh = Math.max(1, Math.floor(Number(h)) || MIN_OBJECT_SIZE);
+    const nodes = grid.engine.nodes;
+    const overlaps = (x, y) =>
+      nodes.some((n) => {
+        const nx = n.x || 0;
+        const ny = n.y || 0;
+        const nw = n.w || 1;
+        const nh = n.h || 1;
+        return x < nx + nw && nx < x + cw && y < ny + nh && ny < y + chh;
+      });
+    for (let y = 0; y + chh <= GRID_ROWS; y += 1) {
+      for (let x = 0; x + cw <= GRID_COLUMNS; x += 1) {
+        if (!overlaps(x, y)) return { x, y };
+      }
+    }
+    return null;
+  }
+
   // ---- config modal (generic, schema-driven) ----
   /**
    * Re-render ONE object in place from the current meta (widget config after an
@@ -428,6 +458,7 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
   return {
     addWidget,
     addObject,
+    findFreeSlot,
     applyConfig,
     /**
      * Live identity + geometry of one object (L6 floating bar): kind, type /

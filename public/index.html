@@ -112,7 +112,22 @@
 
       <div id="dashboard-body" class="dashboard-body">
         <div id="editor-palette" class="palette hidden">
-          <h3>Add widget</h3>
+          <h3>Add to canvas</h3>
+          <!-- Canvas objects (layout v5): the widget list below only creates
+               `widget` objects. Elements (icons from the catalogue) and
+               reports (elements carrying a Jellyfin `report` config) are
+               separate object kinds and get their own entry points here —
+               both reuse the existing element picker. Visible in EDIT only
+               (setMode toggles .hidden). -->
+          <div class="palette-add-row">
+            <button id="add-element-btn" class="btn palette-add-btn" type="button" title="Place an element from the catalogue on the canvas">
+              Add element
+            </button>
+            <button id="add-report-btn" class="btn palette-add-btn" type="button" title="Place a report tile on the canvas (requires an element with Special reporting)">
+              Add report
+            </button>
+          </div>
+          <h4 class="palette-subtitle">Widgets</h4>
           <div id="palette-list" class="palette-list"></div>
         </div>
 

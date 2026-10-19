@@ -340,6 +340,21 @@ body { background: transparent; transition: background 0.2s; }
   z-index: 15;
 }
 .palette h3 { margin: 0 0 10px; font-size: 14px; color: var(--text-muted); }
+/* Canvas-object entry points (element / report). Two compact, clearly labelled
+   buttons above the widget list so adding an icon is discoverable at a glance
+   in EDIT mode — the widget palette alone only creates widgets. */
+.palette-add-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.palette-add-btn { width: 100%; justify-content: center; font-size: 13px; }
+.palette-add-btn:first-child { border-color: var(--accent); }
+.palette-add-btn:first-child:hover { background: var(--accent); color: #fff; }
+.palette-subtitle {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
 .palette-list { display: flex; flex-direction: column; gap: 8px; }
 .palette-item {
   padding: 10px 12px;

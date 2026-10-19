@@ -15,6 +15,8 @@ import { healthUrlPoller } from './health/health.js';
 import { initTabs, renderTabs } from './ui/tabs.js';
 import { toast } from './ui/toast.js';
 import { catalog } from './elements/catalog.js';
+import { openElementPicker } from './elements/elementPicker.js';
+import { selection } from './grid/selection.js';
 import { clearLocalIconCache } from './elements/button.js';
 
 const $ = (id) => document.getElementById(id);
@@ -1296,6 +1298,64 @@ $('elements-btn').addEventListener('click', () => {
 $('docky-btn').addEventListener('click', () => {
   openDockyConfigModal();
 });
+
+// ---- Canvas objects: Add element / Add report ------------------------------
+// The widget palette below only creates `widget` objects. Since the `group`
+// widget was removed (L1) its « + Add element » button disappeared with it, so
+// elements/reports had NO creation UI left. These two entry points restore it,
+// reusing the EXISTING catalogue picker (elements/elementPicker.js):
+//   - element : any catalogue entry, created as a 2×2 element object;
+//   - report  : a catalogue entry carrying a server-validated `report` config
+//               (Special reporting / Jellyfin), created as a 2×2 report object.
+// Placement: the first free 2×2 slot (editor.findFreeSlot) so an ADD never
+// pushes an existing object; the new object is selected so it can be dragged
+// immediately. Persistence is editor.addObject's normal debounced PUT.
+function addCanvasObject(kind) {
+  const isReport = kind === 'report';
+  if (state.mode !== 'edit' || !grid || typeof grid.addObject !== 'function') return;
+  openElementPicker({
+    title: isReport ? 'Add report' : 'Add element',
+    // Reports reference an element that has reporting configured; a plain
+    // element picker keeps the whole catalogue (report-enabled entries are
+    // valid icon tiles too).
+    filter: isReport ? (e) => !!(e && e.report && e.report.type) : null,
+    emptyText: isReport
+      ? 'No report-enabled element yet — enable “Special reporting” on an element in the Elements screen.'
+      : 'No elements yet — click “+ Create new…” to create one.',
+    onPick: (element) => {
+      if (!element || !element.id) return;
+      // Client-side cap (same guard as the widget palette): a full layout must
+      // fail with a visible message HERE instead of silently at PUT time.
+      if (state.layout.length >= MAX_ITEMS) {
+        toast(`Cannot add ${kind}: layout is full (max ${MAX_ITEMS} objects)`, 'error');
+        return;
+      }
+      const slot = grid.findFreeSlot?.(2, 2);
+      if (!slot) {
+        toast(`Cannot add ${kind}: no free 2×2 slot left on the canvas`, 'error');
+        return;
+      }
+      const item = grid.addObject({
+        kind,
+        elementId: element.id,
+        x: slot.x,
+        y: slot.y,
+        w: 2,
+        h: 2,
+        ...(isReport ? {} : { options: {} }),
+      });
+      if (!item) return; // addObject already surfaced the failure (layout full)
+      // Select the fresh object: immediately draggable + editable from the
+      // floating selection bar (a 2×2 tile's centre is covered by its own
+      // delete control, so finding it by hand would be awkward).
+      selection.selectObject(item.id);
+      toast(`${isReport ? 'Report' : 'Element'} added — drag it to place it`, 'success');
+    },
+  });
+}
+
+$('add-element-btn').addEventListener('click', () => addCanvasObject('element'));
+$('add-report-btn').addEventListener('click', () => addCanvasObject('report'));
 
 // If the token expires mid-session, return to login.
 window.addEventListener('auth:expired', () => {
