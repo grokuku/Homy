@@ -166,7 +166,14 @@ A ready-to-run image is published to the GitHub Container Registry:
 ```
 ghcr.io/grokuku/homy:latest
 ghcr.io/grokuku/homy:<version>
+ghcr.io/grokuku/homy:test    # throwaway build of the latest main
 ```
+
+Every tag is a **multi-arch manifest list** (`linux/amd64` + `linux/arm64`): `docker pull`
+selects the variant matching the host automatically, so the same reference works on an
+x86 server, a Raspberry Pi / ARM NAS, or an Apple Silicon machine — no `--platform` flag
+needed. The `HEALTHCHECK` and the entrypoint are plain `/bin/sh` + Node, with no native
+module to rebuild per architecture.
 
 ### Quick start (Docker Compose)
 
@@ -223,6 +230,37 @@ docker build \
   -t homy .
 ```
 
+### Troubleshooting: `exec format error`
+
+```
+exec /usr/local/bin/docker-entrypoint.sh: exec format error
+```
+
+This means Docker is trying to run an image built for **another CPU architecture**
+(typically an `linux/amd64`-only image on an arm64 host). It is **not** a broken
+entrypoint: the kernel refuses to start the architecture-specific `/bin/sh` that
+interprets the script, and the container restarts forever with an exponential back-off.
+
+Since the fix of the `:test` build (it used to be amd64-only), every published tag is
+multi-arch. If you still hit the error, you are running a **cached** old image — a tag can
+be re-pushed, but Docker keeps the local copy:
+
+```bash
+# 1. Check what the local image (and the registry) actually provides
+docker image inspect ghcr.io/grokuku/homy:test --format '{{.Os}}/{{.Architecture}}'
+docker buildx imagetools inspect ghcr.io/grokuku/homy:test   # must list 2 platforms
+
+# 2. Force a re-pull of the floating tag, then drop the stale local copy
+docker compose pull            # or: docker pull ghcr.io/grokuku/homy:test
+docker image rm ghcr.io/grokuku/homy:test
+
+# 3. Recreate the container (never reuse the old one)
+docker compose up -d --force-recreate
+```
+
+`docker compose up` alone reuses the local image when the tag already exists, so a
+`docker compose pull` (or `pull_policy: always`) is required to pick up the new manifest.
+
 ### CI / CD (image build & release)
 
 Two workflows in `.github/workflows/` follow the same working principle as the Yuki /
@@ -232,8 +270,8 @@ manual version entry.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `test-build.yml` — *Test build (ghcr :test)* | **automatic**: `push` to `main`, `pull_request` to `main`; **manual**: `workflow_dispatch` | quality gate (`npm ci` + `npm run check:schema` + `version.txt` validation), single `linux/amd64` build, container smoke test (`GET /api/health` + embedded version), then pushes `:test` and `:sha-<short>` — **never** on a pull request |
-| `release.yml` — *Release image* | **manual only**: `workflow_dispatch` | quality gate, then multi-arch (`linux/amd64`, `linux/arm64`) build & push of `:<version>`, `:latest` and `:sha-<short>`, then increments the **patch** in `version.txt`, commits and pushes that bump |
+| `test-build.yml` — *Test build (ghcr :test)* | **automatic**: `push` to `main`, `pull_request` to `main`; **manual**: `workflow_dispatch` | quality gate (`npm ci` + `npm run check:schema` + `version.txt` validation), **one multi-arch build** (`linux/amd64` + `linux/arm64`, QEMU/buildx) pushed as `:sha-<short>`, manifest guard (`scripts/assert-image-platforms.sh`), container smoke test of **both platforms** (`GET /api/health` + embedded version), then promotes the very same manifest list to `:test` — **never** on a pull request (a PR builds amd64 locally, unpublished) |
+| `release.yml` — *Release image* | **manual only**: `workflow_dispatch` | quality gate, then multi-arch (`linux/amd64` + `linux/arm64`, same set as the test build) build & push of `:<version>`, `:latest` and `:sha-<short>`, manifest guard on the published tags, then increments the **patch** in `version.txt`, commits and pushes that bump |
 
 Both pass `VERSION` (read from `version.txt`) and `GIT_COMMIT` (short commit hash) as
 build args. The schema sync check stays the CI guard against server ↔ front drift.
@@ -248,6 +286,11 @@ build args. The schema sync check stays the CI guard against server ↔ front dr
 | `:latest` | `release` | last published release |
 
 A test build can never overwrite a release tag, and a release never uses the `:test` tag.
+
+Both workflows publish the **same platform set** (`IMAGE_PLATFORMS`: `linux/amd64`,
+`linux/arm64`) and both verify the published manifest with
+`scripts/assert-image-platforms.sh` before going further: an architecture missing from the
+manifest fails the run instead of shipping a container that loops on `exec format error`.
 
 #### Versioning (automatic numbering)
 
@@ -311,6 +354,7 @@ scripts/
   check-schema-sync.mjs    # fails if the duplicated widget settingsSchema OR defaultSize drifts (server ↔ front)
                            #   run via: npm run check:schema
   version.mjs              # CI version arithmetic (source of truth: version.txt), dry-runnable + selftest
+  assert-image-platforms.sh  # CI guard: a published image must be a manifest list with amd64 + arm64
 server/
   index.js                 # Hono bootstrap, static, routes, error handler
   config.js                # env + config.json loader

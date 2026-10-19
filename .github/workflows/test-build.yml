@@ -1,18 +1,37 @@
 # =============================================================================
-# Homy — CI "image" workflow: validation, single image build, container smoke
-# test, and publication of the TEST image (`:test`) on ghcr.io.
+# Homy — CI "image" workflow: validation, ONE multi-arch image build,
+# per-platform container smoke test, and publication of the TEST image
+# (`:test`) on ghcr.io.
 #
 # Same working principle as Yuki (`.github/workflows/test-build.yml`), adapted
-# to a Node app with no front-end build step and no Go/agent binaries:
+# to a Node app with no front-end build step and no native module:
 #
 #   quality → npm ci + `npm run check:schema` + version.txt validation ;
-#   docker  → Compose-free local build of the image (built ONCE) + smoke test
-#             of the running container (`GET /api/health`, embedded version) ;
-#   publish → push `:test` + `:sha-<short>` (NEVER on pull_request).
+#   image   → ONE multi-arch build (`linux/amd64` + `linux/arm64`, QEMU),
+#             pushed as `:sha-<short>`, then the manifest guard
+#             (`scripts/assert-image-platforms.sh`) and a smoke test of BOTH
+#             platforms (`GET /api/health` + embedded version) ;
+#   publish → promotes that very manifest list to `:test` (no rebuild), then
+#             re-asserts the platforms of the published tag.
 #
-# Why the image is built once and shipped between jobs: the image that is
-# published is EXACTLY the image that was smoke-tested, with no second build
-# that could diverge. (Same rationale as Yuki.)
+# WHY the test build is multi-arch (regression fixed here):
+#   The test image used to be `docker build --platform linux/amd64`, i.e. a
+#   SINGLE-platform image. Running it on an arm64 host (Raspberry Pi, ARM NAS,
+#   Apple Silicon) produced an endless restart loop:
+#
+#       exec /usr/local/bin/docker-entrypoint.sh: exec format error
+#
+#   `docker build` succeeded on the amd64 runner, so CI stayed green while the
+#   container could not start on arm64. Test and release now publish the SAME
+#   platform set, and the guard fails the run if a platform ever goes missing
+#   again (fail fast instead of a container that restarts forever).
+#
+# Why the image is built exactly once: a multi-platform image cannot be
+# `docker load`ed, so the build is pushed to the immutable `:sha-<short>` tag
+# first, smoke-tested there, and only then promoted to the floating `:test`
+# tag with `docker buildx imagetools create` (a registry-side copy of the
+# manifest list: no rebuild, no re-push of layers, same digests). The image
+# behind `:test` is therefore always one that booted successfully.
 #
 # Tag policy — do not blur the two workflows:
 #   * this file owns `:test` (throwaway) and `:sha-<short>` (immutable);
@@ -58,12 +77,15 @@ env:
   # name: it follows the repository.
   IMAGE_REPOSITORY: ${{ github.repository }}
   NODE_VERSION: '24'
-  # Local, unpublished tag used by the `docker` job (never pushed as-is).
-  IMAGE_LOCAL_TAG: homy-ci:test
+  # THE platform set published by this workflow. It MUST match `release.yml`
+  # (same two architectures): a host that can run a release must also be able
+  # to run `:test`. Kept as a single env value so the build and the guard
+  # below can never disagree.
+  IMAGE_PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Quality gate: `docker` and `publish` depend on it.
+  # Quality gate: `image` and `publish` depend on it.
   # ---------------------------------------------------------------------------
   quality:
     name: Schema sync & version validation
@@ -93,23 +115,42 @@ jobs:
         run: node scripts/version.mjs validate
 
   # ---------------------------------------------------------------------------
-  # Local image build (linux/amd64, native runner) + container smoke test.
+  # Build (multi-arch) + platform guard + smoke test of EVERY platform.
   #
-  # A plain `docker build` is used on purpose: Homy has no Compose-only
-  # requirement, the base `docker-compose.yml` pulls the published image, and
-  # building once here is all that is needed. Test builds stay amd64-only
-  # (fast, native); multi-arch is reserved to `release.yml`.
+  # * push / workflow_dispatch: `docker/build-push-action` builds and pushes
+  #   the manifest list to `:sha-<short>`; the smoke test then runs the
+  #   PUBLISHED image, one platform at a time (`docker run --platform ...`).
+  #   arm64 is executed under QEMU, which is exactly the code path the arm64
+  #   user runs natively — if the arm64 image were broken, this job fails.
+  # * pull_request: a single `linux/amd64` image is built and `load`ed locally
+  #   (nothing is ever published from a PR), then smoke-tested the same way.
+  #
+  # QEMU is only set up when a cross-build or an emulated run is needed.
   # ---------------------------------------------------------------------------
-  docker:
-    name: Build & smoke test
+  image:
+    name: Build & smoke test (every published platform)
     needs: quality
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      ref: ${{ steps.meta.outputs.ref }}
+      platforms: ${{ steps.meta.outputs.platforms }}
+      sha_short: ${{ steps.meta.outputs.sha_short }}
+      version: ${{ steps.meta.outputs.version }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Resolve build metadata
         id: meta
+        env:
+          # Context passed through `env` (never interpolated into the script):
+          # avoids shell injection and centralises derivation.
+          REPOSITORY: ${{ env.IMAGE_REPOSITORY }}
+          REGISTRY: ${{ env.REGISTRY }}
+          EVENT_NAME: ${{ github.event_name }}
+          ALL_PLATFORMS: ${{ env.IMAGE_PLATFORMS }}
         run: |
           set -euo pipefail
           VERSION="$(node scripts/version.mjs show)"
@@ -118,87 +159,191 @@ jobs:
             echo "::error::invalid short sha: '${SHA_SHORT}'"
             exit 1
           fi
+          if [ -z "${REPOSITORY:-}" ]; then
+            echo "::error::github.repository is empty — cannot derive the image name"
+            exit 1
+          fi
+
+          IMAGE="${REGISTRY}/$(printf '%s' "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            # Local-only tag: the PR image is never pushed, and a PR runner
+            # cannot run an emulated arm64 container reliably: amd64 only.
+            REF="homy-ci:pr-${SHA_SHORT}"
+            PLATFORMS="linux/amd64"
+          else
+            PLATFORMS="${ALL_PLATFORMS}"
+            # Immutable, per-commit tag. It is pushed BEFORE the smoke test
+            # (a multi-platform image cannot be loaded locally); see the
+            # header comment.
+            REF="${IMAGE}:sha-${SHA_SHORT}"
+          fi
+
           {
             echo "version=${VERSION}"
             echo "sha_short=${SHA_SHORT}"
+            echo "image=${IMAGE}"
+            echo "ref=${REF}"
+            echo "platforms=${PLATFORMS}"
           } >> "${GITHUB_OUTPUT}"
-          echo "Version: ${VERSION} (sha-${SHA_SHORT})"
+          echo "Version  : ${VERSION} (sha-${SHA_SHORT})"
+          echo "Image    : ${REF}"
+          echo "Platforms: ${PLATFORMS}"
 
-      - name: Build the image
-        env:
-          LOCAL_TAG: ${{ env.IMAGE_LOCAL_TAG }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          GIT_COMMIT: ${{ steps.meta.outputs.sha_short }}
-        run: |
-          set -euo pipefail
-          docker build \
-            --platform linux/amd64 \
-            --build-arg "VERSION=${VERSION}" \
-            --build-arg "GIT_COMMIT=${GIT_COMMIT}" \
-            -t "${LOCAL_TAG}" .
-          docker image inspect "${LOCAL_TAG}" >/dev/null
-
-      # Smoke test: the container must reach a healthy state and embed the
-      # version injected above (guards the Dockerfile build args).
-      - name: Smoke test the container
-        env:
-          LOCAL_TAG: ${{ env.IMAGE_LOCAL_TAG }}
-          EXPECTED_VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          set -euo pipefail
-          NAME="homy-ci-smoke-${GITHUB_RUN_ID}"
-          trap 'docker rm -f "${NAME}" >/dev/null 2>&1 || true' EXIT
-
-          docker run -d --name "${NAME}" -p 18080:3000 "${LOCAL_TAG}" >/dev/null
-
-          healthy=0
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/api/health >/dev/null 2>&1; then
-              healthy=1
-              break
-            fi
-            sleep 2
-          done
-          if [ "${healthy}" != "1" ]; then
-            echo "::error::container never answered GET /api/health"
-            docker logs "${NAME}" || true
-            exit 1
-          fi
-
-          echo "GET /api/health:"
-          curl -fsS http://127.0.0.1:18080/api/health
-          echo
-
-          IMAGE_VERSION="$(docker run --rm --entrypoint cat "${LOCAL_TAG}" /app/version.txt | tr -d '[:space:]')"
-          if [ "${IMAGE_VERSION}" != "${EXPECTED_VERSION}" ]; then
-            echo "::error::image embeds version '${IMAGE_VERSION}', expected '${EXPECTED_VERSION}'"
-            exit 1
-          fi
-          echo "Embedded version OK: ${IMAGE_VERSION}"
-
-      - name: Export the built image (for the publish job)
-        # Useless on PR: `publish` never runs there, so no artifact to upload.
+      - name: Set up QEMU (arm64 cross-build + emulated run)
         if: github.event_name != 'pull_request'
-        env:
-          LOCAL_TAG: ${{ env.IMAGE_LOCAL_TAG }}
-          ARCHIVE: ${{ runner.temp }}/homy-image.tar.gz
-        run: |
-          set -euo pipefail
-          if ! docker image inspect "${LOCAL_TAG}" >/dev/null 2>&1; then
-            echo "::error::image '${LOCAL_TAG}' missing after the smoke test"
-            exit 1
-          fi
-          docker save "${LOCAL_TAG}" | gzip -1 > "${ARCHIVE}"
-          echo "Exported archive: $(du -h "${ARCHIVE}" | cut -f1)"
+        uses: docker/setup-qemu-action@v4
 
-      - name: Upload the built image as an artifact
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: docker/login-action@v4
         with:
-          name: homy-image
-          path: ${{ runner.temp }}/homy-image.tar.gz
-          retention-days: 1
-          if-no-files-found: error
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ONE build, in a single step: the manifest list pushed here is the one
+      # smoke-tested below and promoted to `:test` by `publish`.
+      - name: Build the image (multi-arch on push / amd64-only on PR)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # Resolved in the metadata step: PR → `linux/amd64` (local only),
+          # push/dispatch → `linux/amd64,linux/arm64`.
+          platforms: ${{ steps.meta.outputs.platforms }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.ref }}
+          build-args: |
+            GIT_COMMIT=${{ steps.meta.outputs.sha_short }}
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          # GitHub Actions cache is not writable from fork PRs: only export on
+          # push/dispatch (the release workflow reads the same cache).
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
+
+      # Fail fast if the registry does not expose BOTH architectures. This is
+      # the guard that turns the original bug (amd64-only `:test`, container
+      # stuck in `exec format error`) into an explicit CI error.
+      - name: Guard the published manifest (both platforms)
+        if: github.event_name != 'pull_request'
+        env:
+          REF: ${{ steps.meta.outputs.ref }}
+          PLATFORMS: ${{ steps.meta.outputs.platforms }}
+        run: |
+          set -euo pipefail
+          EXPECTED="$(printf '%s' "${PLATFORMS}" | tr ',' ' ')"
+          # shellcheck disable=SC2086 # word splitting on the platform list is intended
+          sh scripts/assert-image-platforms.sh "${REF}" ${EXPECTED}
+
+      # Smoke test EVERY published platform. On an amd64 runner the amd64 leg
+      # is native and the arm64 leg runs under QEMU (so the arm64 image is
+      # proven to boot, not merely present in the manifest).
+      - name: Smoke test the container (each platform)
+        env:
+          REF: ${{ steps.meta.outputs.ref }}
+          PLATFORMS: ${{ steps.meta.outputs.platforms }}
+          EXPECTED_VERSION: ${{ steps.meta.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          # `true` on push/dispatch: the image lives in the registry and must
+          # be pulled. `false` on PR: it is already loaded locally.
+          PUSHED: ${{ github.event_name != 'pull_request' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${REF:-}" ]; then
+            echo "::error::empty image reference — metadata step failed"
+            exit 1
+          fi
+
+          CLEANUP=""
+          # Never leave a container (or a busy port) behind on failure.
+          # shellcheck disable=SC2329 # invoked through the EXIT trap
+          cleanup() {
+            # shellcheck disable=SC2086 # intentional word splitting
+            for name in ${CLEANUP}; do
+              docker rm -f "${name}" >/dev/null 2>&1 || true
+            done
+          }
+          trap cleanup EXIT
+
+          INDEX=0
+          for PLATFORM in $(printf '%s' "${PLATFORMS}" | tr ',' ' '); do
+            INDEX=$((INDEX + 1))
+            SAFE_PLATFORM="$(printf '%s' "${PLATFORM}" | tr '/' '-')"
+            NAME="homy-smoke-${SAFE_PLATFORM}-${GITHUB_RUN_ID}"
+            PORT=$((18080 + INDEX))
+            CLEANUP="${CLEANUP} ${NAME}"
+
+            if [ "${PLATFORM}" = "linux/arm64" ]; then
+              EXPECTED_MACHINE="aarch64"
+            else
+              EXPECTED_MACHINE="x86_64"
+            fi
+
+            echo "::group::Smoke test ${PLATFORM}"
+
+            # A multi-platform manifest list only yields a runnable image once
+            # a platform is selected explicitly.
+            if [ "${PUSHED}" = "true" ]; then
+              docker pull --platform "${PLATFORM}" "${REF}"
+            fi
+
+            # Proof that this variant really is the requested architecture —
+            # and, for arm64 on an amd64 runner, that QEMU is in place. This is
+            # the direct check for the original `exec format error` class.
+            MACHINE="$(docker run --rm --platform "${PLATFORM}" --entrypoint uname "${REF}" -m)"
+            if [ "${MACHINE}" != "${EXPECTED_MACHINE}" ]; then
+              echo "::error::${PLATFORM}: container reports '${MACHINE}', expected '${EXPECTED_MACHINE}'"
+              exit 1
+            fi
+            echo "Container architecture: ${MACHINE} (${PLATFORM})"
+
+            docker run -d --name "${NAME}" --platform "${PLATFORM}" \
+              -p "${PORT}:3000" "${REF}" >/dev/null
+
+            healthy=0
+            for _ in $(seq 1 90); do
+              if curl -fsS "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+                healthy=1
+                break
+              fi
+              # Do not wait 3 minutes on a container that already crashed.
+              if ! docker inspect -f '{{.State.Running}}' "${NAME}" 2>/dev/null | grep -qx true; then
+                echo "::error::${PLATFORM}: container exited before becoming healthy"
+                docker logs "${NAME}" || true
+                exit 1
+              fi
+              sleep 2
+            done
+            if [ "${healthy}" != "1" ]; then
+              echo "::error::${PLATFORM}: container never answered GET /api/health"
+              docker logs "${NAME}" || true
+              exit 1
+            fi
+
+            echo "GET /api/health (${PLATFORM}):"
+            curl -fsS "http://127.0.0.1:${PORT}/api/health"
+            echo
+
+            # Guards the Dockerfile build args (VERSION injected from CI).
+            IMAGE_VERSION="$(docker run --rm --platform "${PLATFORM}" \
+              --entrypoint cat "${REF}" /app/version.txt | tr -d '[:space:]')"
+            if [ "${IMAGE_VERSION}" != "${EXPECTED_VERSION}" ]; then
+              echo "::error::${PLATFORM}: image embeds version '${IMAGE_VERSION}', expected '${EXPECTED_VERSION}'"
+              exit 1
+            fi
+            echo "Embedded version OK: ${IMAGE_VERSION}"
+
+            docker rm -f "${NAME}" >/dev/null 2>&1 || true
+            echo "::endgroup::"
+          done
+
+          echo "All platforms healthy: $(printf '%s' "${PLATFORMS}" | tr ',' ' ')"
+          echo "Manifest digest: ${DIGEST:-unknown}"
 
   # ---------------------------------------------------------------------------
   # Publish the TEST image (`:test` + `:sha-<short>`) on ghcr.io.
@@ -207,69 +352,22 @@ jobs:
   # NEVER on `pull_request` — (1) a `:test` pushed from a PR would overwrite the
   # tag with unmerged code; (2) package writes are not granted to fork PRs.
   #
-  # The image is the one built and smoke-tested by the `docker` job (artifact):
-  # it is NOT rebuilt.
+  # `:sha-<short>` was already pushed by the `image` job; `:test` is promoted
+  # here, AFTER the smoke test, from the exact digest that was validated.
+  # Promotion is a registry-side manifest copy: no rebuild, no re-push of the
+  # platform layers (cost: a few hundred milliseconds and a few hundred bytes).
   # ---------------------------------------------------------------------------
   publish:
     name: Publish ghcr :test
-    needs: [quality, docker]
+    needs: [quality, image]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Download the built image
-        uses: actions/download-artifact@v4
-        with:
-          name: homy-image
-          path: ${{ runner.temp }}
-
-      - name: Load the image and resolve the reference
-        id: meta
-        env:
-          # Context passed through `env` (never interpolated into the script):
-          # avoids shell injection and centralises derivation.
-          REPOSITORY: ${{ env.IMAGE_REPOSITORY }}
-          REGISTRY: ${{ env.REGISTRY }}
-          LOCAL_TAG: ${{ env.IMAGE_LOCAL_TAG }}
-          ARCHIVE: ${{ runner.temp }}/homy-image.tar.gz
-        run: |
-          set -euo pipefail
-
-          if [ -z "${REPOSITORY:-}" ]; then
-            echo "::error::github.repository is empty — cannot derive the image name"
-            exit 1
-          fi
-          if [ ! -f "${ARCHIVE}" ]; then
-            echo "::error::image archive not found: ${ARCHIVE}"
-            exit 1
-          fi
-
-          gunzip -c "${ARCHIVE}" | docker load
-          if ! docker image inspect "${LOCAL_TAG}" >/dev/null 2>&1; then
-            echo "::error::image '${LOCAL_TAG}' missing after 'docker load'"
-            exit 1
-          fi
-
-          # ghcr.io only accepts lowercase references.
-          IMAGE="${REGISTRY}/$(printf '%s' "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
-          SHA_SHORT="$(git rev-parse --short HEAD)"
-          if ! printf '%s' "${SHA_SHORT}" | grep -Eq '^[0-9a-f]+$'; then
-            echo "::error::invalid short sha: '${SHA_SHORT}'"
-            exit 1
-          fi
-
-          docker tag "${LOCAL_TAG}" "${IMAGE}:test"
-          docker tag "${LOCAL_TAG}" "${IMAGE}:sha-${SHA_SHORT}"
-
-          {
-            echo "image=${IMAGE}"
-            echo "sha_short=${SHA_SHORT}"
-          } >> "${GITHUB_OUTPUT}"
-
-          echo "Image: ${IMAGE}"
-          echo "Tags : ${IMAGE}:test, ${IMAGE}:sha-${SHA_SHORT}"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -278,19 +376,55 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push :test and :sha-<short>
+      - name: Promote the smoke-tested digest to :test
+        id: promote
         env:
-          IMAGE: ${{ steps.meta.outputs.image }}
-          SHA_SHORT: ${{ steps.meta.outputs.sha_short }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          SHA_SHORT: ${{ needs.image.outputs.sha_short }}
+          DIGEST: ${{ needs.image.outputs.digest }}
         run: |
           set -euo pipefail
-          docker push "${IMAGE}:test"
-          docker push "${IMAGE}:sha-${SHA_SHORT}"
+
+          if [ -z "${IMAGE:-}" ] || [ -z "${SHA_SHORT:-}" ]; then
+            echo "::error::missing image metadata from the 'image' job"
+            exit 1
+          fi
+          if ! printf '%s' "${SHA_SHORT}" | grep -Eq '^[0-9a-f]+$'; then
+            echo "::error::invalid short sha: '${SHA_SHORT}'"
+            exit 1
+          fi
+
+          # Promote by DIGEST when the build reported one (identity is then
+          # explicit, immune to a concurrent re-push of `:sha-<short>`), and
+          # fall back to the immutable tag otherwise.
+          if [ -n "${DIGEST:-}" ]; then
+            SOURCE="${IMAGE}@${DIGEST}"
+          else
+            SOURCE="${IMAGE}:sha-${SHA_SHORT}"
+          fi
+
+          docker buildx imagetools create --tag "${IMAGE}:test" "${SOURCE}"
+          echo "Promoted ${SOURCE} → ${IMAGE}:test"
+
+      # The published tag must stay a multi-platform manifest list: this is
+      # the exact regression that made the container loop with
+      # `exec format error` on arm64 hosts.
+      - name: Guard the published :test manifest (both platforms)
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          PLATFORMS: ${{ needs.image.outputs.platforms }}
+        run: |
+          set -euo pipefail
+          EXPECTED="$(printf '%s' "${PLATFORMS}" | tr ',' ' ')"
+          # shellcheck disable=SC2086 # word splitting on the platform list is intended
+          sh scripts/assert-image-platforms.sh "${IMAGE}:test" ${EXPECTED}
 
       - name: Summary
         env:
-          IMAGE: ${{ steps.meta.outputs.image }}
-          SHA_SHORT: ${{ steps.meta.outputs.sha_short }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          SHA_SHORT: ${{ needs.image.outputs.sha_short }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          PLATFORMS: ${{ needs.image.outputs.platforms }}
         run: |
           set -euo pipefail
           {
@@ -300,6 +434,9 @@ jobs:
             echo "| --- | --- |"
             echo "| throwaway | \`${IMAGE}:test\` |"
             echo "| immutable | \`${IMAGE}:sha-${SHA_SHORT}\` |"
+            echo
+            echo "- Platforms: \`${PLATFORMS}\` (manifest list, smoke-tested per platform)."
+            echo "- Manifest digest: \`${DIGEST:-n/a}\`"
             echo
             echo "> Release tags (\`:latest\`, \`:<version>\`) are NOT touched by this workflow."
           } >> "${GITHUB_STEP_SUMMARY}"

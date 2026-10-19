@@ -22,8 +22,12 @@
 # never silently republished nor silently skipped.
 #
 # Homy keeps multi-arch (`linux/amd64`, `linux/arm64`) like its existing
-# release convention (lightweight Node app, no GPU) — the test build stays
-# amd64-only.
+# release convention (lightweight Node app, no GPU). The test build publishes
+# the SAME two platforms since the `:test` image used to be amd64-only, which
+# broke every arm64 host with `exec format error`. Both workflows read the
+# platform set from their `IMAGE_PLATFORMS` env, and both assert the published
+# manifest list with `scripts/assert-image-platforms.sh` (fail fast instead of
+# a container that restarts forever).
 # =============================================================================
 name: Release image
 
@@ -50,6 +54,9 @@ env:
   # built. Never hardcode the image name.
   IMAGE_REPOSITORY: ${{ github.repository }}
   NODE_VERSION: '24'
+  # THE platform set published by this workflow. It MUST match
+  # `test-build.yml` (same two architectures).
+  IMAGE_PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -170,10 +177,11 @@ jobs:
 
       # --- 3. Build and push the image with the CURRENT version --------------
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ env.IMAGE_PLATFORMS }}
           push: true
           build-args: |
             GIT_COMMIT=${{ env.SHA_SHORT }}
@@ -184,6 +192,20 @@ jobs:
             ${{ env.IMAGE }}:sha-${{ env.SHA_SHORT }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Fail fast if the registry does not expose BOTH architectures: an
+      # amd64-only release would leave every arm64 host with an endless
+      # `exec format error` restart loop (the bug that hit `:test`). Runs
+      # BEFORE the version bump, so a broken manifest never gets recorded.
+      - name: Guard the published manifest (both platforms)
+        env:
+          PLATFORMS: ${{ env.IMAGE_PLATFORMS }}
+        run: |
+          set -euo pipefail
+          EXPECTED="$(printf '%s' "${PLATFORMS}" | tr ',' ' ')"
+          # shellcheck disable=SC2086 # word splitting on the platform list is intended
+          sh scripts/assert-image-platforms.sh "${IMAGE}:${VERSION}" ${EXPECTED}
+          sh scripts/assert-image-platforms.sh "${IMAGE}:latest" ${EXPECTED}
 
       # --- 4. Increment the version (AFTER the image push) -------------------
       - name: Increment version.txt (PATCH)
@@ -220,6 +242,9 @@ jobs:
             echo "| version | \`${IMAGE}:${VERSION}\` |"
             echo "| latest | \`${IMAGE}:latest\` |"
             echo "| immutable | \`${IMAGE}:sha-${SHA_SHORT}\` |"
+            echo
+            echo "- Platforms: \`${IMAGE_PLATFORMS}\` (manifest list, guarded above)."
+            echo "- Manifest digest: \`${{ steps.build.outputs.digest }}\`"
             echo
             echo "Next version: \`${NEXT_VERSION}\` (bump commit pushed by this workflow)."
             echo "No Git tag and no GitHub Release are created: \`version.txt\` is the source of truth (same convention as Yuki/Docky)."
