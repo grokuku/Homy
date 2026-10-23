@@ -1674,19 +1674,36 @@ body.lasso-active * { cursor: crosshair !important; user-select: none; }
 .group-tile[data-label-pos='top'] .tile-core { flex-direction: column-reverse; }
 .group-tile[data-label-pos='left'] .tile-core { flex-direction: row-reverse; }
 .group-tile[data-label-pos='right'] .tile-core { flex-direction: row; }
+/* ---------- Icon box: ALWAYS square (1:1) ----------
+   WHY: the trame is anisotropic whenever the VIEW canvas stretches (bounded
+   ±20 % « fill » fit), so the tile box is a RECTANGLE. The icon must NEVER
+   follow that deformation — an icon squeezed into a non-square viewport is
+   either stretched (raster <img>) or letterboxed (SVG), which is exactly the
+   « icons are deformed » defect. The icon therefore gets its own SQUARE box,
+   sized from the SMALLER side of the tile's real box:
+
+     --tile-icon-pct        iconSize / 100          (0.08 … 1.2)
+     --tile-icon-chrome-w/h px eaten by the tile's inner padding + the sibling
+                            blocks (label / monitoring / controls), PER AXIS
+
+   The length is computed TWICE from ONE expression, so the box is square by
+   construction whatever the tile aspect, and it re-resolves by itself when the
+   window (and therefore the cell) resizes — no JS re-render needed.
+   `100cqw`/`100cqh` measure the TILE (`.group-tile` is a size container), i.e.
+   its CONTENT box — the tile's own border/padding are already excluded.
+   Browsers without container-query units keep the px fallback computed by
+   applyTileMetrics (--tile-icon-px). */
 .tile-icon {
   display: flex;
   align-items: center;
   justify-content: center;
   width: var(--tile-icon-px, 24px);
   height: var(--tile-icon-px, 24px);
-  /* Belt-and-braces: never larger than the space actually available, even if a
-     caller sets a --tile-icon-px that does not fit (allow-overflow re-opens it). */
-  max-width: 100%;
-  max-height: 100%;
+  /* Never shrunk on ONE axis only: a flex column would happily shrink the
+     height of its main axis and leave the width untouched (= distortion). */
+  flex: 0 0 auto;
   font-size: var(--tile-icon-px, 24px);
   line-height: 1;
-  flex: 0 1 auto;
   /* ELEMENT-level icon colour: `element.iconColor` is applied inline by
      renderButtonTile as --tile-icon-color on the tile. `var(--text)` when unset
      keeps the historical look. Only monochrome / currentColor glyphs follow it;
@@ -1694,6 +1711,21 @@ body.lasso-active * { cursor: crosshair !important; user-select: none; }
   color: var(--tile-icon-color, var(--text));
   overflow: hidden;
 }
+@supports (width: 1cqw) {
+  .tile-icon {
+    --tile-icon-size: calc(
+      var(--tile-icon-pct, 0.55) *
+        min(100cqw - var(--tile-icon-chrome-w, 4px), 100cqh - var(--tile-icon-chrome-h, 4px))
+    );
+    width: var(--tile-icon-size);
+    height: var(--tile-icon-size);
+    font-size: var(--tile-icon-size);
+  }
+}
+/* Icon glyphs (raster <img> included) fill their SQUARE box: `object-fit:
+   contain` + the SVG's `preserveAspectRatio="xMidYMid meet"` both preserve the
+   artwork's own aspect even if the box were ever to be clamped. */
+.tile-icon-img { object-fit: contain; }
 /* Advanced option « allow icon overflow »: let the icon spill instead of clip.
    BOTH the icon box AND the main zone must stop clipping — the main zone used
    to keep `overflow: hidden`, which cropped the spilling glyph and made the
@@ -1723,6 +1755,48 @@ body.lasso-active * { cursor: crosshair !important; user-select: none; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* ---------- labelPosition: overlay (label ON TOP of the icon) ----------
+   The label is CENTRED over the icon instead of taking its own slot: no axis is
+   consumed, so the icon keeps the whole tile (see iconChrome() in
+   elements/button.js). It must stay readable on ANY background — theme surface,
+   explicit tile colour, dashboard background image, dark AND light theme — so it
+   sits on a translucent theme-tinted pill (same colour family as the tile
+   surface, alpha-blended) plus a soft halo drawn in the OPPOSITE tonal direction
+   (--bg): light text gets a dark halo in dark mode, dark text a light one in
+   light mode, with no per-theme rule.
+   Long names are clamped to 2 lines with an ellipsis and can never escape the
+   tile: the box is inset 0/0 inside the (centred, max-100 %) core, so it is
+   bounded by the tile's content box.
+   `data-icon='off'` (no icon painted) falls back to the normal flow, so an
+   icon-less tile still shows its label. */
+.group-tile[data-label-pos='overlay'][data-icon='on'] .tile-core { position: relative; width: 100%; }
+.group-tile[data-label-pos='overlay'][data-icon='on'] .tile-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  max-height: calc(2.3em + 2px); /* 2 whole lines at line-height 1.15 + the 1 px vertical padding */
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--tile-surface-color, var(--bg-elev-2)) 68%, transparent);
+  color: var(--text);
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--bg) 55%, transparent);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  /* Pure decoration: never steal a click / a drag / a link hover from the tile. */
+  pointer-events: none;
+}
+/* In the overlay mode the label overlays the glyph, so the tile does NOT need
+   to reserve room for it in the compact-typography queries either: keep 10 px
+   so two short lines fit a 2×2 tile. */
+@container (max-width: 64px) {
+  .group-tile[data-label-pos='overlay'][data-icon='on'] .tile-label { font-size: 10px; }
 }
 /* Health dot — DEGRADED state: grey (unknown), never green/red until Docky. */
 .tile-health {

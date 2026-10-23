@@ -139,9 +139,11 @@ function renderObjectTile(container, item, context = {}) {
   host.style.height = '100%';
   host.style.gridTemplateColumns = `repeat(${w}, 1fr)`;
   host.style.gridTemplateRows = `repeat(${h}, 1fr)`;
-  // px per fine cell (used only to scale the icon); fall back to a sensible
-  // value when the cell is not laid out yet.
-  const step = container.clientWidth > 0 ? container.clientWidth / w : 20;
+  // px per FINE CELL, measured on BOTH axes: the trame is anisotropic when the
+  // VIEW canvas is stretched (bounded ±20 % fill fit), so deriving the cell from
+  // the width alone would size the tile's icon from a wrong height. Fall back to
+  // the width (or a sane default) when the content box is not laid out yet.
+  const step = objectCell(container, w, h);
   const element = catalog.get(item.elementId);
   let tile;
   if (item.kind === 'report') {
@@ -157,6 +159,19 @@ function renderObjectTile(container, item, context = {}) {
   host.appendChild(tile.el);
   container.appendChild(host);
   return tile.dispose;
+}
+
+/**
+ * Measured fine-cell size (px) of an object's cell for a `w × h` placement.
+ * `{ w, h }` so a stretched (non-square) trame is honoured on both axes.
+ */
+function objectCell(container, w, h) {
+  const width = container?.clientWidth > 0 ? container.clientWidth : 0;
+  const height = container?.clientHeight > 0 ? container.clientHeight : 0;
+  const fallback = 22.5;
+  const cellW = width > 0 ? width / w : height > 0 ? height / h : fallback;
+  const cellH = height > 0 ? height / h : cellW;
+  return { w: cellW, h: cellH };
 }
 
 /**

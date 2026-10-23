@@ -716,7 +716,9 @@ const ICON_SIZE_MAX = 120;
 const ICON_SIZE_DEFAULT = 55;
 const ICON_SIZE_STEP = 0.5;
 const ICON_SIZE_PRESETS = { S: 40, M: 55, L: 70, XL: 85, Fill: 100 };
-const LABEL_POSITIONS = new Set(['bottom', 'top', 'left', 'right']);
+// `overlay` = the label is centred ON TOP of the icon (translucent pill) instead
+// of taking its own slot beside it. Mirrors layout.routes.js / elements/button.js.
+const LABEL_POSITIONS = new Set(['bottom', 'top', 'left', 'right', 'overlay']);
 const SURFACE_OPACITY_MIN = 0;
 const SURFACE_OPACITY_MAX = 100;
 const SURFACE_OPACITY_DEFAULT = 100;

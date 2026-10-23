@@ -51,26 +51,53 @@ export const CANVAS_ASPECT = GRID_COLUMNS / GRID_ROWS;
 export const CELL_ASPECT_TOLERANCE = 0.2;
 
 /**
- * Fit the 32×18 canvas into an available content box (CSS px).
+ * DEAD BAND around a perfectly square cell, applied BEFORE the bounded stretch.
  *
- *   cellAspect = (availW / 32) / (availH / 18)   // 1 = square cell
+ * WHY: the fit box is the viewport MINUS the 20 px padding of `.grid-wrap`, so
+ * even an exactly 16:9 window yields a box that is not exactly 16:9
+ * (1920×1080 → 1880×1040 → cell anisotropy 1.7 %). Because that used to fall
+ * inside the ±20 % tolerance, the « fill » fit stretched every cell by ~2 % at
+ * every 16:9 resolution — visibly non-square tiles and a non-1:1 trame, for a
+ * purely geometric reason (the padding), not a design choice.
  *
- * When `cellAspect` is inside [1/(1+tol), 1+tol] the canvas FILLS the box
- * (mode « fill »): the 32 columns span the available width and the 18 rows the
- * available height, so cells are deformed by at most the tolerance. Otherwise
- * the fit falls back to a centered 16:9 canvas (mode « letterbox ») whose cells
- * stay square — the pre-fill behavior.
+ * A cell anisotropy inside ±CELL_ASPECT_SNAP therefore snaps to the EXACT 16:9
+ * letterbox: cells are then EXACTLY square (1.000) at any 16:9 window, at the
+ * price of at most ~1 % of unused margin on one axis. Beyond the dead band the
+ * documented bounded stretch still applies (up to ±tolerance).
+ *
+ * MUST stay < CELL_ASPECT_TOLERANCE (otherwise « fill » would be unreachable).
+ */
+export const CELL_ASPECT_SNAP = 0.02;
+
+/**
+ * Fit the 64×36 canvas into an available content box (CSS px).
+ *
+ *   cellAspect = (availW / 64) / (availH / 36)   // 1 = square cell
+ *
+ * Three regimes:
+ *  • |cellAspect − 1| ≤ snap → EXACT 16:9 letterbox: cells are perfectly square
+ *    (the tiny residual box difference is padding, not intent);
+ *  • snap < |cellAspect − 1| ≤ tol → « fill »: the canvas stretches to the whole
+ *    box, cells deformed by at most the tolerance;
+ *  • beyond → centered 16:9 letterbox again (cells stay square).
  *
  * Returns `{ mode, width, height, cellAspect }` or null for a non-measurable
  * box. Pure: callers decide how (and whether) to pin the result.
  */
-export function computeCanvasFit(availW, availH, tolerance = CELL_ASPECT_TOLERANCE) {
+export function computeCanvasFit(
+  availW,
+  availH,
+  tolerance = CELL_ASPECT_TOLERANCE,
+  snap = CELL_ASPECT_SNAP
+) {
   const w = Number(availW);
   const h = Number(availH);
   if (!(w > 0) || !(h > 0)) return null;
   const tol = Number.isFinite(tolerance) && tolerance >= 0 ? tolerance : CELL_ASPECT_TOLERANCE;
+  const band = Number.isFinite(snap) && snap >= 0 ? Math.min(snap, tol) : CELL_ASPECT_SNAP;
   const cellAspect = w / GRID_COLUMNS / (h / GRID_ROWS);
-  if (cellAspect >= 1 / (1 + tol) && cellAspect <= 1 + tol) {
+  const drift = Math.abs(cellAspect - 1);
+  if (drift > band && drift <= tol) {
     return { mode: 'fill', width: w, height: h, cellAspect };
   }
   const width = Math.min(w, h * CANVAS_ASPECT);

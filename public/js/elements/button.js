@@ -32,8 +32,10 @@ import { HolafIcons } from '../../vendor/holaf/holaf-icons.js';
  *                         tile's useful internal dimension (min side). The legacy
  *                         S | M | L | XL | Fill crans are still accepted and
  *                         coerced to 40/55/70/85/100 (see ICON_SIZE_PRESETS);
- *   - labelPosition     → bottom | top | left | right (default bottom): where the
- *                         label sits relative to the icon;
+ *   - labelPosition     → bottom | top | left | right | overlay (default bottom):
+ *                         where the label sits relative to the icon; `overlay`
+ *                         paints it CENTRED ON TOP of the icon (translucent
+ *                         pill, 2-line clamp) instead of giving it its own slot;
  *   - allowIconOverflow → advanced, default OFF: lets the icon spill outside the
  *                         tile box instead of being clipped.
  *
@@ -61,8 +63,10 @@ export const ICON_SIZE_PRESETS = { S: 40, M: 55, L: 70, XL: 85, Fill: 100 };
 // Legacy letter list — still exported for back-compat with older callers.
 export const ICON_SIZES = ['S', 'M', 'L', 'XL', 'Fill'];
 
-// Label placement crans (relative to the icon).
-export const LABEL_POSITIONS = ['bottom', 'top', 'left', 'right'];
+// Label placement crans (relative to the icon). `overlay` draws the label ON
+// TOP of the icon (centred, translucent pill) instead of giving it its own slot
+// below/above/beside it — see the `.tile-label` overlay rules in style.css.
+export const LABEL_POSITIONS = ['bottom', 'top', 'left', 'right', 'overlay'];
 export const LABEL_POSITION_DEFAULT = 'bottom';
 
 // Per-tile SURFACE options — the tile's own background box (independent from
@@ -246,7 +250,9 @@ export function normalizeButton(raw) {
 export function renderButtonTile({ button, element, step = 22.5, inset, editable = false } = {}) {
   const b = normalizeButton(button);
   const o = b.options;
-  const stepPx = Number.isFinite(Number(step)) && Number(step) > 0 ? Number(step) : 22.5;
+  // `step` = the object's fine cell, either a number (square cell) or `{w,h}`
+  // when the trame is anisotropic (VIEW « fill » fit) — see applyTileMetrics.
+  const stepPx = normalizeStep(step);
   const def = element && typeof element === 'object' ? element : null;
   const name = def ? String(def.name || '') : b.elementId ? 'Unknown element' : '';
   const iconValue = def ? String(def.icon || '') : '';
@@ -276,6 +282,9 @@ export function renderButtonTile({ button, element, step = 22.5, inset, editable
     'data-size': `${b.w}x${b.h}`,
     'data-icon-size': String(o.iconSize),
     'data-label-pos': o.labelPosition,
+    // Whether an icon is actually painted: the `overlay` label position only
+    // overlays a REAL icon (without one it stays in normal flow, see style.css).
+    'data-icon': hasIcon ? 'on' : 'off',
     'data-element-id': b.elementId,
   });
   applyTileMetrics(root, b, stepPx, inset);
@@ -532,7 +541,12 @@ export function wireViewNavigation(root, linkEl, url, editable) {
  * Shared by renderButtonTile (initial paint) and lot 4's in-trame move/resize,
  * so a tile dragged or resized by half a global cell keeps its icon correctly
  * re-fitted instead of keeping the icon size computed for its old footprint.
- * Never throws; `step` is the group's internal cell size in px.
+ * Never throws.
+ *
+ * `step` is the group's/object's internal cell size in px — either a single
+ * NUMBER (square cell) or `{ w, h }` when the trame is anisotropic (VIEW « fill »
+ * fit: cells deformed by up to ±20 %). Passing BOTH axes is what makes the icon
+ * box square on a stretched canvas: `wPx`/`hPx` are then the REAL tile box.
  *
  * `insetPx` is the optional trame inset (px) applied as a surface margin;
  * when omitted the tile's residual `surfaceInset` option is used, so nothing
@@ -542,9 +556,10 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5, insetPx) {
   if (!tileEl) return;
   const b = normalizeButton(rawButton);
   const o = b.options;
-  const stepPx = Number.isFinite(Number(step)) && Number(step) > 0 ? Number(step) : 22.5;
-  const wPx = b.w * stepPx;
-  const hPx = b.h * stepPx;
+  const cell = normalizeStep(step);
+  const wPx = b.w * cell.w;
+  const hPx = b.h * cell.h;
+  const inset = insetPx === undefined ? o.surfaceInset : insetPx;
   const iconPx = computeIconPx({
     wPx,
     hPx,
@@ -553,15 +568,45 @@ export function applyTileMetrics(tileEl, rawButton, step = 22.5, insetPx) {
     hasControls: o.controls,
     labelPosition: o.labelPosition,
     iconSize: o.iconSize,
-    surfaceInset: insetPx === undefined ? o.surfaceInset : insetPx,
+    surfaceInset: inset,
   });
   tileEl.style.gridColumn = `${b.col + 1} / span ${b.w}`;
   tileEl.style.gridRow = `${b.row + 1} / span ${b.h}`;
   tileEl.dataset.size = `${b.w}x${b.h}`;
+  tileEl.dataset.iconSize = String(o.iconSize);
+  tileEl.dataset.labelPos = o.labelPosition;
+  // Two complementary sizing channels for `.tile-icon` (style.css):
+  //   --tile-icon-px        px fallback, computed from the caller-known cell;
+  //   --tile-icon-pct + --tile-icon-chrome-w/-h
+  //                         the AUTHORITATIVE one — style.css resolves it
+  //                         against the tile's OWN measured box (`cqw`/`cqh`),
+  //                         so the icon stays square (same length on both
+  //                         axes) and re-sizes itself when the window does,
+  //                         without waiting for a re-render.
   tileEl.style.setProperty('--tile-icon-px', `${iconPx}px`);
+  tileEl.style.setProperty('--tile-icon-pct', String(o.iconSize / 100));
+  const chrome = iconChrome(o, inset);
+  tileEl.style.setProperty('--tile-icon-chrome-w', `${chrome.w}px`);
+  tileEl.style.setProperty('--tile-icon-chrome-h', `${chrome.h}px`);
   tileEl.style.setProperty('--tile-w-px', `${wPx}px`);
   tileEl.style.setProperty('--tile-h-px', `${hPx}px`);
   applyTileSurface(tileEl, o);
+}
+
+/** Normalize a `step` argument (number or `{ w, h }`) to a positive cell box. */
+function normalizeStep(step) {
+  const fallback = 22.5;
+  if (step && typeof step === 'object') {
+    const w = Number(step.w);
+    const h = Number(step.h);
+    return {
+      w: Number.isFinite(w) && w > 0 ? w : fallback,
+      h: Number.isFinite(h) && h > 0 ? h : Number.isFinite(w) && w > 0 ? w : fallback,
+    };
+  }
+  const n = Number(step);
+  const v = Number.isFinite(n) && n > 0 ? n : fallback;
+  return { w: v, h: v };
 }
 
 /**
@@ -1112,11 +1157,38 @@ function safeHolafGet(name) {
 // 4px of `.tile-main` padding and left the Fill crank 4px too big, clipped as
 // soon as `allowIconOverflow` lifted that clamp).
 const TILE_CHROME = 12;
+// Tile border (1 px/side) + padding (3 px/side): the part of TILE_CHROME that sits
+// OUTSIDE the tile's CONTENT box (the box `cqw`/`cqh` measure in style.css).
+const TILE_BORDER_BOX = 8;
 // Space (px) reserved for a sibling block so the icon never crowds it out of
 // the tile — the compact-typography guard of roadmap §A.7.
 const LABEL_RESERVE = 15;
 const MONITORING_RESERVE = 32;
 const CONTROLS_RESERVE = 28;
+
+/**
+ * Px removed from the TILE'S CONTENT BOX on each axis by the chrome and the
+ * sibling blocks. The tile's own border (1 px) and padding (3 px) already sit
+ * OUTSIDE that content box, so only `.tile-main`'s 2 px padding (×2 = 4 px) has
+ * to be accounted for — this is why the same numbers are usable both by the
+ * px fallback below and by `--tile-icon-chrome-w/-h` in style.css (where `100cqw`
+ * is exactly the tile's content-box width).
+ *
+ * `labelPosition: 'overlay'` consumes NO axis: the label is painted ON TOP of
+ * the icon, so the icon keeps the full box.
+ */
+function iconChrome(options, insetPx) {
+  const inset = normalizeSurfaceInset(insetPx) * 2;
+  let w = TILE_CHROME - TILE_BORDER_BOX + inset;
+  let h = TILE_CHROME - TILE_BORDER_BOX + inset;
+  if (options.hasLabel && options.labelPosition !== 'overlay') {
+    if (options.labelPosition === 'left' || options.labelPosition === 'right') w += LABEL_RESERVE;
+    else h += LABEL_RESERVE;
+  }
+  if (options.hasMonitoring) h += MONITORING_RESERVE;
+  if (options.hasControls) h += CONTROLS_RESERVE;
+  return { w: Math.max(0, w), h: Math.max(0, h) };
+}
 
 /**
  * Icon edge (px) for the tile's AVAILABLE space: the smaller of the two usable
@@ -1125,23 +1197,15 @@ const CONTROLS_RESERVE = 28;
  * large emoji can never spill out of a small tile onto its neighbours.
  *
  * `labelPosition` decides which axis the label consumes: top/bottom subtract a
- * height reserve, left/right a width reserve. `iconSize` is a percentage of the
- * resulting base (0.5-step, 8..120) — kept to 2 decimals so two adjacent slider
- * crans (e.g. 40 and 40.5) genuinely differ.
+ * height RESERVE, left/right a width RESERVE, and `overlay` subtracts nothing
+ * (it paints on top of the icon). `iconSize` is a percentage of the resulting
+ * base (0.5-step, 8..120) — kept to 2 decimals so two adjacent slider crans
+ * (e.g. 40 and 40.5) genuinely differ.
  */
 function computeIconPx({ wPx, hPx, hasLabel, hasMonitoring, hasControls, labelPosition, iconSize, surfaceInset = 0 }) {
-  // The surface inset is a margin INSIDE the grid cell: it shrinks the tile's
-  // content box by 2×inset, so the icon must be sized from the smaller box or
-  // it would overflow a heavily inset tile.
-  const inset = normalizeSurfaceInset(surfaceInset) * 2;
-  let availW = Math.max(0, wPx - TILE_CHROME - inset);
-  let availH = Math.max(0, hPx - TILE_CHROME - inset);
-  if (hasLabel) {
-    if (labelPosition === 'left' || labelPosition === 'right') availW -= LABEL_RESERVE;
-    else availH -= LABEL_RESERVE;
-  }
-  if (hasMonitoring) availH -= MONITORING_RESERVE;
-  if (hasControls) availH -= CONTROLS_RESERVE;
+  const chrome = iconChrome({ hasLabel, hasMonitoring, hasControls, labelPosition }, surfaceInset);
+  const availW = Math.max(0, wPx - TILE_BORDER_BOX - chrome.w);
+  const availH = Math.max(0, hPx - TILE_BORDER_BOX - chrome.h);
   const base = Math.max(1, Math.min(availW, availH));
   const pct = normalizeIconSize(iconSize);
   return Math.max(1, Math.round(base * pct) / 100);

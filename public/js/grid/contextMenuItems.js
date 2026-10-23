@@ -39,7 +39,7 @@ import {
   elementHasUrl,
 } from '../elements/button.js';
 
-const LABEL_POS_LABEL = { bottom: 'Bottom', top: 'Top', left: 'Left', right: 'Right' };
+const LABEL_POS_LABEL = { bottom: 'Bottom', top: 'Top', left: 'Left', right: 'Right', overlay: 'Overlay' };
 const SURFACE_SHAPE_LABEL = { rounded: 'Rounded', square: 'Square' };
 const TITLE_VISIBILITIES = [
   { value: 'always', label: 'Always' },
@@ -104,6 +104,7 @@ export function elementMenuItems({ info, element, deleteLabel = 'Delete', action
       items: LABEL_POSITIONS.map((pos) => ({
         type: 'action',
         label: LABEL_POS_LABEL[pos] || pos,
+        hint: pos === 'overlay' ? 'On top of the icon' : '',
         checked: (o.labelPosition || 'bottom') === pos,
         onSelect: () => set({ labelPosition: pos }),
       })),

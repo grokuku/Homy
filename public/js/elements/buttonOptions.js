@@ -93,8 +93,15 @@ const SWITCHES = [
 
 const CONFIRM_MS = 3000; // 2-step delete: window before the arm reverts
 
-// Human labels for the 4 label-position crans.
-const LABEL_POS_LABEL = { bottom: 'Bottom', top: 'Top', left: 'Left', right: 'Right' };
+// Human labels for the label-position crans (bottom/top/left/right/overlay).
+const LABEL_POS_LABEL = { bottom: 'Bottom', top: 'Top', left: 'Left', right: 'Right', overlay: 'Overlay' };
+const LABEL_POS_TITLE = {
+  bottom: 'Place the label under the icon',
+  top: 'Place the label above the icon',
+  left: 'Place the label left of the icon',
+  right: 'Place the label right of the icon',
+  overlay: 'Place the label ON TOP of the icon (centred, translucent pill)',
+};
 
 // Human labels for the 2 surface shapes.
 const SURFACE_SHAPE_LABEL = { rounded: 'Rounded', square: 'Square' };
@@ -291,7 +298,7 @@ export function openButtonOptions({ button, element, maxW = 4, maxH = 4, onUpdat
         type: 'button',
       });
       b.disabled = !labelOn;
-      b.title = labelOn ? `Place the label ${pos} of the icon` : 'Enable “Label” to change its position';
+      b.title = labelOn ? LABEL_POS_TITLE[pos] || `Place the label ${pos} of the icon` : 'Enable “Label” to change its position';
       b.addEventListener('click', () => {
         work.options.labelPosition = pos;
         onUpdate?.(normalizeButton(work));

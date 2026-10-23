@@ -1215,6 +1215,7 @@ $('logout-btn').addEventListener('click', async () => {
   stopModeAnim();
   stopPageAnim(); // drop any page-transition layer / timer too
   destroyGrid();
+  stopWatchDevicePixelRatio(); // drop the DPR watcher (re-armed on next boot)
   catalog.clear(); // drop the element cache (next session re-fetches)
   clearLocalIconCache(); // drop inlined local-icon SVGs
   dockyPoller.clear(); // drop Docky subscriptions + batch loop
@@ -1374,6 +1375,7 @@ window.addEventListener('auth:expired', () => {
   stopModeAnim(); // drop any pending mode-transition timer/rAF (see logout)
   stopPageAnim(); // drop any page-transition layer / timer (see logout)
   destroyGrid();
+  stopWatchDevicePixelRatio(); // drop the DPR watcher (same as logout)
   catalog.clear(); // drop the element cache (same as an explicit logout)
   clearLocalIconCache(); // drop inlined local-icon SVGs (same as logout)
   dockyPoller.clear(); // drop Docky subscriptions + batch loop (same as logout)
@@ -1384,34 +1386,107 @@ window.addEventListener('auth:expired', () => {
 
 // ---- Bootstrap -------------------------------------------------------------
 
-// Recompute the edit-preview dezoom whenever the available area changes
-// (window resize, topbar reflow, palette docking). Observing #dashboard-body
-// covers window resizes; the palette docking itself is handled explicitly in
-// setMode(). updatePreviewScale() is idempotent, so double fires are harmless.
-// syncBackgroundScope() runs after it because a resize can toggle the frame
-// (fallback threshold) and the background must follow the new host.
-if (typeof ResizeObserver !== 'undefined') {
-  new ResizeObserver(() => {
-    // Topbar height can wrap/change with the width: re-measure it FIRST so the
-    // collapse margin and the edit-preview dezoom both use the fresh value.
-    updateTopbarHeight();
-    // Re-measure the choreography inputs too (cluster/admin widths, bar grow).
-    measureTopbarGroups();
-    updateBarGrow();
-    // Re-pin the canvas box (the wrap resizes with the body — topbar
-    // animation, window resize, palette docking) BEFORE the dezoom math.
-    updateCanvasGeometry();
-    updatePreviewScale();
-    // Push the freshly computed row pitch into gridstack: with an explicit
-    // cellHeight it no longer derives it from clientWidth (its own
-    // ResizeObserver only does that for the 'auto' mode), so a window resize
-    // would otherwise keep the stale inline container height.
-    applyGridCellHeight(state.mode === 'edit' ? editCellHeight : viewCellHeight);
-    // Re-pin the group-box conversion unit + layer box to the fresh canvas box.
-    groupLayer.syncCanvas($('grid-container'));
-    syncBackgroundScope();
-  }).observe($('dashboard-body'));
+// Recompute the whole canvas pipeline whenever the available area changes
+// (window resize, topbar reflow, palette docking, DPR change).
+//
+// NOTE: the canvas container's box is ANIMATED (vendor `.grid-stack-animate`
+// keeps `transition: width/height .3s` on it), so `groupLayer.syncCanvas()`
+// here only pins the CURRENT (possibly mid-transition) box; the group layer's
+// own watchdog re-pins `--unit-w`/`--unit-h` as the box settles — see the
+// « Canvas box watchdog » note in grid/groups.js. Idempotent: safe to call from
+// any trigger.
+function refreshLayout() {
+  // Topbar height can wrap/change with the width: re-measure it FIRST so the
+  // collapse margin and the edit-preview dezoom both use the fresh value.
+  updateTopbarHeight();
+  // Re-measure the choreography inputs too (cluster/admin widths, bar grow).
+  measureTopbarGroups();
+  updateBarGrow();
+  // Re-pin the canvas box (the wrap resizes with the body — topbar
+  // animation, window resize, palette docking) BEFORE the dezoom math.
+  updateCanvasGeometry();
+  updatePreviewScale();
+  // Push the freshly computed row pitch into gridstack: with an explicit
+  // cellHeight it no longer derives it from clientWidth (its own
+  // ResizeObserver only does that for the 'auto' mode), so a window resize
+  // would otherwise keep the stale inline container height.
+  applyGridCellHeight(state.mode === 'edit' ? editCellHeight : viewCellHeight);
+  // Re-pin the group-box conversion unit + layer box to the fresh canvas box
+  // (and re-arm the watchdog on the container gridstack may have re-created).
+  groupLayer.syncCanvas($('grid-container'));
+  syncBackgroundScope();
+  // A resize is also the moment the armed DPR probe must be re-checked (the
+  // ratio may already have changed without a dispatchable media-query event).
+  watchDevicePixelRatio();
+  // Belt-and-braces: the container box animates for up to 300 ms (vendor
+  // `.grid-stack-animate`) and a ResizeObserver delivery can be coalesced away
+  // during a grid rebuild. One deferred re-sync after the transition
+  // guarantees convergence; syncCanvas() is idempotent so it costs nothing.
+  scheduleSettleSync();
 }
+
+// Observing #dashboard-body covers window resizes and topbar/palette reflows.
+// syncBackgroundScope() runs inside refreshLayout() because a resize can toggle
+// the frame (fallback threshold) and the background must follow the new host.
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(() => refreshLayout()).observe($('dashboard-body'));
+}
+
+// Deferred canvas settle (see refreshLayout). 340 ms > the 300 ms vendor
+// canvas transition; the timer is RE-ARMED, never stacked, and cancelled on
+// logout so nothing survives the session.
+const CANVAS_SETTLE_MS = 340;
+let settleSyncTimer = 0;
+function scheduleSettleSync() {
+  if (settleSyncTimer) clearTimeout(settleSyncTimer);
+  settleSyncTimer = setTimeout(() => {
+    settleSyncTimer = 0;
+    groupLayer.syncCanvas($('grid-container'));
+  }, CANVAS_SETTLE_MS);
+}
+function stopLayoutTimers() {
+  if (!settleSyncTimer) return;
+  clearTimeout(settleSyncTimer);
+  settleSyncTimer = 0;
+}
+
+// ---- Device pixel ratio tracking ----------------------------------------
+// Moving the window to a monitor with another pixel ratio (or zooming) changes
+// NOTHING in the CSS layout, so no ResizeObserver fires — yet the pinned integer
+// canvas box, the EDIT dezoom scale and every device-pixel rounding depend on
+// it. `matchMedia('(resolution: Xdppx)')` fires exactly once per ratio, hence
+// the re-arm: each change re-subscribes on the NEW ratio and re-runs the
+// geometry pipeline. Older engines without `resolution` support simply never
+// fire (no regression: the previous behaviour was no detection at all).
+let dprQuery = null;
+let dprArmed = 0; // devicePixelRatio the current query was built for
+function onDevicePixelRatioChange() {
+  watchDevicePixelRatio(); // re-arm on the new ratio before anything reads it
+  refreshLayout();
+}
+function watchDevicePixelRatio() {
+  if (typeof window.matchMedia !== 'function') return;
+  const dpr = window.devicePixelRatio || 1;
+  if (dprQuery && dprArmed === dpr) return; // already armed for the live ratio
+  if (dprQuery) dprQuery.removeEventListener('change', onDevicePixelRatioChange);
+  try {
+    dprQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    dprArmed = dpr;
+  } catch {
+    dprQuery = null;
+    dprArmed = 0;
+    return;
+  }
+  dprQuery.addEventListener('change', onDevicePixelRatioChange);
+}
+function stopWatchDevicePixelRatio() {
+  if (!dprQuery) return;
+  dprQuery.removeEventListener('change', onDevicePixelRatioChange);
+  dprQuery = null;
+  dprArmed = 0;
+  stopLayoutTimers(); // drop any pending deferred canvas re-sync too
+}
+watchDevicePixelRatio();
 
 async function boot() {
   try {

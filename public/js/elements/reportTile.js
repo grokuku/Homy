@@ -37,15 +37,37 @@ export function normalizeReport(raw) {
   };
 }
 
-/** Apply a report tile's grid placement (same inline grid contract as buttons). */
+/**
+ * Apply a report tile's grid placement (same inline grid contract as buttons).
+ * `step` is the fine cell size in px, either a NUMBER (square cell) or `{ w, h }`
+ * when the trame is anisotropic (VIEW « fill » fit) — same contract as
+ * applyTileMetrics in elements/button.js.
+ */
 export function applyReportMetrics(tileEl, rawReport, step = 22.5) {
   if (!tileEl) return;
   const r = normalizeReport(rawReport);
+  const cell = normalizeStep(step);
   tileEl.style.gridColumn = `${r.col + 1} / span ${r.w}`;
   tileEl.style.gridRow = `${r.row + 1} / span ${r.h}`;
   tileEl.dataset.size = `${r.w}x${r.h}`;
-  tileEl.style.setProperty('--tile-w-px', `${r.w * step}px`);
-  tileEl.style.setProperty('--tile-h-px', `${r.h * step}px`);
+  tileEl.style.setProperty('--tile-w-px', `${r.w * cell.w}px`);
+  tileEl.style.setProperty('--tile-h-px', `${r.h * cell.h}px`);
+}
+
+/** Normalize a `step` argument (number or `{ w, h }`) to a positive cell box. */
+function normalizeStep(step) {
+  const fallback = 22.5;
+  if (step && typeof step === 'object') {
+    const w = Number(step.w);
+    const h = Number(step.h);
+    return {
+      w: Number.isFinite(w) && w > 0 ? w : fallback,
+      h: Number.isFinite(h) && h > 0 ? h : Number.isFinite(w) && w > 0 ? w : fallback,
+    };
+  }
+  const n = Number(step);
+  const v = Number.isFinite(n) && n > 0 ? n : fallback;
+  return { w: v, h: v };
 }
 
 /**

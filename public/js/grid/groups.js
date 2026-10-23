@@ -106,6 +106,7 @@ export function hitGroups(groups, point) {
  *   render(groups, mode)      — (re)build every .group-box of the page.
  *   syncCanvas(container)     — pin --unit-w/--unit-h + the layer box from the
  *                               LIVE canvas box (VIEW fit / EDIT logical box).
+ *                               Also (re)arms the canvas watchdog below.
  *   pointerMove(clientX, clientY) — hover hit-test; returns the hit group|null.
  *   unitsFromClient(cx, cy)   — client point → { x, y, u, v } fine units+scale.
  *   clearHover()              — drop any .group-hover (mouseleave).
@@ -199,6 +200,38 @@ export function createGroupLayer(previewEl) {
     box.style.top = `calc(${r.y} * var(--unit-h, 1px))`;
     box.style.width = `calc(${r.w} * var(--unit-w, 1px))`;
     box.style.height = `calc(${r.h} * var(--unit-h, 1px))`;
+  }
+
+  // ---- Canvas box watchdog ---------------------------------------------
+  // WHY: the grid container's box is ANIMATED. gridstack keeps the vendor
+  // class `.grid-stack-animate` on it, whose CSS is
+  //   `.grid-stack-animate { transition: left .3s, right .3s, top .3s,
+  //                          height .3s, width .3s }`
+  // so when main.js re-pins `--canvas-w`/`--canvas-h` on a window resize
+  // (screen change, DPR change, maximize) the container takes ~300 ms to reach
+  // its new box, while gridstack re-lays its items out at every intermediate
+  // width (its own ResizeObserver). A ONE-SHOT measurement taken in the resize
+  // callback therefore captures the PREVIOUS canvas box: `--unit-w`/`--unit-h`
+  // (and the layer box) keep the old scale and every group box is drawn off the
+  // objects — until an unrelated rebuild calls syncCanvas() again. That is
+  // exactly the reported « objects no longer aligned in their groups after
+  // moving the window to another screen; the next update snaps them back ».
+  // FIX: observe the container itself and re-pin the unit as it settles. The
+  // write only touches the two overlay layers (siblings of the container), so it
+  // can never resize the observed element — no observer loop. applyBox() is a
+  // no-op when the box is unchanged, bounding it to one style write per frame.
+  let observed = null; // container currently watched
+  let lastBox = { w: 0, h: 0, left: 0, top: 0 };
+  const hasResizeObserver = typeof ResizeObserver !== 'undefined';
+  const canvasObserver = hasResizeObserver
+    ? new ResizeObserver(() => applyBox(observed))
+    : null;
+
+  function watchCanvas(container) {
+    if (!canvasObserver || container === observed) return;
+    canvasObserver.disconnect();
+    observed = container || null;
+    if (observed) canvasObserver.observe(observed);
   }
 
   function setMode(next) {
@@ -302,32 +335,61 @@ export function createGroupLayer(previewEl) {
   }
 
   /**
+   * Publish the conversion units + the layer box from the LIVE canvas box.
+   * Idempotent: returns false (and writes nothing) when the box is unchanged,
+   * so the canvas watchdog can call it on every observed frame for free.
+   */
+  function applyBox(container) {
+    if (!container) return false;
+    const w = container.offsetWidth;
+    const h = container.offsetHeight;
+    if (!(w > 0 && h > 0)) return false;
+    const left = container.offsetLeft;
+    const top = container.offsetTop;
+    const wpx = `${w}px`;
+    const hpx = `${h}px`;
+    const lpx = `${left}px`;
+    const tpx = `${top}px`;
+    // Cheap idempotence AND self-healing: no-op while the box AND the published
+    // values are already right (bounds the watchdog to one write per change),
+    // but re-publish if anything else clobbered the layer's inline box.
+    if (
+      w === lastBox.w && h === lastBox.h && left === lastBox.left && top === lastBox.top &&
+      layer.style.left === lpx && layer.style.top === tpx &&
+      layer.style.width === wpx && layer.style.height === hpx
+    ) {
+      return false;
+    }
+    lastBox = { w, h, left, top };
+    previewEl.style.setProperty('--unit-w', `${w / GRID_COLUMNS}px`);
+    previewEl.style.setProperty('--unit-h', `${h / GRID_ROWS}px`);
+    for (const node of overlay.isConnected ? [layer, overlay] : [layer]) {
+      node.style.left = lpx;
+      node.style.top = tpx;
+      node.style.width = wpx;
+      node.style.height = hpx;
+    }
+    // The layer box moved: the hit-test cache and the hover ring are geometry
+    // derived even though they work in fine units — drop both, cheaply.
+    invalidate();
+    return true;
+  }
+
+  /**
    * Pin the conversion units + the layer box from the LIVE canvas container.
    * The layer becomes a byte-for-byte copy of #grid-container's layout box, so
    * a sibling transform (EDIT dezoom, mode animation on #grid-preview) applies
    * to both identically. No box is ever measured.
+   *
+   * The container may still be MID-TRANSITION here (see the watchdog above):
+   * this call pins what is on screen now AND (re)arms the watchdog so the unit
+   * is re-pinned as the box settles — the group boxes converge on the objects
+   * instead of keeping the previous screen's scale.
    */
   function syncCanvas(container) {
-    if (!container) return;
-    const w = container.offsetWidth;
-    const h = container.offsetHeight;
-    if (!(w > 0 && h > 0)) return;
-    previewEl.style.setProperty('--unit-w', `${w / GRID_COLUMNS}px`);
-    previewEl.style.setProperty('--unit-h', `${h / GRID_ROWS}px`);
-    const left = `${container.offsetLeft}px`;
-    const top = `${container.offsetTop}px`;
-    const box = `${w}px`;
-    const tall = `${h}px`;
-    layer.style.left = left;
-    layer.style.top = top;
-    layer.style.width = box;
-    layer.style.height = tall;
-    if (overlay.isConnected) {
-      overlay.style.left = left;
-      overlay.style.top = top;
-      overlay.style.width = box;
-      overlay.style.height = tall;
-    }
+    if (!container) return false;
+    watchCanvas(container);
+    return applyBox(container);
   }
 
   /**
@@ -374,6 +436,11 @@ export function createGroupLayer(previewEl) {
   function destroy() {
     previewEl.removeEventListener('mousemove', onMouseMove);
     previewEl.removeEventListener('mouseleave', clearHover);
+    // Release the canvas watchdog: the layer is gone, nothing must fire again
+    // (logout / login-screen teardown).
+    if (canvasObserver) canvasObserver.disconnect();
+    observed = null;
+    lastBox = { w: 0, h: 0, left: 0, top: 0 };
     if (alertTimer) clearTimeout(alertTimer);
     alertTimer = 0;
     layer.remove();
