@@ -29,7 +29,7 @@
   --mode-ease: cubic-bezier(0.4, 0, 0.2, 1);
   --success: #2e9e5b;
   --warning: #e0a030;
-  /* Edit-mode grid lines (32×18 canvas). Homy-level tokens — NOT part of the
+  /* Edit-mode grid lines (v5 64×36 fine trame). Homy-level tokens — NOT part of the
      holaf palette: the lines are a functional overlay drawn on .grid-stack in
      edit mode only (see .grid-stack.editing-grid below). Minor = every cell,
      major = every 4 columns / 3 rows, center = the two 50% axes.
@@ -405,13 +405,13 @@ body { background: transparent; transition: background 0.2s; }
      compute the adaptive dezoom; keep it in sync with the docked .palette
      rule above (they are a contract, not a coincidence). */
   --palette-dock-w: 228px;
-  /* Maximum cell ANISOTROPY allowed when the 32×18 canvas stretches to fill
-     the viewport (fill fit): a cell may be at most (1 ± tol) wider than tall.
-     0.2 = ±20 %. main.js READS this value (falling back to
-     CELL_ASPECT_TOLERANCE in grid/config.js) — tune the bound here. Beyond it
-     the canvas falls back to a centered 16:9 letterbox instead of deforming
-     further. */
-  --cell-aspect-tolerance: 0.2;
+  /* NOTE: there is NO cell-aspect tolerance knob any more. The canvas is fitted
+     with ONE uniform scale (main.js updateCanvasGeometry → computeCanvasFit in
+     grid/config.js): scale = min(availW / 64, availH / 36). Cells are therefore
+     EXACTLY square (ratio 1.000) at every window size and the excess of the
+     non-binding axis becomes a CENTERED margin (letterbox on an ultra-wide
+     window, pillarbox on a 4/3 one). The old ±20 % « fill » stretch and its
+     ±2 % snap dead band are gone by user decision. */
   /* VIEW↔EDIT transition timing lives on :root (see above) so the body-level
      background layers share it. All the animated properties here are VISUAL
      only (transform/opacity and the registered --guide-op): none of them
@@ -436,6 +436,13 @@ body { background: transparent; transition: background 0.2s; }
 .grid-wrap {
   flex: 1 1 auto;
   min-height: 0; /* allow shrinking below content size inside the flex column */
+  /* CENTERING CONTAINER (uniform fit): the area is a 1-item flex box and the
+     canvas (or the EDIT frame) uses `margin: auto`. Per the flexbox spec an
+     auto margin resolves to 0 when the free space is negative, so this centers
+     the canvas on BOTH axes on every window shape (letterbox/pillarbox margins)
+     while never making the overflowed start edge unreachable on the small-screen
+     pan fallback (`min-width: 640px` on #grid-container). */
+  display: flex;
   /* L2: positioned so the .group-layer (absolute, sibling of #grid-container
      through the display:contents #grid-preview) gets a deterministic
      containing block — .group-layer's inline left/top mirror the canvas
@@ -446,7 +453,7 @@ body { background: transparent; transition: background 0.2s; }
   /* Review C2: on screens too small for a readable grid (see the 640px cell
      floor on #grid-container) the canvas overflows this box — pan INSIDE it
      (overflow auto) instead of scrolling the whole page. On desktop the grid
-     always fits exactly (the width formula below guarantees it), so no
+     always fits exactly (the fit below is computed from this very box), so no
      scrollbar ever appears there. */
   overflow: auto;
   /* NOTE: no transition on margin-left on purpose. GridStack reads the
@@ -455,7 +462,7 @@ body { background: transparent; transition: background 0.2s; }
      ~200ms of stale cell heights until the resize observer caught up. Instant
      margin = correct geometry from the first frame. */
   /* Size containment + container: #grid-container sizes itself from this
-     box (cqw/cqh) so the 32×18 grid always fits the visible area exactly. */
+     box (cqw/cqh) so the 64×36 grid always fits the visible area exactly. */
   container-type: size;
 }
 .grid-wrap.with-palette { margin-left: 232px; }
@@ -468,21 +475,23 @@ body { background: transparent; transition: background 0.2s; }
 #grid-preview { display: contents; }
 
 #grid-container {
-  /* 32×18 canvas. The box is pinned by main.js to measured integer pixels
-     (--canvas-w / --canvas-h): the canvas FILLS the available area when the
-     resulting cell anisotropy stays within --cell-aspect-tolerance (±20 %),
-     otherwise it is the centered 16:9 letterbox. gridstack derives item widths
-     from clientWidth (percentage column units) and the row pitch from the
-     cellHeight main.js passes (h/18), and sets an INLINE container height of
-     18 rows × cell height: that inline height agrees with the pinned box by
-     construction, so there is no sub-pixel overflow and no scrollbar. The cq /
-     16:9 fallbacks below cover the first paint before main.js runs. No
-     min-height here: gridstack only reads the computed min-height when no
-     minRow is configured (we always set minRow:18). */
+  /* 64×36 canvas. The box is pinned by main.js to measured integer pixels
+     (--canvas-w / --canvas-h) with the UNIFORM fit
+     scale = min(availW / 64, availH / 36): the canvas takes the largest 16:9 box
+     the area allows (≈100 % of the area on the constraining axis) and is
+     CENTERED by `margin: auto` above (the excess becomes a margin, never a
+     stretch — cells stay exactly square). gridstack derives item widths from
+     clientWidth (percentage column units) and the row pitch from the cellHeight
+     main.js passes (h/36), and sets an INLINE container height of 36 rows ×
+     cell height: that inline height agrees with the pinned box by construction,
+     so there is no sub-pixel overflow and no scrollbar. The cq / 16:9 fallbacks
+     below cover the first paint before main.js runs. No min-height here:
+     gridstack only reads the computed min-height when no minRow is configured
+     (we always set minRow:36). */
   width: var(--canvas-w, min(100cqw, calc(100cqh * 16 / 9)));
-  /* Pinned height (may exceed a 16:9 box on a stretched/« fill » canvas).
-     gridstack's inline height overrides this once the grid is built; keeping
-     it here makes the CSS box correct even before the first grid init. */
+  /* Pinned height (always exactly 16:9 for that width). gridstack's inline
+     height overrides this once the grid is built; keeping it here makes the CSS
+     box correct even before the first grid init. */
   height: var(--canvas-h, auto);
   /* --canvas-w (main.js updateCanvasGeometry): the fit measured in JS and pinned
      as an integer pixel value — a source of truth shared with gridstack, so
@@ -498,7 +507,9 @@ body { background: transparent; transition: background 0.2s; }
      yields ≥ 20px cells there. */
   min-width: 640px;
   aspect-ratio: 16 / 9;
-  margin: 0 auto;
+  /* Centered in the flex box on both axes (see .grid-wrap): the letterbox /
+     pillarbox margin is produced here, not by any per-window branch. */
+  margin: auto;
 }
 /* Fallback for engines without container queries: full-width grid (may
    overflow vertically on short windows — pre-2023 behavior). */
@@ -508,7 +519,7 @@ body { background: transparent; transition: background 0.2s; }
 
 /* Lot E — hard containment of the canvas in VIEW mode (and the edit
    small-screen fallback). Belt-and-braces over --canvas-w: even if gridstack's
-   inline height (18 × clientWidth/32, its ResizeObserver is throttled) is
+   inline height (36 × clientWidth/64, its ResizeObserver is throttled) is
    stale by a few px after a mid-animation rebuild, the BOX can never exceed
    the exact 16:9 fit of the pinned width and nothing rendered inside it can
    spill a phantom scrollbar into .grid-wrap (the empty-page scrollbar of lot
@@ -523,12 +534,13 @@ body { background: transparent; transition: background 0.2s; }
 
 /* The canvas frame that hosts the whole canvas in edit-preview mode. Its width
    is the largest 16:9 box that fits the grid area (now narrowed by the docked
-   palette); it is centered in the area.
-   DECISION (user): the EDIT frame is FIXED 16:9 — independent of the VIEW
-   canvas aspect. The VIEW canvas may be stretched (bounded fill fit, cells up
-   to ±20 % anisotropic) but EDIT keeps square cells in a 16:9 box, so the
-   dezoom is always a UNIFORM scale (never a distorting non-uniform one). The
-   VIEW↔EDIT aspect gap is handled by the transition itself (see main.js
+   palette); it is centered in the area — the SAME uniform fit as the VIEW
+   canvas (min(100cqw, 100cqh·16/9)), so frame and canvas share one aspect and
+   the dezoom is always a UNIFORM scale (never a distorting non-uniform one).
+   DECISION (user): the EDIT frame stays FIXED 16:9 with its uniform dezoom;
+   the VIEW canvas now uses a uniform fit too (no stretch anywhere), so the
+   VIEW↔EDIT seam is exact at every window shape and the cross-fade branch of
+   the transition is a defensive fallback only (see main.js
    setViewOriginTransform + style.css .anim-from-view below).
    `overflow: hidden` + `isolation` clip and isolate the scaled canvas (grid
    lines, and the drag helper, which is the item element itself and therefore
@@ -591,7 +603,7 @@ body { background: transparent; transition: background 0.2s; }
   transform: rotate(-45deg) scale(calc(1 / var(--preview-scale, 1)));
 }
 
-/* ---------- Edit-mode grid lines (32×18) ----------
+/* ---------- Edit-mode grid lines (v5 fine trame) ----------
    Drawn ONLY in edit mode via the .editing-grid class set by editor.js —
    never in view mode, never on the login view (no .grid-stack there).
    Alignment contract: gridstack positions items at exact multiples of the
@@ -862,10 +874,11 @@ body { background: transparent; transition: background 0.2s; }
 
 /* Start/end state, both directions. TWO cases (chosen by main.js
    setViewOriginTransform from the VIEW/EDIT aspect gap):
-     • aspects match (±ε, the common 16:9 monitor case): the frame glides onto
-       the REAL view canvas rect — --from-scale/--from-tx/--from-ty map it
-       exactly, --from-opacity stays 1 → seam-free, no fade.
-     • aspects differ (VIEW stretched, EDIT fixed 16:9): an exact overlay would
+     • aspects match (±ε) — now EVERY window shape, since VIEW and EDIT share
+       the uniform 16:9 fit: the frame glides onto the REAL view canvas rect —
+       --from-scale/--from-tx/--from-ty map it exactly (letterbox margins
+       included), --from-opacity stays 1 → seam-free, no fade.
+     • aspects differ (defensive only): an exact overlay would
        need a NON-uniform scale, which would visibly deform cells/guides during
        the anim. Instead main.js pins a small UNIFORM self-dezoom about the
        frame's own centre (--from-tx/--from-ty = 0) and --from-opacity = 0, so
@@ -1127,6 +1140,34 @@ body[data-bg-active] .grid-stack-item-content[data-surface-off] {
 body[data-bg-active] .grid-stack-item-content {
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
   backdrop-filter: blur(14px) saturate(1.2);
+}
+/* ── layout v5: the WIDGET surface belongs to WIDGETS only ───────────────────
+   Every object (widget, element placement, report placement) is a
+   `.grid-stack-item` with a `.grid-stack-item-content` cell, but ONLY a widget
+   is painted by that cell. An element/report tile paints its OWN surface one
+   level deeper (`.group-tile` / `.report-tile`, driven by the per-tile
+   `--tile-surface-*` vars set by applyTileSurface()).
+
+   MEASURED BUG (surfaceOpacity had no visible effect): without this rule the
+   cell painted the theme elevation `--bg-elev` at `--surface-alpha` (100 %
+   opaque, 80 % + blur when a wallpaper is active) BEHIND every element tile, so
+   `--tile-surface-op: 0%` revealed an opaque theme card instead of the
+   wallpaper — the tile surface was already transparent, the layer underneath
+   was not. `renderWidget()` marks these cells with `data-object-kind`
+   (`element` | `report`), so the neutralization can never hit a widget.
+
+   The `body[data-bg-active]` twin is required: the glass rule above is
+   (0,2,1) and would otherwise keep the blurred rectangle at opacity 0 —
+   this one is (0,3,1) and wins the cascade. Border is removed too: the cell is
+   no longer a surface at all (its frame would ring the tile with a second
+   rectangle). `--surface-off` semantics of GROUPS/WIDGETS are untouched. */
+.grid-stack-item-content[data-object-kind],
+body[data-bg-active] .grid-stack-item-content[data-object-kind] {
+  background: none;
+  border-width: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .grid-stack-item-content .widget-body {
   flex: 1;
@@ -1675,9 +1716,11 @@ body.lasso-active * { cursor: crosshair !important; user-select: none; }
 .group-tile[data-label-pos='left'] .tile-core { flex-direction: row-reverse; }
 .group-tile[data-label-pos='right'] .tile-core { flex-direction: row; }
 /* ---------- Icon box: ALWAYS square (1:1) ----------
-   WHY: the trame is anisotropic whenever the VIEW canvas stretches (bounded
-   ±20 % « fill » fit), so the tile box is a RECTANGLE. The icon must NEVER
-   follow that deformation — an icon squeezed into a non-square viewport is
+   WHY: the trame is square (uniform VIEW fit, ratio 1.000 at every window
+   size), but the tile box can still be a RECTANGLE when the placement is not
+   (w: 2, h: 1) — a tile several fine cells wide and few tall, or the reverse,
+   is a rectangle whatever the trame. The icon must NEVER
+   follow that shape — an icon squeezed into a non-square viewport is
    either stretched (raster <img>) or letterboxed (SVG), which is exactly the
    « icons are deformed » defect. The icon therefore gets its own SQUARE box,
    sized from the SMALLER side of the tile's real box:

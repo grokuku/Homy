@@ -1,15 +1,17 @@
 /**
  * Grid canvas constants — shared by editor.js, viewer.js and main.js.
  *
- * The dashboard grid is a fixed 32×18 canvas (32 columns × 18 rows).
- * 32/18 = 16/9, so with square cells (cellHeight: 'auto' → cell height =
- * cell width) the 18-row grid fills exactly the height of a 16:9 screen,
- * which enables precise placement and true screen-centering of widgets.
+ * The dashboard grid is a fixed 64×36 canvas (64 columns × 36 rows — the v5
+ * fine trame, 1 unit = ½ global cell). 64/36 = 16/9, so with square cells the
+ * 36-row grid fills exactly the height of a 16:9 screen, which enables precise
+ * placement and true screen-centering of widgets. The canvas is ALWAYS fitted
+ * with a single uniform scale (see computeCanvasFit below): the trame is NEVER
+ * anisotropic, at any window size.
  *
  * Legacy layouts (before the columns field existed in layout.json) were
  * built on a 12-column grid with a fixed 80px cell height; their x/w
  * coordinates are migrated client-side via gridstack's native
- * `column(32, 'moveScale')` reflow (see editor.js / viewer.js).
+ * `column(GRID_COLUMNS, 'moveScale')` reflow (see editor.js / viewer.js).
  *
  * float: true (set by editor.js and viewer.js) = FREE VERTICAL PLACEMENT
  * (review C7 fix): an item dropped in the lower rows keeps its y, voluntary
@@ -26,7 +28,7 @@
  * insets), and cellHeight:'auto' computes the square cell height as
  * cellWidth − marginRight − marginLeft + marginTop + marginBottom. Symmetric
  * margins ⇒ cell height = cell width (true square); any asymmetric margin
- * would skew every cell and desync the 18-row fill from the 16:9 aspect box.
+ * would skew every cell and desync the 36-row fit from the 16:9 aspect box.
  */
 import { getWidget } from '../widgets/registry.js';
 
@@ -34,74 +36,49 @@ export const GRID_COLUMNS = 64;
 export const GRID_ROWS = 36;
 export const LEGACY_COLUMNS = 12;
 
-/** Design aspect of the canvas (32 columns / 18 rows = 16/9). */
+/** Design aspect of the canvas (64 columns / 36 rows = 16/9). */
 export const CANVAS_ASPECT = GRID_COLUMNS / GRID_ROWS;
-
-/**
- * Maximum allowed cell ANISOTROPY when the canvas stretches to fill the
- * viewport (lot « fill »). 0.2 = ±20 %: a cell may never be more than 1.2×
- * wider than tall (nor 1.2× taller than wide). Beyond this bound the fit falls
- * back to a CENTERED 16:9 letterboxed canvas instead of distorting further.
- *
- * MUST mirror the `--cell-aspect-tolerance` CSS variable declared on
- * `#dashboard-view` in style.css: main.js reads THAT value when present (so a
- * single CSS knob tunes the behavior live) and falls back to this constant
- * when the variable is missing/invalid.
- */
-export const CELL_ASPECT_TOLERANCE = 0.2;
-
-/**
- * DEAD BAND around a perfectly square cell, applied BEFORE the bounded stretch.
- *
- * WHY: the fit box is the viewport MINUS the 20 px padding of `.grid-wrap`, so
- * even an exactly 16:9 window yields a box that is not exactly 16:9
- * (1920×1080 → 1880×1040 → cell anisotropy 1.7 %). Because that used to fall
- * inside the ±20 % tolerance, the « fill » fit stretched every cell by ~2 % at
- * every 16:9 resolution — visibly non-square tiles and a non-1:1 trame, for a
- * purely geometric reason (the padding), not a design choice.
- *
- * A cell anisotropy inside ±CELL_ASPECT_SNAP therefore snaps to the EXACT 16:9
- * letterbox: cells are then EXACTLY square (1.000) at any 16:9 window, at the
- * price of at most ~1 % of unused margin on one axis. Beyond the dead band the
- * documented bounded stretch still applies (up to ±tolerance).
- *
- * MUST stay < CELL_ASPECT_TOLERANCE (otherwise « fill » would be unreachable).
- */
-export const CELL_ASPECT_SNAP = 0.02;
 
 /**
  * Fit the 64×36 canvas into an available content box (CSS px).
  *
- *   cellAspect = (availW / 64) / (availH / 36)   // 1 = square cell
+ * UNIFORM, ADAPTIVE FIT (user decision): ONE scale factor for both axes,
  *
- * Three regimes:
- *  • |cellAspect − 1| ≤ snap → EXACT 16:9 letterbox: cells are perfectly square
- *    (the tiny residual box difference is padding, not intent);
- *  • snap < |cellAspect − 1| ≤ tol → « fill »: the canvas stretches to the whole
- *    box, cells deformed by at most the tolerance;
- *  • beyond → centered 16:9 letterbox again (cells stay square).
+ *   scale = min(availW / 64, availH / 36)   // px per fine cell, both axes
  *
- * Returns `{ mode, width, height, cellAspect }` or null for a non-measurable
- * box. Pure: callers decide how (and whether) to pin the result.
+ * so the canvas always takes the LARGEST 16:9 box that fits the available
+ * area (≈100 % of the area on the constraining axis, margins only on the
+ * other one) and its cells are EXACTLY square (cellAspect === 1, ratio 1.000)
+ * at every window size. The canvas therefore still ADAPTS to the screen (its
+ * size is a pure function of the measured area, never a fixed size) — it is
+ * simply never stretched: a 16/9 window fills completely, a 4/3 window gets
+ * pillarbox margins (left/right) and an ultra-wide one letterbox margins
+ * (top/bottom), both CENTERED by the layout (see style.css: `.grid-wrap` is a
+ * flex box and `#grid-container` uses `margin: auto`, which is the overflow-…
+ * safe form of centering).
+ *
+ * The previous « fill with bounded tolerance » regime (a ±20 % cell stretch
+ * with a ±2 % snap dead band) is GONE: it deformed the trame on purpose and
+ * is what the user asked to remove. Nothing else changed — 64×36, the saved
+ * coordinates and the layout data are untouched; only the DISPLAYED scale
+ * changes.
+ *
+ * Returns `{ mode, width, height, scale, cellAspect }` or null for a
+ * non-measurable box. Pure: callers decide how (and whether) to pin the
+ * result.
  */
-export function computeCanvasFit(
-  availW,
-  availH,
-  tolerance = CELL_ASPECT_TOLERANCE,
-  snap = CELL_ASPECT_SNAP
-) {
+export function computeCanvasFit(availW, availH) {
   const w = Number(availW);
   const h = Number(availH);
   if (!(w > 0) || !(h > 0)) return null;
-  const tol = Number.isFinite(tolerance) && tolerance >= 0 ? tolerance : CELL_ASPECT_TOLERANCE;
-  const band = Number.isFinite(snap) && snap >= 0 ? Math.min(snap, tol) : CELL_ASPECT_SNAP;
-  const cellAspect = w / GRID_COLUMNS / (h / GRID_ROWS);
-  const drift = Math.abs(cellAspect - 1);
-  if (drift > band && drift <= tol) {
-    return { mode: 'fill', width: w, height: h, cellAspect };
-  }
-  const width = Math.min(w, h * CANVAS_ASPECT);
-  return { mode: 'letterbox', width, height: width / CANVAS_ASPECT, cellAspect: 1 };
+  const scale = Math.min(w / GRID_COLUMNS, h / GRID_ROWS);
+  return {
+    mode: 'uniform',
+    width: scale * GRID_COLUMNS,
+    height: scale * GRID_ROWS,
+    scale,
+    cellAspect: 1,
+  };
 }
 
 /**
@@ -121,7 +98,7 @@ export const MAX_ITEMS = 200;
  *    at every common desktop size (a 1-row cell offers ~38px of content at
  *    1920×1080, less below, while the bar needs ~46px): the search defaultSize
  *    is now 11×2 and EXISTING h=1 searches are grown to h=2 on load. Same
- *    philosophy as the legacy 12→32 column reflow: the editor persists the
+ *    philosophy as the legacy 12→64 column reflow: the editor persists the
  *    corrected height on its next save, the viewer applies it at display time
  *    only (it never persists). Note this is the ONE deliberate deviation from
  *    the column migration's « h unchanged » contract — it is widget-scoped,

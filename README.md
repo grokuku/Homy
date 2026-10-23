@@ -105,15 +105,28 @@ These are applied per-widget via inline CSS custom properties (`--widget-bg-colo
 theme fallbacks, so widgets without a custom appearance keep the default look. (`showBorder` is
 opt-out: only an explicit `false` removes the frame border; legacy configs keep it.)
 
-## Grid canvas (32×18)
+## Grid canvas (64×36)
 
-The dashboard is a fixed **32 columns × 18 rows** canvas of square cells: 32/18 = 16/9, so with
-`cellHeight: 'auto'` (gridstack derives the cell height from the cell width) the 18-row grid
-fills a 16:9 viewport exactly. Key contracts (see `public/js/grid/config.js` for details):
+The dashboard is a fixed **64 columns × 36 rows** canvas of square cells (the v5 fine trame,
+1 unit = ½ global cell): 64/36 = 16/9. The canvas is **fitted uniformly and adaptively** into the
+available area, with ONE scale for both axes:
 
-- **Layout migration**: legacy 12-column layouts are reflowed client-side (`column(32,
+```
+scale = min(availW / 64, availH / 36)   →   width = 64·scale, height = 36·scale
+```
+
+so it always takes the largest 16:9 box the area allows (≈100 % of that area on the constraining
+axis), stays CENTERED, and its cells are exactly square (ratio 1.000) at every window size. The
+excess of the other axis becomes a centered margin — pillarbox on a 4/3 window, letterbox on an
+ultra-wide one — painted over by the full-viewport background (never a black band). **There is
+no cell-aspect tolerance and no « fill » stretch**: the trame is never anisotropic, by
+construction (`computeCanvasFit` in `public/js/grid/config.js`; the box is pinned as integer px
+by `updateCanvasGeometry` in `main.js`). Fitting only changes the DISPLAY scale — the saved
+64×36 coordinates are never touched. Key contracts:
+
+- **Layout migration**: legacy 12-column layouts are reflowed client-side (`column(64,
   'moveScale')` — x/w rescaled, h kept, y only ever compacted up (float:false
-  re-pack when the legacy layout left free space above an item), ids preserved); the editor persists `columns: 32` on
+  re-pack when the legacy layout left free space above an item), ids preserved); the editor persists `columns: 64` on
   its next save, the viewer only re-applies the reflow at display time. Two widget-scoped
   load-time corrections are applied through the same `normalizeItems()` path (editor **and**
   viewer): existing **search widgets saved at h=1 are grown to h=2** (a 1-row cell cannot fit
@@ -125,9 +138,12 @@ fills a 16:9 viewport exactly. Key contracts (see `public/js/grid/config.js` for
   so drags never leave voluntary holes in the canvas.
 - **`margin` must stay a single symmetric value**: gridstack insets each item's content box with
   the four `--gs-item-margin-*` vars and computes the square cell height from them; asymmetric
-  margins would skew the cells and desync the 18-row fill from the 16:9 aspect box.
-- **Responsive**: cells never shrink below a readable 20px floor — on small screens the canvas
-  is clamped to its desktop geometry (640px = 20×32) and the grid area pans (scroll) instead.
+  margins would skew the cells and desync the 36-row fit from the 16:9 aspect box.
+- **Responsive**: the fit is recomputed from the measured area on every resize (and re-pinned
+  once the vendor 300 ms box transition has landed, so a transient scrollbar can never freeze a
+  narrower canvas); cells never shrink below a readable 20px floor — on small screens the canvas
+  is clamped to its desktop geometry (640px = 20×64 fine cells) and the grid area pans (scroll)
+  instead.
   Search bars additionally switch to a compact layout (container query) when their item is
   shorter than 62px, so they stay usable from portrait tablets down to phones.
 - **Persistence**: PUT `/api/layout` failures are surfaced as toasts (max 100 items, 256 KB
@@ -369,7 +385,7 @@ public/
     api.js                 # fetch client (+ multipart upload)
     state.js               # app state (incl. dashboard settings)
     main.js                # bootstrap, login/dashboard switch, editor toolbar (Background/Theme)
-    grid/config.js         # grid canvas constants (32×18, shared caps) + item normalization
+    grid/config.js         # grid canvas constants (64×36, uniform fit, shared caps) + normalization
     grid/editor.js         # editable grid + palette
     grid/viewer.js         # locked grid
     backgrounds/manager.js # background layers: image (+dim/blur) & procedural canvas (holaf-ambient)

@@ -139,10 +139,11 @@ function renderObjectTile(container, item, context = {}) {
   host.style.height = '100%';
   host.style.gridTemplateColumns = `repeat(${w}, 1fr)`;
   host.style.gridTemplateRows = `repeat(${h}, 1fr)`;
-  // px per FINE CELL, measured on BOTH axes: the trame is anisotropic when the
-  // VIEW canvas is stretched (bounded ±20 % fill fit), so deriving the cell from
-  // the width alone would size the tile's icon from a wrong height. Fall back to
-  // the width (or a sane default) when the content box is not laid out yet.
+  // px per FINE CELL, measured on BOTH axes: the trame is square by the uniform
+  // fit, but the two axes are rounded independently (gridstack cell width vs the
+  // pinned row pitch), so reading each axis keeps the tile's icon exact. Fall
+  // back to the width (or a sane default) when the content box is not laid out
+  // yet.
   const step = objectCell(container, w, h);
   const element = catalog.get(item.elementId);
   let tile;
@@ -163,7 +164,7 @@ function renderObjectTile(container, item, context = {}) {
 
 /**
  * Measured fine-cell size (px) of an object's cell for a `w × h` placement.
- * `{ w, h }` so a stretched (non-square) trame is honoured on both axes.
+ * `{ w, h }` so each axis keeps its own rounding (the trame itself is square).
  */
 function objectCell(container, w, h) {
   const width = container?.clientWidth > 0 ? container.clientWidth : 0;
@@ -190,11 +191,24 @@ export function renderWidget(container, item, context = {}) {
   // top of the previous render. We own this container, so nothing user-owned is
   // lost by clearing it.
   container.replaceChildren();
-  applyAppearance(container, item?.config || {});
+  // layout v5: an element/report placement is a GRIDSTACK ITEM too, but it is
+  // NOT a widget — it paints its OWN surface (.group-tile + --tile-surface-*,
+  // elements/button.js) inside this cell. The widget appearance
+  // (--widget-bg-*/border, applyAppearance) must therefore NEVER reach it, and
+  // the cell itself is marked so style.css can keep the theme surface OFF it:
+  // without that mark the opaque .grid-stack-item-content background sat
+  // BEHIND the tile surface, so `surfaceOpacity` 0 still showed a solid theme
+  // card instead of the wallpaper (measured bug).
+  const isObject = item?.kind === 'element' || item?.kind === 'report';
+  if (isObject) container.dataset.objectKind = item.kind;
+  else delete container.dataset.objectKind;
+  // Objects have no widget config: an empty one resets every --widget-* var
+  // (the container persists between renders) instead of applying one.
+  applyAppearance(container, isObject ? {} : item?.config || {});
   // v5 OBJECTS: an element/report placement is rendered by its own tile renderer
   // (no widget). This keeps VIEW usable on a migrated v4 layout whose tiles are
   // now absolute-positioned element/report objects.
-  if (item?.kind === 'element' || item?.kind === 'report') {
+  if (isObject) {
     const cleanup = renderObjectTile(container, item, context);
     if (typeof cleanup === 'function') cleanups.set(container, cleanup);
     else cleanups.delete(container);

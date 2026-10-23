@@ -8,10 +8,11 @@ import { GRID_COLUMNS, GRID_ROWS, normalizeItems } from './config.js';
  * the previous `{ ...grid }` spread returned a plain object that lost every
  * GridStack prototype method — the REAL instance keeps the full API).
  *
- * Same 32×18 square-cell canvas as the editor, the same item normalization
- * (search h:1→h:2, see grid/config.js) and the same client-side legacy column
- * migration — but NO persistence: the viewer is static, it only applies
- * `column(32, 'moveScale')` at display time so a legacy 12-column layout shows
+ * Same 64×36 square-cell canvas as the editor (uniform fit, see grid/config.js),
+ * the same item normalization (search h:1→h:2, see grid/config.js) and the same
+ * client-side legacy column migration — but NO persistence: the viewer is
+ * static, it only applies `column(GRID_COLUMNS, 'moveScale')` at display time so
+ * a legacy 12-column layout shows
  * exactly like it will once the editor saves it. The normalization MUST run
  * here too: with the old h=1 a following item could load one row higher than
  * the editor would show it, making the viewer disagree with the editor on y.
@@ -26,13 +27,14 @@ export function renderViewer(container, items, { columns = GRID_COLUMNS, cellHei
     {
       staticGrid: true,
       // 'auto' = square cells; a positive NUMBER = the pinned row pitch (px)
-      // computed by main.js for the fill/letterbox canvas (see grid/config.js
-      // computeCanvasFit). Either way the inline container height
-      // (18 × cellHeight) matches the pinned --canvas-h box exactly.
+      // computed by main.js for the uniformly fitted canvas (square cells,
+      // letterbox margins outside it — see grid/config.js computeCanvasFit).
+      // Either way the inline container height (36 × cellHeight) matches the
+      // pinned --canvas-h box exactly.
       cellHeight: Number.isFinite(cellHeight) && cellHeight > 0 ? cellHeight : 'auto',
       margin: 8,
-      column: columns, // saved column count (12 for legacy) — migrated below if ≠ 32
-      minRow: GRID_ROWS, // fixed 18-row canvas (same as the editor)
+      column: columns, // saved column count (12 for legacy) — migrated below if ≠ GRID_COLUMNS
+      minRow: GRID_ROWS, // fixed 36-row canvas (same as the editor)
       maxRow: GRID_ROWS,
       float: true, // free vertical placement (review C7) — same as the editor
     },

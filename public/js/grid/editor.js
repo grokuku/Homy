@@ -56,9 +56,9 @@ export function initEditor(container, items, { onSave, columns = GRID_COLUMNS, c
     {
       staticGrid: false,
       // 'auto' = square cells; a positive NUMBER = the pinned row pitch (px)
-      // computed by main.js so the editor's logical (view-sized) canvas keeps
-      // the exact VIEW geometry even when the view canvas is stretched (see
-      // grid/config.js computeCanvasFit).
+      // computed by main.js so the editor's logical (view-sized) canvas matches
+      // the VIEW geometry exactly (both use the same UNIFORM fit — square cells,
+      // see grid/config.js computeCanvasFit).
       cellHeight: Number.isFinite(cellHeight) && cellHeight > 0 ? cellHeight : 'auto',
       margin: 8, // INSIDE the cell: items snap to multiples of the cell width,
       // so the CSS grid lines (also at multiples) align with item edges.

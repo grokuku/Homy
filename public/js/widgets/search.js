@@ -14,8 +14,9 @@ export const search = {
   name: 'Search',
   icon: '🔍',
   category: 'tools',
-  // h:2 since the 32×18 grid review (C1): a 1-row cell cannot fit the search
-  // bar (at 1366×768 a 1-row cell offers ~21px of content for a ~46px bar).
+  // h:2 since the grid review (C1), kept on the v5 64×36 trame: a 1-row cell
+  // cannot fit the search bar (at 1366×768 a 1-row cell offers ~21px of content
+  // for a ~46px bar).
   // Existing h=1 search items are grown to h=2 at load time — see the shared
   // normalizeItems() in grid/config.js (editor + viewer). Must stay in sync
   // with server/routes/widgets.routes.js (check-schema-sync enforces it).

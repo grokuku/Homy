@@ -544,9 +544,10 @@ export function wireViewNavigation(root, linkEl, url, editable) {
  * Never throws.
  *
  * `step` is the group's/object's internal cell size in px — either a single
- * NUMBER (square cell) or `{ w, h }` when the trame is anisotropic (VIEW « fill »
- * fit: cells deformed by up to ±20 %). Passing BOTH axes is what makes the icon
- * box square on a stretched canvas: `wPx`/`hPx` are then the REAL tile box.
+ * NUMBER (square cell) or `{ w, h }` when the caller wants each axis read
+ * separately (the trame is square since the uniform VIEW fit, but gridstack's
+ * cell width and main.js's pinned row pitch are rounded independently). Passing
+ * BOTH axes keeps the icon box square from the REAL tile box.
  *
  * `insetPx` is the optional trame inset (px) applied as a surface margin;
  * when omitted the tile's residual `surfaceInset` option is used, so nothing
